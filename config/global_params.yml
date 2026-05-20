@@ -29,6 +29,10 @@ experiments:
         - "PD_L1"
         - "PS_prima_immuno"
         - "Terapia_Pembro_1_Pembro_CHT_2_ipi/nivo_CHT_3;_Atezo_CHT_4"
+      # Supplementary 3-way LMM (responder vs each non-responder sub-code).
+      # Reveals whether the dichotomized interaction is graded or driven by
+      # a single sub-group (e.g. SD behaves like RP, not like PD).
+      split_nonresponder: true
 
   Comorbidity_1v0:
     is_longitudinal: true
@@ -137,10 +141,17 @@ lmm_bootstrap:
 
 # --- Multivariate Analysis (sPLS-DA) ---
 multivariate:
-  n_comp: 2           
-  validation_folds: 5 
+  n_comp: 2
+  validation_folds: 5
   n_repeat_cv: 50
-  top_n_loadings: 15  
+  top_n_loadings: 15
+  # Empirical null distribution of the BER under shuffled outcome. Defends
+  # against the "is BER ~ 0.45 actually above chance?" reviewer question.
+  # 200 perms with n_repeat=1 is ~3-5 min on this panel size.
+  permutation:
+    enabled: true
+    n_perm: 200
+    n_repeat: 1
 
 # --- Visualization & Colors ---
 # EXPANDED: Contains all possible labels injected by the mini-configs

@@ -388,7 +388,7 @@ if (lmm_robust$n_robust == 0) {
   machine_output <- list(
     project_name         = config$project_name,
     clinical_target      = config$clinical$target_column,
-    model_type           = "Hybrid Two-Step Nested-LOOCV",
+    model_type           = "Fixed-Gate Nested-LOOCV (LMM-gated features held fixed across outer folds); fully-nested LOOCV reported separately under nested_loocv_validation",
     n_samples            = nrow(X),
     n_features_main      = ml_matrix$n_main,
     n_features_total     = ncol(X),

@@ -986,7 +986,7 @@ run_pdl1_stratified <- function(DATA, X_main, y, positive_label,
                                 gamma_grid     = c(0.01, 0.1, 1, 10),
                                 inner_folds    = 5L,
                                 seed           = 2026,
-                                min_subgroup_n = 20L) {
+                                min_subgroup_n = 15L) {
   if (!requireNamespace("readxl", quietly = TRUE)) return(NULL)
   if (!requireNamespace("dplyr",  quietly = TRUE)) return(NULL)
   if (!requireNamespace("pROC",   quietly = TRUE)) return(NULL)
@@ -1099,18 +1099,32 @@ run_pdl1_stratified <- function(DATA, X_main, y, positive_label,
       inner_folds = inner_folds, seed = seed
     )
     metrics <- compute_classification_metrics(res$y_true, res$predicted_probs, pos)
+    small_n <- n_s < 20L
+    inverted <- !is.na(metrics$auc) && metrics$auc < 0.5
+    notes <- sprintf("SVM-RBF nested-LOOCV on KI67 gate, %s subgroup.", label)
+    if (small_n) {
+      notes <- paste0(notes,
+                      sprintf(" CAVEAT: n=%d is small (< 20); estimate is indicative only.",
+                              n_s))
+    }
+    if (inverted) {
+      notes <- paste0(notes,
+                      " WARNING: AUC < 0.5 means the gate-features ordering inverts on this subgroup — interpret as no signal (or anti-correlation) on the subset, not negative information.")
+    }
     list(
-      n           = n_s,
-      n_responder = sum(y_sub == pos),
-      auc         = round(metrics$auc, 4),
-      auc_ci      = round(metrics$auc_ci, 4),
+      n                 = n_s,
+      n_responder       = sum(y_sub == pos),
+      auc               = round(metrics$auc, 4),
+      auc_ci            = round(metrics$auc_ci, 4),
       balanced_accuracy = round(metrics$balanced_accuracy, 4),
-      sensitivity = round(metrics$sensitivity, 4),
-      specificity = round(metrics$specificity, 4),
-      predicted_probs = res$predicted_probs,
-      y_true          = as.character(res$y_true),
-      benchmark_vals  = as.numeric(bench_vals[mask]),
-      note            = sprintf("SVM-RBF nested-LOOCV on KI67 gate, %s subgroup.", label)
+      sensitivity       = round(metrics$sensitivity, 4),
+      specificity       = round(metrics$specificity, 4),
+      small_n_caveat    = small_n,
+      inverted_auc      = inverted,
+      predicted_probs   = res$predicted_probs,
+      y_true            = as.character(res$y_true),
+      benchmark_vals    = as.numeric(bench_vals[mask]),
+      note              = notes
     )
   }
 
@@ -1142,8 +1156,14 @@ run_pdl1_stratified <- function(DATA, X_main, y, positive_label,
 #' @description
 #' Quantifies how much the LMM-gate features add over a continuous clinical
 #' benchmark biomarker (e.g. PD-L1). Two complementary perspectives:
-#'   1. Logistic LOOCV: benchmark alone vs benchmark + main features. Computes
-#'      IDI (Pencina 2008) and continuous NRI with patient-level bootstrap CIs.
+#'   1. Logistic (apparent/in-sample): benchmark alone vs benchmark + main
+#'      features, scored with apparent (resubstitution) probabilities — the
+#'      conventional setup for Pencina IDI / continuous NRI. Patient-level
+#'      bootstrap refits both models inside each iteration to give an honest
+#'      CI accounting for fit uncertainty. We deliberately avoid LOOCV here
+#'      because univariate LOOCV on a weak baseline (e.g. PD-L1 with AUC ~ 0.6)
+#'      is unstable: fold-to-fold sign flips of the slope can drive the
+#'      "benchmark-alone" AUC below chance, which mechanically inflates IDI.
 #'   2. SVM-RBF nested-LOOCV: same-subset comparison of model-with-benchmark
 #'      vs model-without (informs whether the benchmark adds noise to the
 #'      non-linear classifier).
@@ -1199,7 +1219,10 @@ run_combined_benchmark_model <- function(DATA, X_main, y, positive_label,
   x_bench <- bench_vals[valid_mask]
   X_sub  <- X_main[valid_mask, , drop = FALSE]
 
-  # ---- Logistic LOOCV: benchmark alone vs benchmark + main features ----
+  # ---- Apparent (in-sample) logistic: benchmark alone vs benchmark + features
+  # We use resubstitution predictions (the standard Pencina 2008 IDI setup).
+  # CI honesty is delivered by the patient-level bootstrap below, which refits
+  # both models on each resample.
   df_lr <- data.frame(y = y_bin, bench = x_bench, X_sub, check.names = FALSE)
   feat_names_lr <- make.names(colnames(X_sub), unique = TRUE)
   colnames(df_lr)[3:ncol(df_lr)] <- feat_names_lr
@@ -1207,19 +1230,13 @@ run_combined_benchmark_model <- function(DATA, X_main, y, positive_label,
   formula_bench <- as.formula("y ~ bench")
   formula_comb  <- as.formula(paste("y ~ bench +", paste(feat_names_lr, collapse = " + ")))
 
-  loocv_glm <- function(formula_obj, df) {
-    n <- nrow(df); probs <- numeric(n)
-    for (i in seq_len(n)) {
-      fit <- suppressWarnings(
-        glm(formula_obj, data = df[-i, , drop = FALSE], family = binomial())
-      )
-      probs[i] <- predict(fit, newdata = df[i, , drop = FALSE], type = "response")
-    }
-    probs
+  insample_glm <- function(formula_obj, df) {
+    fit <- suppressWarnings(glm(formula_obj, data = df, family = binomial()))
+    as.numeric(predict(fit, newdata = df, type = "response"))
   }
 
-  p_bench <- loocv_glm(formula_bench, df_lr)
-  p_comb  <- loocv_glm(formula_comb,  df_lr)
+  p_bench <- insample_glm(formula_bench, df_lr)
+  p_comb  <- insample_glm(formula_comb,  df_lr)
 
   roc_bench <- pROC::roc(y_bin, p_bench, direction = "<", quiet = TRUE)
   roc_comb  <- pROC::roc(y_bin, p_comb,  direction = "<", quiet = TRUE)
@@ -1250,15 +1267,23 @@ run_combined_benchmark_model <- function(DATA, X_main, y, positive_label,
   idi <- idi_components(p_bench, p_comb, y_bin)
   nri <- cnri_components(p_bench, p_comb, y_bin)
 
-  # Patient-level bootstrap CI for IDI / cNRI
+  # Patient-level bootstrap CI for IDI / cNRI. Refits both logistic models
+  # inside each iteration so the CI reflects fit-uncertainty in addition to
+  # sampling variability (resampling predicted-probability tuples alone would
+  # understate variance with apparent predictions).
   set.seed(seed)
   n_y <- length(y_bin)
   idi_boot <- numeric(n_boot); nri_boot <- numeric(n_boot)
   for (b in seq_len(n_boot)) {
     idx <- sample(n_y, n_y, replace = TRUE)
     if (length(unique(y_bin[idx])) < 2) { idi_boot[b] <- NA_real_; nri_boot[b] <- NA_real_; next }
-    idi_boot[b] <- idi_components(p_bench[idx], p_comb[idx], y_bin[idx])$IDI
-    nri_boot[b] <- cnri_components(p_bench[idx], p_comb[idx], y_bin[idx])$NRI
+    df_b <- df_lr[idx, , drop = FALSE]
+    pb <- tryCatch(insample_glm(formula_bench, df_b), error = function(e) NULL)
+    pc <- tryCatch(insample_glm(formula_comb,  df_b), error = function(e) NULL)
+    if (is.null(pb) || is.null(pc)) { idi_boot[b] <- NA_real_; nri_boot[b] <- NA_real_; next }
+    yb <- y_bin[idx]
+    idi_boot[b] <- idi_components(pb, pc, yb)$IDI
+    nri_boot[b] <- cnri_components(pb, pc, yb)$NRI
   }
   idi_ci <- as.numeric(quantile(idi_boot, c(0.025, 0.975), na.rm = TRUE))
   nri_ci <- as.numeric(quantile(nri_boot, c(0.025, 0.975), na.rm = TRUE))
@@ -1323,7 +1348,7 @@ run_combined_benchmark_model <- function(DATA, X_main, y, positive_label,
       )
     ),
     note = sprintf(
-      "Logistic LOOCV: %s alone vs %s + %d gate marker(s). IDI/cNRI estimated with patient-level bootstrap (B=%d).",
+      "Apparent (in-sample) logistic: %s alone vs %s + %d gate marker(s). IDI/cNRI estimated with patient-level bootstrap (B=%d) that refits both models per resample.",
       benchmark_label, benchmark_label, ncol(X_sub), n_boot
     ),
     plot_data = list(

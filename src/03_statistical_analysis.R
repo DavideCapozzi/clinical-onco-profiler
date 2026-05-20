@@ -85,10 +85,50 @@ tryCatch({
     }
     
     df_perf$keepX <- pls_res$model$keepX[1:pls_res$model$ncomp]
-    
+
     openxlsx::addWorksheet(wb_master, "Model_Performance")
     openxlsx::writeData(wb_master, "Model_Performance", df_perf)
-    
+
+    # --- Permutation test on BER (optional, config-driven) ---
+    # Anchors the BER vs an empirical null under shuffled labels. With BER
+    # values typically only modestly below 0.5 in n~70 cohorts, this is the
+    # standard reviewer-defensible check that the multivariate signal is not
+    # chance.
+    perm_cfg <- config$multivariate$permutation
+    perm_results <- NULL
+    if (!is.null(perm_cfg) && isTRUE(perm_cfg$enabled)) {
+      n_perm <- if (!is.null(perm_cfg$n_perm)) as.integer(perm_cfg$n_perm) else 200L
+      message(sprintf("   [sPLS-DA] Running permutation test on BER (n_perm=%d)...", n_perm))
+      perm_results <- tryCatch(
+        run_splsda_permutation(
+          data_z         = mat_z_global,
+          metadata       = meta_stats,
+          keepX          = pls_res$model$keepX[1:pls_res$model$ncomp],
+          observed_ber   = df_perf$Overall_BER,
+          group_col      = "Group",
+          validation_method = df_perf$Validation_Method[1],
+          folds          = config$multivariate$validation_folds,
+          n_repeat       = if (!is.null(perm_cfg$n_repeat)) as.integer(perm_cfg$n_repeat) else 1L,
+          n_perm         = n_perm,
+          seed           = config$stats$seed
+        ),
+        error = function(e) {
+          warning(sprintf("[sPLS-DA] Permutation test failed: %s", e$message))
+          NULL
+        }
+      )
+      if (!is.null(perm_results)) {
+        for (i in seq_len(nrow(perm_results))) {
+          r <- perm_results[i, ]
+          message(sprintf("      -> Comp%d: observed BER=%.3f | perm mean=%.3f (SD=%.3f) | empirical p=%.4f (n=%d)",
+                          r$Component, r$Observed_BER, r$Perm_Mean, r$Perm_SD,
+                          r$Perm_P_Value, r$N_Valid_Perm))
+        }
+        openxlsx::addWorksheet(wb_master, "BER_Permutation_Test")
+        openxlsx::writeData(wb_master, "BER_Permutation_Test", perm_results)
+      }
+    }
+
     # Generate machine-readable JSON object for downstream parsing
     machine_output <- list(
       project_name = config$project_name,
@@ -98,6 +138,13 @@ tryCatch({
       cv_folds = config$multivariate$validation_folds,
       cv_repeats = config$multivariate$n_repeat_cv,
       performance_per_component = df_perf,
+      ber_permutation = if (!is.null(perm_results)) {
+        list(
+          n_perm  = attr(perm_results, "n_perm"),
+          results = perm_results,
+          note    = "One-sided empirical p-value: fraction of permuted BERs <= observed, with (k+1)/(N+1) small-sample adjustment. keepX held fixed at the tuned values from the observed model."
+        )
+      } else NULL,
       top_drivers = top_drivers
     )
     
