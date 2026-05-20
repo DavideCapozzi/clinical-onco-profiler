@@ -174,6 +174,208 @@ run_loo_sensitivity <- function(data_long, feature, group_col = "Group",
   return(if (max_p_val == 0) NA else max_p_val)
 }
 
+#' @title Split-Group LMM Supplementary Analysis
+#' @description
+#' Supplementary analysis for FDR-significant markers when the non-responder
+#' label collapses multiple raw clinical codes (e.g. "SD_PD" = {SD=3, PD=4}).
+#' Refits the LMM with the non-responder split back into its sub-levels,
+#' keeping the responder side as a single class. The reference is the FIRST
+#' sub-level (so betas are vs the most adverse outcome).
+#'
+#' Why this is worth running: the dichotomization RP vs (SD union PD) trades
+#' biological texture for power. If responders show one direction and SD vs
+#' PD show different directions, the dichotomized interaction is dominated
+#' by the responder contrast — a 3-way diagnostic clarifies which sub-group
+#' is actually driving the LMM hit.
+#'
+#' @param data_long Long-format dataframe with Patient_ID, Timepoint, Group,
+#'   and the marker columns.
+#' @param features Character vector of marker names to test.
+#' @param patient_subgroup Named character vector mapping Patient_ID -> raw
+#'   sub-level label (e.g. "SD"/"PD"/"RP"). Patients absent from this vector
+#'   are excluded.
+#' @param ref_level Character. Reference level for the 3-way Group factor
+#'   (defaults to the first observed level).
+#' @return Data.frame with one row per (marker x non-reference level):
+#'   Marker, Level, Estimate_Interaction, Std_Error, T_Value, P_Value,
+#'   N_Observations, Is_Singular. NULL on failure.
+run_splitgroup_lmm <- function(data_long, features, patient_subgroup,
+                               ref_level = NULL) {
+  if (!requireNamespace("lmerTest", quietly = TRUE)) {
+    warning("[Split-Group LMM] lmerTest not installed; skipping.")
+    return(NULL)
+  }
+  if (length(features) == 0 || length(patient_subgroup) == 0) return(NULL)
+
+  d <- data_long
+  d$GroupSplit <- unname(patient_subgroup[as.character(d$Patient_ID)])
+  d <- d[!is.na(d$GroupSplit), , drop = FALSE]
+  if (nrow(d) == 0) return(NULL)
+
+  levels_obs <- unique(d$GroupSplit)
+  if (is.null(ref_level) || !(ref_level %in% levels_obs)) {
+    ref_level <- levels_obs[1]
+  }
+  d$GroupSplit <- factor(d$GroupSplit,
+                         levels = c(ref_level, setdiff(levels_obs, ref_level)))
+
+  rows <- list()
+  for (mk in features) {
+    sub <- d[, c("Patient_ID", "Timepoint", "GroupSplit", mk), drop = FALSE]
+    names(sub) <- c("ID", "Time", "Group", "Value")
+    sub <- sub[complete.cases(sub), ]
+    if (nrow(sub) < 10) next
+
+    val_sd <- sd(sub$Value, na.rm = TRUE)
+    if (is.na(val_sd) || val_sd == 0) val_sd <- 1
+    sub$Value <- sub$Value / val_sd
+    sub$Time  <- factor(sub$Time, levels = sort(unique(as.character(sub$Time))))
+
+    fit <- tryCatch(
+      suppressMessages(suppressWarnings(
+        lmerTest::lmer(Value ~ Time * Group + (1 | ID), data = sub,
+                       REML = TRUE,
+                       control = lme4::lmerControl(calc.derivs = FALSE))
+      )),
+      error = function(e) NULL
+    )
+    if (is.null(fit)) next
+
+    co <- summary(fit)$coefficients
+    is_sing <- isTRUE(lme4::isSingular(fit))
+    int_rows <- grep("^Time.*:Group", rownames(co), value = TRUE)
+    for (rn in int_rows) {
+      lvl <- sub("^Time.*:Group", "", rn)
+      r <- co[rn, , drop = FALSE]
+      rows[[length(rows) + 1]] <- data.frame(
+        Marker               = mk,
+        Level                = lvl,
+        Reference            = ref_level,
+        Estimate_Interaction = round(unname(r[1, "Estimate"]) * val_sd, 4),
+        Std_Error            = round(unname(r[1, "Std. Error"]) * val_sd, 4),
+        T_Value              = round(unname(r[1, "t value"]), 4),
+        P_Value              = round(unname(r[1, "Pr(>|t|)"]), 6),
+        N_Observations       = nrow(sub),
+        Is_Singular          = is_sing,
+        stringsAsFactors     = FALSE
+      )
+    }
+  }
+  if (length(rows) == 0) return(NULL)
+  do.call(rbind, rows)
+}
+
+
+#' @title Paired-Only Delta Sensitivity Analysis
+#' @description
+#' Sensitivity check for FDR-significant LMM interaction findings. Restricts
+#' the cohort to patients with BOTH T0 and T1 measurements for the marker and
+#' fits a plain OLS on the within-patient delta:
+#'   lm(delta ~ Group), where delta_i = value_i(T1) - value_i(T0)
+#'
+#' This sidesteps the random-intercept variance estimation that drives LMM
+#' singular fits when many patients contribute only one timepoint. Under
+#' balanced paired data the OLS-on-delta slope equals the LMM Time x Group
+#' interaction term, so agreement between the two estimators is the relevant
+#' robustness signal — divergence flags an identification problem in the LMM.
+#'
+#' Effect sizes are returned in the native (un-scaled) hybrid scale of the
+#' marker, matching the LMM Estimate_Interaction column.
+#'
+#' @param data_long Dataframe in long format with at least Patient_ID,
+#'   Timepoint (with levels including "T0" and "T1"), Group, and the feature
+#'   columns.
+#' @param features Character vector of marker names to test.
+#' @param group_col,time_col,id_col Column names in data_long.
+#' @return Data.frame with one row per marker: Marker, Estimate_Delta,
+#'   Std_Error, T_Value, P_Value, FDR, N_Pairs, plus the two timepoint
+#'   contributions used (n_only_T0, n_only_T1) for transparency.
+run_paired_only_sensitivity <- function(data_long, features,
+                                        group_col = "Group",
+                                        time_col  = "Timepoint",
+                                        id_col    = "Patient_ID") {
+  if (length(features) == 0) return(NULL)
+
+  pid_vec  <- as.character(data_long[[id_col]])
+  time_vec <- as.character(data_long[[time_col]])
+
+  tp_per_pid <- split(time_vec, pid_vec)
+  has_t0 <- vapply(tp_per_pid, function(v) "T0" %in% v, logical(1))
+  has_t1 <- vapply(tp_per_pid, function(v) "T1" %in% v, logical(1))
+  paired_pids <- names(tp_per_pid)[has_t0 & has_t1]
+
+  n_only_t0 <- sum(has_t0 & !has_t1)
+  n_only_t1 <- sum(has_t1 & !has_t0)
+
+  if (length(paired_pids) < 5) {
+    warning(sprintf("[Paired Sensitivity] Only %d paired patient(s); skipping.",
+                    length(paired_pids)))
+    return(NULL)
+  }
+
+  d_paired <- data_long[pid_vec %in% paired_pids, , drop = FALSE]
+
+  rows <- lapply(features, function(mk) {
+    sub <- d_paired[, c(id_col, time_col, group_col, mk), drop = FALSE]
+    names(sub) <- c("ID", "Time", "Group", "Value")
+    sub <- sub[complete.cases(sub), ]
+    if (nrow(sub) < 2) {
+      return(data.frame(Marker = mk, Estimate_Delta = NA_real_, Std_Error = NA_real_,
+                        T_Value = NA_real_, P_Value = NA_real_, N_Pairs = 0L,
+                        stringsAsFactors = FALSE))
+    }
+    # Pivot to wide. tapply over a factor ID column returns all factor levels
+    # (NA for those without rows in this stratum), which would over-report
+    # pairing — drop NAs before intersecting.
+    sub$ID <- as.character(sub$ID)
+    val_t0 <- tapply(sub$Value[sub$Time == "T0"], sub$ID[sub$Time == "T0"], mean)
+    val_t1 <- tapply(sub$Value[sub$Time == "T1"], sub$ID[sub$Time == "T1"], mean)
+    val_t0 <- val_t0[!is.na(val_t0)]
+    val_t1 <- val_t1[!is.na(val_t1)]
+    grp    <- tapply(as.character(sub$Group), sub$ID, function(g) g[1])
+    ids    <- intersect(names(val_t0), names(val_t1))
+    if (length(ids) < 5) {
+      return(data.frame(Marker = mk, Estimate_Delta = NA_real_, Std_Error = NA_real_,
+                        T_Value = NA_real_, P_Value = NA_real_,
+                        N_Pairs = length(ids), stringsAsFactors = FALSE))
+    }
+    delta <- val_t1[ids] - val_t0[ids]
+    # Preserve the level ordering of the input Group factor (which has the
+    # non-responder label set as the reference in Step 04). With reference =
+    # non-responder, the slope here matches the sign convention of the LMM
+    # Time:Group interaction term — i.e. negative slope = responders contract
+    # more than non-responders.
+    if (is.factor(data_long[[group_col]])) {
+      g <- factor(grp[ids], levels = levels(data_long[[group_col]]))
+    } else {
+      g <- factor(grp[ids])
+    }
+    fit <- tryCatch(lm(delta ~ g), error = function(e) NULL)
+    if (is.null(fit) || nrow(summary(fit)$coefficients) < 2) {
+      return(data.frame(Marker = mk, Estimate_Delta = NA_real_, Std_Error = NA_real_,
+                        T_Value = NA_real_, P_Value = NA_real_,
+                        N_Pairs = length(ids), stringsAsFactors = FALSE))
+    }
+    co <- summary(fit)$coefficients[2, , drop = FALSE]
+    data.frame(
+      Marker         = mk,
+      Estimate_Delta = round(co[1, "Estimate"], 4),
+      Std_Error      = round(co[1, "Std. Error"], 4),
+      T_Value        = round(co[1, "t value"], 4),
+      P_Value        = round(co[1, "Pr(>|t|)"], 6),
+      N_Pairs        = length(ids),
+      stringsAsFactors = FALSE
+    )
+  })
+  out <- do.call(rbind, rows)
+  out$FDR <- p.adjust(out$P_Value, method = "BH")
+  attr(out, "n_paired_total") <- length(paired_pids)
+  attr(out, "n_only_T0")      <- as.integer(n_only_t0)
+  attr(out, "n_only_T1")      <- as.integer(n_only_t1)
+  out
+}
+
+
 #' @title Cluster Bootstrap CI for LMM Interaction Betas
 #' @description
 #' Patient-level cluster bootstrap (resample patient IDs with replacement,

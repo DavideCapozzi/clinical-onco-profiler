@@ -43,11 +43,19 @@ if (ref_level %in% avail_levels) {
 
 n_t0 <- sum(df_model$Timepoint == "T0")
 n_t1 <- sum(df_model$Timepoint == "T1")
+
+tp_per_pid <- split(as.character(df_model$Timepoint), as.character(df_model$Patient_ID))
+n_paired    <- sum(vapply(tp_per_pid, function(v) ("T0" %in% v) && ("T1" %in% v), logical(1)))
+n_only_t0   <- sum(vapply(tp_per_pid, function(v) ("T0" %in% v) && !("T1" %in% v), logical(1)))
+n_only_t1   <- sum(vapply(tp_per_pid, function(v) !("T0" %in% v) && ("T1" %in% v), logical(1)))
+
 message(sprintf("   [Data] Longitudinal dimensions established: %d matrix observations (T0: %d, T1: %d)",
                 nrow(df_model), n_t0, n_t1))
+message(sprintf("   [Data] Patient pairing: %d paired (T0+T1) | %d T0-only | %d T1-only",
+                n_paired, n_only_t0, n_only_t1))
 if (n_t0 != n_t1) {
   message(sprintf(
-    "   [Data] Note: %d patient(s) have only one timepoint. LMM is valid under MAR (Missing At Random); verify that dropout is not response-correlated.",
+    "   [Data] Note: %d patient(s) have only one timepoint. LMM is valid under MAR (Missing At Random); verify that dropout is not response-correlated. A paired-only delta sensitivity is reported below for FDR-significant markers.",
     abs(n_t0 - n_t1)
   ))
 }
@@ -111,18 +119,64 @@ df_results$Max_P_Value_LOO <- NA
 if (n_sig_fdr > 0) {
   message("   [Stats] Executing Leave-One-Out (LOO) Sensitivity protocol on topological drivers...")
   sig_markers <- df_results$Marker[which(df_results$FDR_Interaction < 0.05)]
-  
+
   for (mk in sig_markers) {
-    max_p <- run_loo_sensitivity(data_long = df_model, feature = mk, group_col = "Group", 
-                                 time_col = "Timepoint", id_col = "Patient_ID", 
+    max_p <- run_loo_sensitivity(data_long = df_model, feature = mk, group_col = "Group",
+                                 time_col = "Timepoint", id_col = "Patient_ID",
                                  covariates = covariates_list)
-    
+
     df_results$Max_P_Value_LOO[df_results$Marker == mk] <- max_p
-    
+
     if (!is.na(max_p) && max_p < 0.05) {
       message(sprintf("      -> %s: Structurally Robust (Max P-Value = %.4f)", mk, max_p))
     } else {
       warning(sprintf("      -> %s: OUTLIER BIAS DETECTED (Max P-Value spikes to %.4f upon LOO)", mk, max_p))
+    }
+  }
+
+  # Flag LMM singular fits among the FDR-significant set so reviewers can see
+  # them at a glance. Singular RE => random-intercept variance estimated as 0
+  # (LMM degenerates to OLS-with-clustering). Fixed-effect inference remains
+  # valid but the paired-only sensitivity below is the relevant cross-check.
+  sing_mask <- df_results$Marker %in% sig_markers & isTRUE(df_results$Is_Singular)
+  sing_markers <- df_results$Marker[df_results$Marker %in% sig_markers &
+                                    !is.na(df_results$Is_Singular) &
+                                    df_results$Is_Singular]
+  if (length(sing_markers) > 0) {
+    message(sprintf(
+      "   [Stats] LMM singular random-effect fit on %d/%d FDR-significant marker(s): %s",
+      length(sing_markers), length(sig_markers), paste(sing_markers, collapse = ", ")
+    ))
+  }
+}
+
+# 4b. Paired-Only Delta Sensitivity (FDR-significant subset only)
+# OLS on within-patient delta on the subset of patients with both T0 and T1.
+# Sidesteps random-intercept identification; under balanced pairing the slope
+# equals the LMM Time x Group interaction term.
+# ------------------------------------------------------------------------------
+paired_results <- NULL
+if (n_sig_fdr > 0) {
+  sig_markers <- df_results$Marker[which(df_results$FDR_Interaction < 0.05)]
+  message(sprintf(
+    "\n[Stats] Paired-only delta sensitivity (n_paired=%d) on %d FDR-significant marker(s)...",
+    n_paired, length(sig_markers)
+  ))
+  paired_results <- tryCatch(
+    run_paired_only_sensitivity(
+      data_long = df_model, features = sig_markers,
+      group_col = "Group", time_col = "Timepoint", id_col = "Patient_ID"
+    ),
+    error = function(e) {
+      warning(sprintf("[Stats] Paired-only sensitivity failed: %s", e$message))
+      NULL
+    }
+  )
+  if (!is.null(paired_results) && nrow(paired_results) > 0) {
+    for (i in seq_len(nrow(paired_results))) {
+      r <- paired_results[i, ]
+      message(sprintf("      -> %s: delta=%.3f (SE=%.3f, p=%.4f, FDR=%.4f, n_pairs=%d)",
+                      r$Marker, r$Estimate_Delta, r$Std_Error, r$P_Value, r$FDR, r$N_Pairs))
     }
   }
 }
@@ -176,6 +230,76 @@ if (!is.null(sensitivity_covariates) && length(sensitivity_covariates) > 0) {
   }
 }
 
+# 5b. Split-Group Supplementary LMM (optional, config-driven)
+# When the non-responder label collapses several raw clinical codes (e.g.
+# SD_PD = {SD=3, PD=4}), this block re-fits the LMM with the non-responder
+# side split into its sub-levels, so reviewers can see whether the primary
+# interaction is graded across response severity or driven by one sub-group.
+# Gated by clinical.split_nonresponder: true in config.
+# ------------------------------------------------------------------------------
+split_results <- NULL
+split_cfg <- isTRUE(config$clinical$split_nonresponder)
+if (split_cfg && n_sig_fdr > 0) {
+  raw_codes <- config$clinical$mapping[[config$clinical$non_responder_label]]
+  resp_codes <- config$clinical$mapping[[config$clinical$responder_label]]
+  tgt_col   <- config$clinical$target_column
+  raw_path  <- if (!is.null(config$input_file_t0)) config$input_file_t0 else config$input_file
+  sig_markers_split <- df_results$Marker[!is.na(df_results$FDR_Interaction) &
+                                          df_results$FDR_Interaction < 0.05]
+
+  if (length(raw_codes) >= 2 && file.exists(raw_path)) {
+    tryCatch({
+      df_raw_t0 <- readxl::read_excel(raw_path)
+      if (!(tgt_col %in% colnames(df_raw_t0))) {
+        warning(sprintf("[Stats] Split-group LMM: column '%s' missing in %s — skipping.",
+                        tgt_col, basename(raw_path)))
+      } else {
+        pid_vec  <- as.character(df_raw_t0$Patient_ID)
+        code_vec <- as.integer(df_raw_t0[[tgt_col]])
+        # Map every raw code to a label string (sub-level)
+        lab_vec <- as.character(code_vec)
+        # Patients outside responder/non-responder universe are excluded
+        keep <- code_vec %in% c(raw_codes, resp_codes)
+        pid_vec <- pid_vec[keep]
+        lab_vec <- lab_vec[keep]
+        patient_subgroup <- setNames(lab_vec, pid_vec)
+        # Reference: clinically "most adverse" sub-code. For outcome scales
+        # where higher integer = worse (e.g. RECIST 1=RC, 2=RP, 3=SD, 4=PD),
+        # max == PD. The user can override this via config$clinical$split_reference_code.
+        ref_lvl <- if (!is.null(config$clinical$split_reference_code)) {
+          as.character(config$clinical$split_reference_code)
+        } else {
+          as.character(max(as.integer(raw_codes)))
+        }
+
+        message(sprintf(
+          "\n[Stats] Split-group supplementary LMM (reference code=%s) on %d FDR-significant marker(s)...",
+          ref_lvl, length(sig_markers_split)
+        ))
+        split_results <- run_splitgroup_lmm(
+          data_long       = df_model,
+          features        = sig_markers_split,
+          patient_subgroup = patient_subgroup,
+          ref_level       = ref_lvl
+        )
+        if (!is.null(split_results) && nrow(split_results) > 0) {
+          for (i in seq_len(nrow(split_results))) {
+            r <- split_results[i, ]
+            message(sprintf("      -> %s [Group %s vs %s]: beta=%+.3f (SE=%.3f, p=%.4f, n=%d%s)",
+                            r$Marker, r$Level, r$Reference, r$Estimate_Interaction,
+                            r$Std_Error, r$P_Value, r$N_Observations,
+                            if (r$Is_Singular) ", singular" else ""))
+          }
+        }
+      }
+    }, error = function(e) {
+      warning(sprintf("[Stats] Split-group LMM failed: %s", e$message))
+    })
+  } else if (length(raw_codes) < 2) {
+    message("[Stats] split_nonresponder: true but non-responder maps to a single code — nothing to split.")
+  }
+}
+
 # 6. Bootstrap CI on FDR-significant Interaction Betas (optional, config-driven)
 # Patient-level cluster bootstrap that re-runs the LMM panel + BH-FDR on each
 # resample. Reports bootstrap 95% CI and the fraction of resamples in which
@@ -226,14 +350,42 @@ if (!is.null(boot_cfg) && isTRUE(boot_cfg$enabled) && n_sig_fdr > 0) {
 # 7. Output Serialization
 # ------------------------------------------------------------------------------
 json_path <- file.path(out_dir, sprintf("Machine_Metrics_LMM_%s.json", config$project_name))
+sig_singular_markers <- if (n_sig_fdr > 0) {
+  df_results$Marker[!is.na(df_results$FDR_Interaction) &
+                    df_results$FDR_Interaction < 0.05 &
+                    !is.na(df_results$Is_Singular) &
+                    df_results$Is_Singular]
+} else character(0)
+
 machine_output <- list(
   project_name = config$project_name,
   clinical_target = config$clinical$target_column,
   model_type = "LMM_Interaction",
   n_observations = nrow(df_model),
   n_patients = length(unique(df_model$Patient_ID)),
+  n_paired = n_paired,
+  n_only_T0 = n_only_t0,
+  n_only_T1 = n_only_t1,
   significant_features_fdr = n_sig_fdr,
+  primary_markers_singular = sig_singular_markers,
   full_results = df_results,
+  split_group_lmm = if (!is.null(split_results) && nrow(split_results) > 0) {
+    list(
+      method  = "LMM Time x Group with non-responder split into raw clinical sub-levels",
+      results = split_results,
+      note    = "Use to inspect whether the primary interaction is graded vs reference (most adverse code) or driven by one sub-group; n smaller than the dichotomized model."
+    )
+  } else NULL,
+  paired_sensitivity = if (!is.null(paired_results) && nrow(paired_results) > 0) {
+    list(
+      method         = "OLS on within-patient delta (T1 - T0), paired-only subset",
+      n_paired_total = n_paired,
+      n_only_T0      = n_only_t0,
+      n_only_T1      = n_only_t1,
+      results        = paired_results,
+      note           = "Under balanced pairing OLS slope == LMM Time:Group interaction term. Sign + p-value agreement with the LMM table is the relevant robustness signal."
+    )
+  } else NULL,
   covariate_sensitivity = if (!is.null(sensitivity_results)) sensitivity_results else NULL,
   bootstrap_ci = if (!is.null(bootstrap_results)) {
     list(
@@ -270,6 +422,16 @@ if (length(p_col_idx) > 0) {
 if (!is.null(sensitivity_results) && nrow(sensitivity_results) > 0) {
   openxlsx::addWorksheet(wb, "LMM_Covariate_Sensitivity")
   openxlsx::writeData(wb, "LMM_Covariate_Sensitivity", sensitivity_results)
+}
+
+if (!is.null(paired_results) && nrow(paired_results) > 0) {
+  openxlsx::addWorksheet(wb, "LMM_Paired_Delta_Sensitivity")
+  openxlsx::writeData(wb, "LMM_Paired_Delta_Sensitivity", paired_results)
+}
+
+if (!is.null(split_results) && nrow(split_results) > 0) {
+  openxlsx::addWorksheet(wb, "LMM_Split_Group_Supplementary")
+  openxlsx::writeData(wb, "LMM_Split_Group_Supplementary", split_results)
 }
 
 if (!is.null(bootstrap_results) && nrow(bootstrap_results$summary_df) > 0) {

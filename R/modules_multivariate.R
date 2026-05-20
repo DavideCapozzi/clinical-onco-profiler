@@ -131,6 +131,104 @@ extract_plsda_performance <- function(pls_result) {
   return(df_perf)
 }
 
+#' @title Permutation Test on sPLS-DA Balanced Error Rate
+#' @description
+#' Empirical null for the per-component BER under a shuffled outcome. Refits
+#' the sPLS-DA at the same keepX as the observed model (does NOT re-tune —
+#' keepX tuning under shuffled labels is dominated by noise and doubles the
+#' compute budget without changing the inference) and measures the per-fold
+#' BER on each shuffle. The observed BER (computed at full CV repeats) is
+#' compared against the permuted distribution; we report a one-sided p-value
+#' (lower BER = better than null).
+#'
+#' @param data_z Z-scored data matrix (samples x features), same as the one
+#'   passed to run_splsda_model().
+#' @param metadata Metadata data.frame aligned with data_z rows.
+#' @param keepX Integer vector of per-component sparsity (typically
+#'   pls_result$model$keepX), used in every permutation refit.
+#' @param observed_ber Numeric vector of observed BER per component (from
+#'   extract_plsda_performance(pls_result)$Overall_BER). Length == length(keepX).
+#' @param group_col Metadata column with the outcome (default "Group").
+#' @param validation_method "Mfold" or "loo".
+#' @param folds Folds per CV pass under permutation (default 5).
+#' @param n_repeat CV repeats per permutation (default 1 — single-pass is
+#'   sufficient because we average across permutations).
+#' @param n_perm Permutations (default 200).
+#' @param seed RNG seed (default 2026).
+#' @return Data.frame with one row per component: Component, Observed_BER,
+#'   Perm_Mean, Perm_SD, Perm_P_Value, N_Valid_Perm. Plus attribute "n_perm".
+run_splsda_permutation <- function(data_z, metadata, keepX, observed_ber,
+                                   group_col       = "Group",
+                                   validation_method = "Mfold",
+                                   folds           = 5,
+                                   n_repeat        = 1,
+                                   n_perm          = 200,
+                                   seed            = 2026) {
+  requireNamespace("mixOmics", quietly = TRUE)
+
+  Y_obs <- as.factor(metadata[[group_col]])
+  X     <- as.matrix(data_z)
+  n_comp <- length(keepX)
+  if (length(observed_ber) != n_comp) {
+    stop("[Permutation] observed_ber length must match length(keepX).")
+  }
+
+  # Folds may already have been auto-shrunk in run_splsda_model when the
+  # smallest class is small; apply the same clamp here for consistency.
+  min_class_n <- min(table(Y_obs))
+  if (validation_method == "Mfold" && min_class_n < folds) folds <- min_class_n
+  if (validation_method == "Mfold" && folds < 3) {
+    warning("[Permutation] Smallest class < 3 samples; permutation test skipped.")
+    return(NULL)
+  }
+
+  perm_ber <- matrix(NA_real_, nrow = n_perm, ncol = n_comp)
+  set.seed(seed)
+  for (b in seq_len(n_perm)) {
+    Y_shuf <- sample(Y_obs)
+    fit <- tryCatch(
+      mixOmics::splsda(X, Y_shuf, ncomp = n_comp, keepX = keepX),
+      error = function(e) NULL
+    )
+    if (is.null(fit)) next
+    pr <- tryCatch(
+      mixOmics::perf(fit, validation = validation_method, folds = folds,
+                     progressBar = FALSE, nrepeat = n_repeat, auc = FALSE),
+      error = function(e) NULL
+    )
+    if (is.null(pr) || is.null(pr$error.rate$BER)) next
+    ber_row <- pr$error.rate$BER
+    if (is.matrix(ber_row)) {
+      v <- as.numeric(ber_row[, "max.dist"])
+    } else {
+      v <- rep(NA_real_, n_comp)
+      v[1] <- as.numeric(ber_row["max.dist"])
+    }
+    if (length(v) >= n_comp) perm_ber[b, ] <- v[seq_len(n_comp)]
+  }
+
+  res <- data.frame(
+    Component   = seq_len(n_comp),
+    Observed_BER = round(observed_ber, 4),
+    stringsAsFactors = FALSE
+  )
+  res$Perm_Mean <- round(colMeans(perm_ber, na.rm = TRUE), 4)
+  res$Perm_SD   <- round(apply(perm_ber, 2, sd, na.rm = TRUE), 4)
+  res$N_Valid_Perm <- as.integer(colSums(!is.na(perm_ber)))
+
+  # One-sided permutation p-value: fraction of permuted BERs <= observed,
+  # with the standard (k+1)/(N+1) small-sample adjustment (Phipson & Smyth).
+  res$Perm_P_Value <- vapply(seq_len(n_comp), function(j) {
+    v <- perm_ber[, j]; v <- v[!is.na(v)]
+    if (length(v) == 0) return(NA_real_)
+    round((sum(v <= observed_ber[j]) + 1) / (length(v) + 1), 4)
+  }, numeric(1))
+
+  attr(res, "n_perm") <- as.integer(n_perm)
+  res
+}
+
+
 #' @title Extract Discriminant Features (Sparse Loadings)
 #' @description 
 #' Extracts loading weights from the sPLS-DA model. 
