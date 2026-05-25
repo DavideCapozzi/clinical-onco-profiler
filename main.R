@@ -74,9 +74,18 @@ for (exp_name in names(experiments_list)) {
     
     # Overwrite clinical logic if defined specifically in the experiment block
     if (!is.null(exp_cfg$clinical)) config$clinical <- exp_cfg$clinical
-    
+
+    # Per-experiment feature panel override (e.g. HNSCC has a different marker set)
+    if (!is.null(exp_cfg$features)) {
+      config$features <- exp_cfg$features
+      if (length(unlist(config$features$facs)) == 0)
+        stop(sprintf("[CONFIG] Experiment '%s': features.facs is empty", exp_name))
+      if (length(unlist(config$features$soluble)) == 0)
+        stop(sprintf("[CONFIG] Experiment '%s': features.soluble is empty", exp_name))
+    }
+
     config$is_longitudinal <- FALSE
-    
+
     if (!is.null(exp_cfg$input_file)) config$input_file <- exp_cfg$input_file
     
     config$output_root <- file.path(base_config$output_root, config$project_name)
@@ -123,9 +132,12 @@ for (exp_name in names(experiments_list)) {
     config$run_mode <- "longitudinal"   
     
     if (!is.null(exp_cfg$clinical)) config$clinical <- exp_cfg$clinical
-    
+
+    # Forward-compat: allow longitudinal experiments with custom feature panels
+    if (!is.null(exp_cfg$features)) config$features <- exp_cfg$features
+
     config$is_longitudinal <- TRUE
-    
+
     # Critical Structural Rule: Disable Multivariate Outliers to prevent temporal censoring
     config$qc$remove_outliers <- FALSE
     
@@ -168,6 +180,17 @@ for (exp_name in names(experiments_list)) {
     config$run_mode     <- "machine_learning"
 
     if (!is.null(exp_cfg$clinical)) config$clinical <- exp_cfg$clinical
+
+    # Per-experiment overrides needed for multi-dataset support
+    if (!is.null(exp_cfg$features))      config$features      <- exp_cfg$features
+    if (!is.null(exp_cfg$input_file))    config$input_file    <- exp_cfg$input_file
+    if (!is.null(exp_cfg$input_file_t0)) config$input_file_t0 <- exp_cfg$input_file_t0
+    if (!is.null(exp_cfg$machine_learning)) {
+      config$machine_learning <- modifyList(
+        if (!is.null(config$machine_learning)) config$machine_learning else list(),
+        exp_cfg$machine_learning
+      )
+    }
 
     config$output_root <- file.path(base_config$output_root, config$project_name)
     if (!dir.exists(config$output_root)) dir.create(config$output_root, recursive = TRUE)

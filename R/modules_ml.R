@@ -1935,3 +1935,279 @@ plot_combined_information_gain <- function(combined_result, title = NULL) {
   }
   out
 }
+
+# ==============================================================================
+# UNIVARIATE GATE PATH — Cross-sectional feature selection (no T1 required)
+# ==============================================================================
+
+#' Select Univariate Feature Gate (within a single LOO fold)
+#'
+#' Applies Wilcoxon rank-sum test per marker on the training fold and returns
+#' markers surviving BH-FDR correction. Falls back to top-k by raw p-value if
+#' fewer than 2 markers pass. Used exclusively when gate_method = "univariate".
+#'
+#' The FDR threshold is intentionally relaxed (default 0.20) because selection
+#' operates on n-1 patients with limited power. The outer LOO permutation test
+#' is the primary inferential layer.
+#'
+#' @param X_train Numeric matrix. Training fold (n-1 rows x p cols).
+#' @param y_train Factor. Training fold binary outcome.
+#' @param positive_label String. Positive class label.
+#' @param fdr_threshold Numeric. BH-FDR threshold (default 0.20).
+#' @param fallback_k Integer. Top-k markers used if fewer than 2 pass FDR (default 3).
+#' @return Named list: markers (character vector), used_fallback (logical),
+#'   pvalues (named numeric vector of raw Wilcoxon p-values for all markers).
+select_univariate_gate <- function(X_train, y_train, positive_label,
+                                   fdr_threshold = 0.20,
+                                   fallback_k    = 3L) {
+  markers <- colnames(X_train)
+  y_bin   <- as.integer(y_train == positive_label)
+  stopifnot(length(markers) >= 1L, sum(y_bin) >= 2L, sum(1L - y_bin) >= 2L)
+
+  pvals <- vapply(markers, function(m) {
+    x <- as.numeric(X_train[, m])
+    v <- var(x, na.rm = TRUE)
+    if (!is.finite(v) || v == 0) return(1.0)
+    tryCatch(
+      wilcox.test(x[y_bin == 1L], x[y_bin == 0L], exact = FALSE)$p.value,
+      error = function(e) 1.0
+    )
+  }, numeric(1L))
+
+  fdr_vals      <- p.adjust(pvals, method = "BH")
+  gate          <- markers[!is.na(fdr_vals) & fdr_vals < fdr_threshold]
+  used_fallback <- length(gate) < 2L
+
+  if (used_fallback) {
+    k    <- min(as.integer(fallback_k), length(markers))
+    gate <- markers[order(pvals)[seq_len(k)]]
+  }
+
+  list(markers = gate, used_fallback = used_fallback, pvalues = pvals)
+}
+
+
+#' Run Fully-Nested LOOCV with Univariate Gate
+#'
+#' Outer loop: Leave-One-Out (n folds). Inside each fold:
+#'   1. Optional per-fold collinearity filter on X_train (skipped when cor_threshold >= 1).
+#'   2. Wilcoxon + BH gate on (filtered) X_train vs y_train.
+#'   3. Elastic Net (inner k-fold CV for alpha/lambda) on gate features.
+#'   4. SVM-RBF (inner k-fold CV for C/gamma) on gate features.
+#'   5. Predict on held-out patient with both models.
+#'
+#' X_all should be globally collinearity-filtered before calling this function.
+#' Pass cor_threshold = 1.0 (default) to skip the per-fold filter.
+#'
+#' Gate stability is computed post-loop: percentage of folds each marker is selected.
+#'
+#' @param X_all Numeric matrix. Full feature matrix (n x p), pre-collinearity-filtered.
+#' @param y Factor. Binary outcome (two levels; positive class = second level by convention).
+#' @param positive_label String. Positive class label.
+#' @param fdr_threshold Numeric. BH-FDR gate threshold (default 0.20).
+#' @param fallback_k Integer. Fallback gate size if fewer than 2 pass FDR (default 3).
+#' @param cor_threshold Numeric. Per-fold collinearity threshold (default 1.0, i.e. skip).
+#' @param alpha_grid Numeric vector. Elastic Net alpha values for inner CV.
+#' @param n_lambda Integer. Lambda path length for glmnet.
+#' @param inner_folds Integer. k for inner CV (Elastic Net and SVM).
+#' @param C_grid Numeric vector. SVM cost values.
+#' @param gamma_grid Numeric vector. SVM gamma values.
+#' @param seed Integer. Random seed for reproducibility.
+#' @return Named list:
+#'   glmnet_probs, svm_probs — out-of-fold predicted probabilities (length n);
+#'   y_true — factor of true labels;
+#'   positive_label — character;
+#'   coef_matrix — NULL (gate varies per fold; cross-fold comparison not meaningful);
+#'   gate_log — list of length n, each entry: (markers, used_fallback, pvalues);
+#'   n_folds_fallback — count of folds that used the top-k fallback;
+#'   gate_stability — data.frame (Marker, Pct_Folds_Selected, Median_Raw_P).
+run_nested_loocv_univariate_gate <- function(X_all,
+                                              y,
+                                              positive_label,
+                                              fdr_threshold = 0.20,
+                                              fallback_k    = 3L,
+                                              cor_threshold = 1.0,
+                                              alpha_grid    = c(0, 0.5, 1),
+                                              n_lambda      = 100L,
+                                              inner_folds   = 5L,
+                                              C_grid        = c(0.01, 0.1, 1, 10, 100),
+                                              gamma_grid    = c(0.01, 0.1, 1, 10),
+                                              seed          = 2026L) {
+
+  if (!requireNamespace("glmnet", quietly = TRUE))
+    stop("[ML] Package 'glmnet' required for run_nested_loocv_univariate_gate().")
+  if (!requireNamespace("e1071", quietly = TRUE))
+    stop("[ML] Package 'e1071' required for run_nested_loocv_univariate_gate().")
+
+  n           <- nrow(X_all)
+  pos_label   <- positive_label
+  y_bin_full  <- as.integer(y == pos_label)
+  all_markers <- colnames(X_all)
+
+  glmnet_probs <- numeric(n)
+  svm_probs    <- numeric(n)
+  gate_log     <- vector("list", n)
+
+  message(sprintf(
+    "   [Univariate Gate] Outer LOO: %d folds | FDR<%.2f | fallback_k=%d | inner_folds=%d",
+    n, fdr_threshold, as.integer(fallback_k), as.integer(inner_folds)
+  ))
+
+  for (i in seq_len(n)) {
+
+    X_train_full <- X_all[-i, , drop = FALSE]
+    y_train_fac  <- y[-i]
+    y_train_bin  <- y_bin_full[-i]
+    X_test_full  <- X_all[i, , drop = FALSE]
+
+    # Step 1 — Per-fold collinearity filter (only when explicitly requested)
+    if (cor_threshold < 1.0 && ncol(X_train_full) >= 2L) {
+      filt      <- filter_collinear_features(X_train_full, cor_threshold)
+      X_tr_filt <- filt$X
+    } else {
+      X_tr_filt <- X_train_full
+    }
+
+    # Step 2 — Wilcoxon + BH gate on training fold
+    gate_i    <- select_univariate_gate(
+      X_train        = X_tr_filt,
+      y_train        = y_train_fac,
+      positive_label = pos_label,
+      fdr_threshold  = fdr_threshold,
+      fallback_k     = fallback_k
+    )
+    gate_log[[i]] <- gate_i
+
+    gate_cols <- gate_i$markers
+    if (length(gate_cols) == 0L) {
+      glmnet_probs[i] <- 0.5
+      svm_probs[i]    <- 0.5
+      next
+    }
+
+    X_tr_gate <- X_tr_filt[, gate_cols, drop = FALSE]
+    X_te_gate <- X_test_full[, gate_cols, drop = FALSE]
+
+    n_min_class  <- min(sum(y_train_bin == 0L), sum(y_train_bin == 1L))
+    safe_folds_k <- max(2L, min(as.integer(inner_folds), n_min_class))
+
+    # Step 3 — Elastic Net: inner k-fold CV over alpha_grid x lambda path
+    best_alpha     <- alpha_grid[1L]
+    best_lambda    <- NULL
+    best_inner_auc <- -Inf
+
+    for (a in alpha_grid) {
+      set.seed(seed + i)
+      cv_fit <- tryCatch(
+        glmnet::cv.glmnet(
+          x            = X_tr_gate,
+          y            = as.numeric(y_train_bin),
+          family       = "binomial",
+          alpha        = a,
+          nfolds       = safe_folds_k,
+          type.measure = "auc",
+          nlambda      = as.integer(n_lambda)
+        ),
+        error = function(e) NULL
+      )
+      if (!is.null(cv_fit)) {
+        inner_auc <- suppressWarnings(max(cv_fit$cvm, na.rm = TRUE))
+        if (is.finite(inner_auc) && inner_auc > best_inner_auc) {
+          best_inner_auc <- inner_auc
+          best_alpha     <- a
+          best_lambda    <- cv_fit$lambda.min
+        }
+      }
+    }
+
+    final_en <- tryCatch(
+      glmnet::glmnet(X_tr_gate, as.numeric(y_train_bin),
+                     family = "binomial",
+                     alpha  = best_alpha,
+                     lambda = best_lambda),
+      error = function(e) NULL
+    )
+
+    glmnet_probs[i] <- if (!is.null(final_en) && !is.null(best_lambda)) {
+      tryCatch(
+        as.numeric(predict(final_en, newx = X_te_gate,
+                           s = best_lambda, type = "response")),
+        error = function(e) 0.5
+      )
+    } else 0.5
+
+    # Step 4 — SVM-RBF: grid search over C_grid x gamma_grid
+    set.seed(seed + i)
+    tune_res <- tryCatch(
+      suppressWarnings(e1071::tune(
+        e1071::svm,
+        train.x     = X_tr_gate,
+        train.y     = y_train_fac,
+        kernel      = "radial",
+        ranges      = list(cost = C_grid, gamma = gamma_grid),
+        tunecontrol = e1071::tune.control(sampling = "cross",
+                                          cross    = safe_folds_k)
+      )),
+      error = function(e) NULL
+    )
+
+    svm_probs[i] <- if (!is.null(tune_res)) {
+      bp <- tune_res$best.parameters
+      set.seed(seed + i)
+      final_svm <- tryCatch(
+        e1071::svm(x = X_tr_gate, y = y_train_fac,
+                   kernel      = "radial",
+                   cost        = bp$cost,
+                   gamma       = bp$gamma,
+                   probability = TRUE),
+        error = function(e) NULL
+      )
+      if (!is.null(final_svm)) {
+        pred_obj <- tryCatch(
+          predict(final_svm, newdata = X_te_gate, probability = TRUE),
+          error = function(e) NULL
+        )
+        if (!is.null(pred_obj)) {
+          pm <- attr(pred_obj, "probabilities")
+          if (!is.null(pm) && pos_label %in% colnames(pm)) {
+            as.numeric(pm[1L, pos_label])
+          } else 0.5
+        } else 0.5
+      } else 0.5
+    } else 0.5
+  }
+
+  # Post-loop: gate stability aggregation
+  stability_pct <- vapply(all_markers, function(m) {
+    mean(vapply(gate_log, function(g) m %in% g$markers, logical(1L)))
+  }, numeric(1L))
+
+  median_pvals <- vapply(all_markers, function(m) {
+    pv <- vapply(gate_log, function(g) {
+      if (m %in% names(g$pvalues)) g$pvalues[[m]] else NA_real_
+    }, numeric(1L))
+    median(pv, na.rm = TRUE)
+  }, numeric(1L))
+
+  n_folds_fallback <- sum(vapply(gate_log, function(g) isTRUE(g$used_fallback), logical(1L)))
+
+  gate_stability_df <- data.frame(
+    Marker             = all_markers,
+    Pct_Folds_Selected = round(stability_pct * 100, 1),
+    Median_Raw_P       = round(median_pvals, 4),
+    stringsAsFactors   = FALSE
+  )
+  gate_stability_df <- gate_stability_df[order(-gate_stability_df$Pct_Folds_Selected), ]
+  rownames(gate_stability_df) <- NULL
+
+  list(
+    glmnet_probs     = glmnet_probs,
+    svm_probs        = svm_probs,
+    y_true           = y,
+    positive_label   = pos_label,
+    coef_matrix      = NULL,          # variable gate per fold — cross-fold comparison not meaningful
+    gate_log         = gate_log,
+    n_folds_fallback = n_folds_fallback,
+    gate_stability   = gate_stability_df
+  )
+}
