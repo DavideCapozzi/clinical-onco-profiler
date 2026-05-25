@@ -56,6 +56,65 @@ experiments:
         Tox_Yes: [1]
         Tox_No:  [0]
 
+  HNSCC_Response:
+    input_file:    "data/Dati_HNSCC_standardizzati_anonimi.xlsx"
+    input_file_t0: "data/Dati_HNSCC_standardizzati_anonimi.xlsx"
+    is_longitudinal: false
+    run_network: false       # network.feature_selection.always_include uses NSCLC-only markers
+    clinical:
+      target_column:       "Clinical_Response"
+      responder_label:     "R"
+      non_responder_label: "NR"
+      benchmark_column:    "CPS"
+      benchmark_label:     "CPS score"
+    machine_learning:
+      gate_method:              "univariate"
+      univariate_fdr_threshold: 0.20
+      univariate_fallback_k:    3
+      n_perm:                   999
+    features:
+      facs:
+        - "M_MDSC"
+        - "LOX1_PMN_MDSC"
+        - "T_reg"
+        - "Resting"
+        - "Active"
+        - "Non_suppressive"
+        - "TregCD137"
+        - "CM"
+        - "EFF"
+        - "EM"
+        - "NAIVE"
+        - "CD137tot"
+        - "CD137CD4"
+        - "CD137CD8"
+        - "CD137PD1"
+        - "CD137CM"
+        - "CD137EFF"
+        - "CD137EMRA"
+        - "CD137NAIVE"
+        - "PD1"
+        - "PD1CD4"
+        - "PD1CD8"
+        - "PD1CM"
+        - "PD1EFF"
+        - "PD1EMRA"
+        - "PD1NAIVE"
+      soluble:
+        - "sBTLA"
+        - "sCD137"
+        - "sCD152"
+        - "sCD27"
+        - "sCD28"
+        - "sCD80"
+        - "sGITR"
+        - "sHVEM"
+        - "sIDO"
+        - "sLAG_3"
+        - "sPD_1"
+        - "sPD_L2"
+        - "sTIM_3"
+
 # --- Data Dictionaries (Hybrid Logic) ---
 features:
   facs:
@@ -166,6 +225,9 @@ colors:
     # Comorbidity labels
     Comorb_Yes: "#B2182B"    # Red
     Comorb_No: "#2E8B57"     # Green
+    # HNSCC labels
+    R:  "#2E8B57"              # Green (responder)
+    NR: "#B2182B"              # Red (non-responder)
     # Legacy fallbacks
     Responder: "#2E8B57"
     Non_Responder: "#B2182B"
