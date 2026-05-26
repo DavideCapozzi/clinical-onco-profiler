@@ -2211,3 +2211,177 @@ run_nested_loocv_univariate_gate <- function(X_all,
     gate_stability   = gate_stability_df
   )
 }
+
+
+# ==============================================================================
+# Gate Signal Decomposition
+# ==============================================================================
+
+#' @title Gate Signal Decomposition (T0 / T1 / Delta)
+#' @description
+#' For LMM-gated longitudinal experiments, decomposes the discriminative signal
+#' of gate markers across three representations: T0 (baseline), T1 (post-
+#' treatment), and Delta (T1−T0). Reports univariate AUC, Cohen's d, and
+#' Wilcoxon p for each, plus a DeLong comparison (T0 vs Delta), and ranks the
+#' gate markers in a pure T0 Wilcoxon scan over all markers to quantify the
+#' feature-selection contribution of the LMM gate.
+#'
+#' Addresses reviewer critique RC1 (LMM feature selection leakage),
+#' RC2 (baseline-prognostic vs dynamic-predictive signal), and
+#' RC3 (whether LMM guidance adds over a naive T0 scan).
+#'
+#' @param DATA_T0      Named list. Step 01 standard processed data object (T0).
+#' @param DATA_LONG    Named list. Step 01 longitudinal processed data object.
+#' @param gate_markers Character vector. LMM-gated features (post-collinearity).
+#' @param resp_label   Character. Positive class label (e.g., "RP").
+#' @return Named list: marker_decomp (data.frame), delong_comparisons (data.frame),
+#'   gate_t0_scan_rank (data.frame), n_paired (integer), scenario (character),
+#'   note (character). NULL when paired n < 10 or data unavailable.
+#' @export
+run_gate_signal_decomposition <- function(DATA_T0, DATA_LONG,
+                                          gate_markers, resp_label) {
+
+  META_COLS <- c("Patient_ID", "Sample_ID", "Timepoint", "Group")
+
+  # ── Build paired T0/T1 frames ───────────────────────────────────────────────
+  z_long        <- as.data.frame(DATA_LONG$hybrid_data_z)
+  z_long$Patient_ID <- DATA_LONG$metadata$Patient_ID
+  z_long$Timepoint  <- DATA_LONG$metadata$Timepoint
+  z_long$Group      <- DATA_LONG$metadata$Group
+
+  z_t0 <- z_long[z_long$Timepoint == "T0", ]
+  z_t1 <- z_long[z_long$Timepoint == "T1", ]
+
+  paired_ids <- intersect(z_t0$Patient_ID, z_t1$Patient_ID)
+  n_paired   <- length(paired_ids)
+
+  if (n_paired < 10) {
+    message("[ML][GSD] Fewer than 10 paired patients — gate signal decomposition skipped.")
+    return(NULL)
+  }
+
+  z_t0p <- z_t0[z_t0$Patient_ID %in% paired_ids, ]
+  z_t0p <- z_t0p[order(z_t0p$Patient_ID), ]
+  z_t1p <- z_t1[z_t1$Patient_ID %in% paired_ids, ]
+  z_t1p <- z_t1p[order(z_t1p$Patient_ID), ]
+
+  avail <- intersect(gate_markers, colnames(z_t0p))
+  if (length(avail) == 0) return(NULL)
+
+  y_bin <- as.integer(z_t0p$Group == resp_label)
+
+  # ── Helper: Wilcoxon + AUC (DeLong CI) + Cohen's d ─────────────────────────
+  decomp_one <- function(x, y_b, tp_label) {
+    cc <- !is.na(x) & !is.na(y_b)
+    if (sum(cc) < 6 || length(unique(y_b[cc])) < 2) {
+      return(data.frame(Timepoint = tp_label, AUC = NA_real_, AUC_CI_Lo = NA_real_,
+                        AUC_CI_Hi = NA_real_, Wilcox_p = NA_real_,
+                        Cohen_d = NA_real_, N = sum(cc)))
+    }
+    x_c <- x[cc]; y_c <- y_b[cc]
+    wt  <- wilcox.test(x_c[y_c == 1], x_c[y_c == 0], exact = FALSE)
+    roc <- pROC::roc(y_c, x_c, quiet = TRUE, direction = "auto")
+    ci  <- as.numeric(pROC::ci.auc(roc, method = "delong"))
+    g1  <- x_c[y_c == 1]; g0 <- x_c[y_c == 0]
+    sp  <- sqrt(((length(g1)-1)*var(g1) + (length(g0)-1)*var(g0)) /
+                  (length(g1) + length(g0) - 2))
+    d   <- (mean(g1) - mean(g0)) / sp
+    data.frame(Timepoint = tp_label,
+               AUC       = round(as.numeric(pROC::auc(roc)), 3),
+               AUC_CI_Lo = round(ci[1], 3),
+               AUC_CI_Hi = round(ci[3], 3),
+               Wilcox_p  = round(wt$p.value, 4),
+               Cohen_d   = round(d, 3),
+               N         = sum(cc))
+  }
+
+  # ── Per-marker decomposition ─────────────────────────────────────────────────
+  decomp_rows  <- list()
+  delong_rows  <- list()
+
+  for (m in avail) {
+    x_t0 <- z_t0p[[m]]
+    x_t1 <- z_t1p[[m]]
+    x_d  <- x_t1 - x_t0
+
+    r_t0 <- decomp_one(x_t0, y_bin, "T0")
+    r_t1 <- decomp_one(x_t1, y_bin, "T1")
+    r_d  <- decomp_one(x_d,  y_bin, "Delta (T1-T0)")
+
+    r_t0$Marker <- r_t1$Marker <- r_d$Marker <- m
+    decomp_rows <- c(decomp_rows, list(r_t0, r_t1, r_d))
+
+    # DeLong T0 vs Delta (correlated samples — same patients)
+    cc_d  <- !is.na(x_t0) & !is.na(x_d)
+    p_dl  <- if (sum(cc_d) >= 10) {
+      roc_t0 <- pROC::roc(y_bin[cc_d], x_t0[cc_d], quiet = TRUE, direction = "auto")
+      roc_d  <- pROC::roc(y_bin[cc_d], x_d[cc_d],  quiet = TRUE, direction = "auto")
+      tryCatch(pROC::roc.test(roc_t0, roc_d, method = "delong")$p.value,
+               error = function(e) NA_real_)
+    } else NA_real_
+
+    delong_rows[[length(delong_rows) + 1]] <- data.frame(
+      Marker                = m,
+      AUC_T0                = r_t0$AUC,
+      AUC_Delta             = r_d$AUC,
+      DeLong_T0_vs_Delta_p  = round(p_dl, 3)
+    )
+  }
+
+  marker_decomp <- do.call(rbind, decomp_rows)[
+    , c("Marker", "Timepoint", "AUC", "AUC_CI_Lo", "AUC_CI_Hi",
+        "Wilcox_p", "Cohen_d", "N")]
+  delong_comp   <- do.call(rbind, delong_rows)
+  rownames(marker_decomp) <- rownames(delong_comp) <- NULL
+
+  # ── Pure T0 Wilcoxon scan: rank gate markers among all T0 features ──────────
+  z_std  <- as.data.frame(DATA_T0$hybrid_data_z)
+  y_std  <- as.integer(DATA_T0$metadata$Group == resp_label)
+  all_m  <- intersect(DATA_T0$hybrid_markers, colnames(z_std))
+
+  scan_res <- lapply(all_m, function(m) {
+    x  <- z_std[[m]]
+    cc <- !is.na(x)
+    if (sum(cc) < 6 || length(unique(x[cc])) < 2) return(NULL)
+    wt <- wilcox.test(x[cc][y_std[cc] == 1], x[cc][y_std[cc] == 0], exact = FALSE)
+    data.frame(Marker = m, T0_Wilcox_p = wt$p.value)
+  })
+  scan_df        <- do.call(rbind, Filter(Negate(is.null), scan_res))
+  scan_df        <- scan_df[order(scan_df$T0_Wilcox_p), ]
+  scan_df$T0_Rank <- seq_len(nrow(scan_df))
+  scan_df$N_Total <- nrow(scan_df)
+  rownames(scan_df) <- NULL
+
+  gate_rank_df <- merge(
+    data.frame(Marker = avail),
+    scan_df[, c("Marker", "T0_Wilcox_p", "T0_Rank", "N_Total")],
+    by = "Marker", all.x = TRUE
+  )
+  gate_rank_df <- gate_rank_df[order(gate_rank_df$T0_Rank), ]
+  rownames(gate_rank_df) <- NULL
+
+  # ── Scenario determination ───────────────────────────────────────────────────
+  t0_aucs <- marker_decomp$AUC[marker_decomp$Timepoint == "T0" & !is.na(marker_decomp$AUC)]
+  d_aucs  <- marker_decomp$AUC[marker_decomp$Timepoint == "Delta (T1-T0)" &
+                                  !is.na(marker_decomp$AUC)]
+  scenario <- if (length(t0_aucs) > 0 && length(d_aucs) > 0) {
+    md <- mean(t0_aucs, na.rm = TRUE) - mean(d_aucs, na.rm = TRUE)
+    if (abs(md) < 0.05) "A/Mixed: T0 and Delta carry equivalent signal"
+    else if (md > 0)    "C: T0 baseline is the primary discriminator"
+    else                "B: Delta (T1-T0) is the primary discriminator"
+  } else NA_character_
+
+  message(sprintf("   [ML][GSD] n_paired=%d | Scenario: %s", n_paired, scenario))
+
+  list(
+    marker_decomp      = marker_decomp,
+    delong_comparisons = delong_comp,
+    gate_t0_scan_rank  = gate_rank_df,
+    n_paired           = n_paired,
+    scenario           = scenario,
+    note               = sprintf(
+      "Gate signal decomposition on %d paired patients. %s. Gate markers ranked among %d T0 markers in pure Wilcoxon scan.",
+      n_paired, scenario, nrow(scan_df)
+    )
+  )
+}
