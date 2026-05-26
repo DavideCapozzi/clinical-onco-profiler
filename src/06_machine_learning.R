@@ -390,7 +390,35 @@ if (lmm_robust$n_robust == 0) {
     }
   }
 
-  # 12. Export Machine-Readable JSON
+  # 12. Gate Signal Decomposition (lmm path, longitudinal experiments only)
+  # Decomposes discriminative signal into T0 / T1 / Delta components.
+  # Addresses feature-selection leakage concerns (RC1/RC3) and the
+  # baseline-vs-dynamic narrative question (RC2).
+  # ------------------------------------------------------------------------------
+  gate_decomp      <- NULL
+  rds_long_decomp  <- file.path(
+    config$output_root, "01_data_processing",
+    sprintf("data_processed_%s_longitudinal.rds", config$project_name)
+  )
+  if (file.exists(rds_long_decomp)) {
+    DATA_LONG_decomp <- tryCatch(readRDS(rds_long_decomp), error = function(e) NULL)
+    if (!is.null(DATA_LONG_decomp)) {
+      gate_decomp <- tryCatch(
+        run_gate_signal_decomposition(
+          DATA_T0      = DATA,
+          DATA_LONG    = DATA_LONG_decomp,
+          gate_markers = lmm_robust$markers,
+          resp_label   = config$clinical$responder_label
+        ),
+        error = function(e) {
+          warning(sprintf("[ML] Gate signal decomposition failed: %s", e$message))
+          NULL
+        }
+      )
+    }
+  }
+
+  # 13. Export Machine-Readable JSON
   # ------------------------------------------------------------------------------
   machine_output <- list(
     project_name         = config$project_name,
@@ -486,6 +514,16 @@ if (lmm_robust$n_robust == 0) {
           nv_m$auc - (if (primary_method == "SVM-RBF") metrics_svm$auc else metrics_glmnet$auc),
           if (nrow(nested_validation$gate_stability) > 0) nested_validation$gate_stability$Pct[1] else 0L
         )
+      )
+    } else NULL,
+    gate_signal_decomposition = if (!is.null(gate_decomp)) {
+      list(
+        n_paired           = gate_decomp$n_paired,
+        scenario           = gate_decomp$scenario,
+        marker_decomp      = gate_decomp$marker_decomp,
+        delong_comparisons = gate_decomp$delong_comparisons,
+        gate_t0_scan_rank  = gate_decomp$gate_t0_scan_rank,
+        note               = gate_decomp$note
       )
     } else NULL
   )
@@ -705,6 +743,17 @@ if (lmm_robust$n_robust == 0) {
     openxlsx::writeData(wb, "Gate_Stability", nested_validation$gate_stability)
   }
 
+  if (!is.null(gate_decomp)) {
+    openxlsx::addWorksheet(wb, "T0_Delta_Decomposition")
+    openxlsx::writeData(wb, "T0_Delta_Decomposition", gate_decomp$marker_decomp)
+
+    openxlsx::addWorksheet(wb, "T0_Delta_DeLong")
+    openxlsx::writeData(wb, "T0_Delta_DeLong", gate_decomp$delong_comparisons)
+
+    openxlsx::addWorksheet(wb, "Gate_T0_Scan_Rank")
+    openxlsx::writeData(wb, "Gate_T0_Scan_Rank", gate_decomp$gate_t0_scan_rank)
+  }
+
   excel_path <- file.path(out_dir, sprintf("ML_Classification_Report_%s.xlsx", config$project_name))
   openxlsx::saveWorkbook(wb, excel_path, overwrite = TRUE)
   message(sprintf("   [Output] Classification report saved: %s", basename(excel_path)))
@@ -790,6 +839,38 @@ if (lmm_robust$n_robust == 0) {
       )
       if (!is.null(p_ig)) print(p_ig)
     }, error = function(e) warning(paste("InformationGain figure failed:", e$message)))
+    dev.off()
+  }
+
+  if (!is.null(gate_decomp)) {
+    pdf(file.path(out_dir, sprintf("GateSignal_T0Delta_%s.pdf", config$project_name)),
+        width = 10, height = 4)
+    tryCatch({
+      gd        <- gate_decomp$marker_decomp
+      gd$Timepoint <- factor(gd$Timepoint, levels = c("T0", "T1", "Delta (T1-T0)"))
+      gd$Marker    <- factor(gd$Marker, levels = unique(gd$Marker))
+      p_gd <- ggplot2::ggplot(gd[!is.na(gd$AUC), ],
+                               ggplot2::aes(x = Timepoint, y = AUC,
+                                            colour = Timepoint, group = Marker)) +
+        ggplot2::geom_point(size = 3) +
+        ggplot2::geom_line(colour = "grey60", linetype = "dashed") +
+        ggplot2::geom_errorbar(ggplot2::aes(ymin = AUC_CI_Lo, ymax = AUC_CI_Hi),
+                                width = 0.15) +
+        ggplot2::geom_hline(yintercept = 0.5, linetype = "dotted", colour = "grey40") +
+        ggplot2::facet_wrap(~Marker) +
+        ggplot2::scale_colour_manual(
+          values = c("T0" = "#1f78b4", "T1" = "#33a02c", "Delta (T1-T0)" = "#e31a1c")
+        ) +
+        ggplot2::labs(
+          title    = sprintf("Gate signal decomposition: T0 / T1 / Delta — %s", config$project_name),
+          subtitle = sprintf("n_paired=%d | %s", gate_decomp$n_paired, gate_decomp$scenario),
+          y        = "Univariate AUC (DeLong 95% CI)",
+          x        = NULL
+        ) +
+        ggplot2::theme_bw(base_size = 11) +
+        ggplot2::theme(legend.position = "none")
+      print(p_gd)
+    }, error = function(e) warning(paste("GateSignal plot failed:", e$message)))
     dev.off()
   }
 
