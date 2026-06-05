@@ -28,7 +28,7 @@ if (!is.null(exp_cfg$machine_learning)) {
     exp_cfg$machine_learning
   )
 }
-config$output_root <- file.path(base_config$output_root, exp_name)
+config$output_root <- file.path(resolve_run_root(base_config$output_root), exp_name)
 
 message(sprintf("\n--- HNSCC Step 06 only (updated CPS parser + stratified analysis) ---"))
 

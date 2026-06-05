@@ -23,7 +23,7 @@ config$is_longitudinal   <- TRUE
 config$qc$remove_outliers <- FALSE  # Critical structural rule: prevent temporal censoring
 if (!is.null(exp_cfg$input_file_t0)) config$input_file_t0 <- exp_cfg$input_file_t0
 if (!is.null(exp_cfg$input_file_t1)) config$input_file_t1 <- exp_cfg$input_file_t1
-config$output_root <- file.path(base_config$output_root, config$project_name)
+config$output_root <- file.path(resolve_run_root(base_config$output_root), config$project_name)
 
 message("=== STEP 04 ONLY — BestResponse_2v3_4 longitudinal pass ===")
 message(sprintf("Sensitivity covariates: %s",
@@ -31,4 +31,5 @@ message(sprintf("Sensitivity covariates: %s",
 
 source(here("src/04_longitudinal_lmm.R"), echo = FALSE, local = FALSE)
 
-message("\n=== Step 04 complete. Check results/BestResponse_2v3_4/04_longitudinal_analysis/ ===")
+message(sprintf("\n=== Step 04 complete. Check %s ===",
+                file.path(config$output_root, "04_longitudinal_analysis")))

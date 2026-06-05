@@ -20,7 +20,7 @@ if (!is.null(exp_cfg$clinical)) config$clinical <- exp_cfg$clinical
 config$is_longitudinal <- FALSE
 if (!is.null(exp_cfg$input_file_t0)) config$input_file_t0 <- exp_cfg$input_file_t0
 if (!is.null(exp_cfg$input_file_t1)) config$input_file_t1 <- exp_cfg$input_file_t1
-config$output_root <- file.path(base_config$output_root, config$project_name)
+config$output_root <- file.path(resolve_run_root(base_config$output_root), config$project_name)
 
 message("=== STEP 06 ONLY — BestResponse_2v3_4 standard pass ===")
 message(sprintf("LMM gate: %s",
@@ -29,4 +29,5 @@ message(sprintf("LMM gate: %s",
 
 source(here("src/06_machine_learning.R"), echo = FALSE, local = FALSE)
 
-message("\n=== Step 06 complete. Check results/BestResponse_2v3_4/06_machine_learning/ ===")
+message(sprintf("\n=== Step 06 complete. Check %s ===",
+                file.path(config$output_root, "06_machine_learning")))

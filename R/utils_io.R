@@ -26,8 +26,127 @@ load_config <- function(config_path = "config/global_params.yml") {
   }
   
   message(sprintf("[System] Configuration loaded from %s", config_path))
-  
+
   return(config)
+}
+
+# ==============================================================================
+# RUN MANAGEMENT
+# A single main.R invocation = one immutable, timestamped run directory under
+# `output_root` (e.g. results/20260605_143000/). Every step derives its paths
+# from config$output_root, so isolating the run at the root keeps all cross-step
+# artifacts of one invocation self-contained and reproducible. A `latest`
+# pointer (symlink + portable text file) lets follow-up tooling resolve the most
+# recent run without hardcoding a timestamp.
+# ==============================================================================
+
+#' @title Build a Run Identifier
+#' @description Timestamp-based run id, optionally suffixed with a human label
+#'   (config `run_label` or the RUN_LABEL environment variable, env wins).
+#' @param label Optional character label appended after the timestamp.
+#' @return Character run id, e.g. "20260605_143000_disc73".
+make_run_id <- function(label = NULL) {
+  env_label <- Sys.getenv("RUN_LABEL", unset = "")
+  if (nzchar(env_label)) label <- env_label
+
+  id <- format(Sys.time(), "%Y%m%d_%H%M%S")
+  if (!is.null(label) && nzchar(label)) {
+    safe <- gsub("[^A-Za-z0-9._-]+", "-", label)
+    id <- paste0(id, "_", safe)
+  }
+  id
+}
+
+#' @title Publish the `latest` Run Pointer
+#' @description Records `run_id` as the most recent run via a portable text file
+#'   (`latest_run.txt`, the source of truth) and a best-effort relative symlink
+#'   (`latest`) for convenient path navigation. The symlink is non-fatal: some
+#'   filesystems do not support it, in which case the text pointer still works.
+#' @param results_base Base output directory (config$output_root, e.g. "results").
+#' @param run_id The run id to publish.
+#' @return Invisibly, the pointer file path.
+update_latest_pointer <- function(results_base, run_id) {
+  if (!dir.exists(results_base)) dir.create(results_base, recursive = TRUE)
+
+  pointer <- file.path(results_base, "latest_run.txt")
+  writeLines(run_id, pointer)
+
+  symlink <- file.path(results_base, "latest")
+  if (file.exists(symlink) || nzchar(Sys.readlink(symlink))) unlink(symlink, force = TRUE)
+  ok <- tryCatch(file.symlink(run_id, symlink),
+                 warning = function(w) FALSE, error = function(e) FALSE)
+  if (!isTRUE(ok))
+    message("[RUN] 'latest' symlink not created (filesystem may not support it); using latest_run.txt.")
+
+  invisible(pointer)
+}
+
+#' @title Resolve the Run Root for Follow-up Tooling
+#' @description Returns the directory of the run that single-step re-runners
+#'   (diagnostics/) should read from. Resolution order: RUN_ID env override,
+#'   then the `latest_run.txt` pointer, then the `latest` symlink.
+#' @param results_base Base output directory (default "results").
+#' @return Absolute-or-relative path to the resolved run root.
+resolve_run_root <- function(results_base = "results") {
+  env_id <- Sys.getenv("RUN_ID", unset = "")
+  if (nzchar(env_id)) {
+    run_root <- file.path(results_base, env_id)
+    if (!dir.exists(run_root))
+      stop(sprintf("[RUN] RUN_ID '%s' set but %s does not exist.", env_id, run_root))
+    return(run_root)
+  }
+
+  pointer <- file.path(results_base, "latest_run.txt")
+  if (file.exists(pointer)) {
+    run_id   <- trimws(readLines(pointer, warn = FALSE)[1])
+    run_root <- file.path(results_base, run_id)
+    if (dir.exists(run_root)) return(run_root)
+  }
+
+  symlink <- file.path(results_base, "latest")
+  target  <- Sys.readlink(symlink)
+  if (nzchar(target)) {
+    run_root <- if (grepl("^(/|[A-Za-z]:)", target)) target else file.path(results_base, target)
+    if (dir.exists(run_root)) return(run_root)
+  }
+
+  stop(sprintf("[RUN] No resolvable run under '%s'. Run main.R first, or set RUN_ID.", results_base))
+}
+
+#' @title Write the Run Provenance Manifest
+#' @description Serializes a self-describing record (git state, R version, seed,
+#'   experiments + passes executed) to the run root, making each results folder
+#'   traceable to the exact code and parameters that produced it.
+#' @param path Output path for the YAML manifest.
+#' @param run_id The run id.
+#' @param config The base configuration object.
+#' @param experiments_meta Named list mapping experiment name -> character vector
+#'   of passes executed.
+#' @return Invisibly, the manifest path.
+write_run_manifest <- function(path, run_id, config, experiments_meta) {
+  git_out <- function(args) tryCatch(
+    system2("git", args, stdout = TRUE, stderr = FALSE),
+    error = function(e) character(0), warning = function(w) character(0))
+
+  sha    <- git_out(c("rev-parse", "HEAD"))
+  branch <- git_out(c("rev-parse", "--abbrev-ref", "HEAD"))
+  dirty  <- length(git_out(c("status", "--porcelain"))) > 0
+
+  manifest <- list(
+    run_id      = run_id,
+    timestamp   = format(Sys.time(), "%Y-%m-%d %H:%M:%S %Z"),
+    git_sha     = if (length(sha))    sha[1]    else NA_character_,
+    git_branch  = if (length(branch)) branch[1] else NA_character_,
+    git_dirty   = dirty,
+    r_version   = R.version.string,
+    seed        = if (!is.null(config$stats$seed)) as.integer(config$stats$seed) else NULL,
+    run_label   = if (!is.null(config$run_label)) config$run_label else NULL,
+    experiments = experiments_meta
+  )
+
+  yaml::write_yaml(manifest, path)
+  message(sprintf("[RUN] Manifest written: %s", path))
+  invisible(path)
 }
 
 #' @title Load Raw Data (Excel)
