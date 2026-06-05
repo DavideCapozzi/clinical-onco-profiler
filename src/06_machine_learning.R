@@ -445,7 +445,7 @@ if (lmm_robust$n_robust == 0) {
       "per-fold z-scoring from raw transformed input yields identical AUC (DeLong p=1.0).",
       "Feature gate derived from longitudinal data (Step 04) — disjoint from classifier training data.",
       if (!is.null(nested_validation))
-        sprintf("Leakage further quantified: fully-nested LOO validation yielded AUC=%.3f [%.3f-%.3f] with %d%% gate stability for primary marker (see nested_loocv_validation).",
+        sprintf("Leakage further quantified: fully-nested LOO validation yielded AUC=%.3f [%.3f-%.3f] with %.0f%% gate stability for primary marker (see nested_loocv_validation).",
                 nested_validation$metrics$auc,
                 nested_validation$metrics$auc_ci[1],
                 nested_validation$metrics$auc_ci[3],
@@ -508,7 +508,7 @@ if (lmm_robust$n_robust == 0) {
         gate_stability    = nested_validation$gate_stability,
         n_empty_folds     = nested_validation$n_empty_folds,
         note              = sprintf(
-          "Fully-nested validation: LMM feature selection repeated within each outer LOO fold on n-1 patients. AUC=%.3f vs fixed-gate AUC=%.3f (delta=%.3f). Primary marker gate stability: %d%%.",
+          "Fully-nested validation: LMM feature selection repeated within each outer LOO fold on n-1 patients. AUC=%.3f vs fixed-gate AUC=%.3f (delta=%.3f). Primary marker gate stability: %.0f%%.",
           nv_m$auc,
           if (primary_method == "SVM-RBF") metrics_svm$auc else metrics_glmnet$auc,
           nv_m$auc - (if (primary_method == "SVM-RBF") metrics_svm$auc else metrics_glmnet$auc),

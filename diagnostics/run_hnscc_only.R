@@ -18,6 +18,12 @@ message("\n>>> LOADING MODULES <<<")
 list.files(here("R"), pattern = "\\.R$", full.names = TRUE) %>% purrr::walk(source)
 message("[System] Modules loaded.")
 
+# Generator runner: create and publish a fresh timestamped run, mirroring main.R.
+run_id   <- make_run_id(base_config$run_label)
+run_root <- file.path(base_config$output_root, run_id)
+if (!dir.exists(run_root)) dir.create(run_root, recursive = TRUE)
+message(sprintf("[System] Run ID: %s  ->  %s", run_id, run_root))
+
 exp_name <- "HNSCC_Response"
 exp_cfg  <- base_config$experiments[[exp_name]]
 
@@ -47,7 +53,7 @@ message(sprintf("========================================================\n"))
   config$is_longitudinal <- FALSE
   if (!is.null(exp_cfg$input_file)) config$input_file <- exp_cfg$input_file
 
-  config$output_root <- file.path(base_config$output_root, config$project_name)
+  config$output_root <- file.path(run_root, config$project_name)
   if (!dir.exists(config$output_root)) dir.create(config$output_root, recursive = TRUE)
 
   log_file <- file.path(config$output_root,
@@ -96,7 +102,7 @@ if (run_machine_learning) {
     )
   }
 
-  config$output_root <- file.path(base_config$output_root, config$project_name)
+  config$output_root <- file.path(run_root, config$project_name)
   if (!dir.exists(config$output_root)) dir.create(config$output_root, recursive = TRUE)
 
   log_file_ml <- file.path(config$output_root,
@@ -122,4 +128,10 @@ if (run_machine_learning) {
   })
 }
 
-message("\n=== HNSCC_Response RUN COMPLETE ===")
+# Publish provenance + the `latest` pointer for follow-up runners.
+run_passes <- list()
+run_passes[[exp_name]] <- c("standard", if (run_machine_learning) "machine_learning")
+write_run_manifest(file.path(run_root, "run_manifest.yml"), run_id, base_config, run_passes)
+update_latest_pointer(base_config$output_root, run_id)
+
+message(sprintf("\n=== HNSCC_Response RUN COMPLETE (run: %s) ===", run_id))
