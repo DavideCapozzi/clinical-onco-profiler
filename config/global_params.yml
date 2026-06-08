@@ -7,6 +7,7 @@ output_root: "results"
 project_name: "base_run"
 run_machine_learning: true
 run_nested_loocv_validation: true
+run_clinical_utility: true       # Step 06: calibration + decision curve + bootstrap optimism on the pre-specified composite (TRIPOD/REMARK layer)
 input_file: "data/Dati_NSCLC_standardizzati_anonimi_T0.xlsx"
 input_file_t0: "data/Dati_NSCLC_standardizzati_anonimi_T0.xlsx"
 input_file_t1: "data/Dati_NSCLC_standardizzati_anonimi_T1.xlsx"
@@ -306,6 +307,10 @@ machine_learning:
   n_perm: 2000                 # Permutations for empirical AUC p-value (floor = 1/n_perm)
   collinearity_threshold: 0.85 # Drop one of any marker pair with |r| > threshold (0.85 = automatic; set to 1 to disable)
   include_interactions: false  # Disabled: SVM-RBF captures non-linear interactions via kernel; explicit terms add collinear noise
+
+  clinical_utility:            # Clinical-utility layer (run_clinical_utility) — calibration/DCA/optimism on the pre-specified composite
+    stability_pct: 50          # univariate path only: include markers selected in >= this % of outer folds (conservative)
+    n_boot: 2000               # Harrell enhanced-bootstrap reps for optimism correction
 
   glmnet:
     alpha_grid: [0.0, 0.5, 1.0] # Tuned in inner CV: Ridge, Elastic Net, LASSO

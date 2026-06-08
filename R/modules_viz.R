@@ -14,6 +14,7 @@ library(tidygraph)
 library(ggraph)
 library(ComplexHeatmap)
 library(circlize)
+library(patchwork)
 
 #' @title Standard Project Theme
 #' @description A consistent ggplot2 theme for publication-quality figures.
@@ -1171,4 +1172,88 @@ viz_plot_differential_overlap <- function(edge_list, fill_colors = NULL, title =
       )
     )
   }
+}
+
+
+#' @title Clinical-Utility Figure (Calibration + Decision Curve)
+#' @description Paper-ready two-panel figure for the output of
+#'   \code{run_clinical_utility()}. Panel A: leakage-free (LOO) calibration with
+#'   quartile bins and the logistic-recalibrated curve overlaid (shows the
+#'   shrinkage). Panel B: decision curve (net benefit vs treat-all / treat-none)
+#'   with the model-dominance range shaded. Styled with \code{theme_coda()}.
+#' @param clin_util  List returned by \code{run_clinical_utility()}.
+#' @param colors     Named vector of group colours (from \code{get_clinical_colors}).
+#' @param title_prefix Optional string prepended to the figure title (e.g. cohort).
+#' @return A patchwork object (A | B). ASCII-only titles (PDF font safe).
+viz_plot_clinical_utility <- function(clin_util, colors, title_prefix = "") {
+  if (is.null(clin_util)) return(NULL)
+  pos    <- clin_util$positive_label
+  col_mod <- if (!is.null(colors[[pos]])) colors[[pos]] else "#2166AC"
+  pp     <- clin_util$per_patient
+  yb     <- as.integer(pp$True_Group == pos)
+  cl     <- clin_util$calibration; dc <- clin_util$decision_curve
+
+  # ── Panel A: calibration (LOO raw vs recalibrated) ──────────────────────────
+  calib_long <- rbind(
+    data.frame(pred = pp$Prob_LOO,   obs = yb, kind = "LOO (raw)"),
+    data.frame(pred = pp$Prob_Recal, obs = yb, kind = "Recalibrated")
+  )
+  bins <- do.call(rbind, lapply(split(seq_along(yb), dplyr::ntile(pp$Prob_LOO, 4)),
+    function(ix) {
+      o <- mean(yb[ix])
+      data.frame(p_mean = mean(pp$Prob_LOO[ix]), obs = o,
+                 se = sqrt(o * (1 - o) / length(ix)))
+    }))
+  pA <- ggplot(calib_long, aes(pred, obs, colour = kind, linetype = kind)) +
+    geom_abline(slope = 1, intercept = 0, linetype = 3, colour = "grey50") +
+    geom_smooth(method = "loess", se = FALSE, span = 1, linewidth = 0.9) +
+    geom_point(data = bins, aes(p_mean, obs), inherit.aes = FALSE, size = 2.4) +
+    geom_errorbar(data = bins,
+                  aes(x = p_mean, ymin = pmax(0, obs - se), ymax = pmin(1, obs + se)),
+                  inherit.aes = FALSE, width = 0.012) +
+    scale_colour_manual(values = c("LOO (raw)" = col_mod, "Recalibrated" = "grey40")) +
+    scale_linetype_manual(values = c("LOO (raw)" = 1, "Recalibrated" = 2)) +
+    coord_cartesian(xlim = c(0, 1), ylim = c(0, 1)) +
+    labs(title = "Calibration (LOO)",
+         subtitle = sprintf("CITL=%.2f  slope=%.2f  Brier=%.3f  (recal. slope=%.2f)",
+                            cl$loo$intercept, cl$loo$slope, cl$loo$brier, cl$recalibrated$slope),
+         x = "Predicted probability", y = "Observed fraction", colour = NULL, linetype = NULL) +
+    theme_coda()
+
+  # ── Panel B: decision curve ─────────────────────────────────────────────────
+  cur <- dc$curve
+  dom <- cur[cur$model > cur$treat_all & cur$model > cur$treat_none, , drop = FALSE]
+  nb_long <- rbind(
+    data.frame(threshold = cur$threshold, net_benefit = cur$model,      strategy = "Model"),
+    data.frame(threshold = cur$threshold, net_benefit = cur$treat_all,  strategy = "Treat all"),
+    data.frame(threshold = cur$threshold, net_benefit = cur$treat_none, strategy = "Treat none")
+  )
+  pB <- ggplot(nb_long, aes(threshold, net_benefit, colour = strategy))
+  if (nrow(dom) > 0)
+    pB <- pB + annotate("rect", xmin = min(dom$threshold), xmax = max(dom$threshold),
+                        ymin = -Inf, ymax = Inf, alpha = 0.08, fill = col_mod)
+  pB <- pB +
+    geom_line(linewidth = 0.9) +
+    scale_colour_manual(values = c("Model" = col_mod, "Treat all" = "#B2182B",
+                                   "Treat none" = "grey45")) +
+    coord_cartesian(ylim = c(min(-0.02, min(cur$treat_all)), max(cur$model) + 0.02)) +
+    labs(title = "Decision curve",
+         subtitle = sprintf("Net benefit > defaults over pt [%s]; prevalence=%.2f",
+                            dc$dominance_range, dc$prevalence),
+         x = "Threshold probability", y = "Net benefit", colour = NULL) +
+    theme_coda()
+
+  ttl <- paste0(if (nzchar(title_prefix)) paste0(title_prefix, " - ") else "",
+                "Clinical utility of pre-specified composite (",
+                paste(clin_util$composite_markers, collapse = "+"), ")")
+  sub <- sprintf("AUC corrected=%.3f [%.3f-%.3f] | optimism=%.4f | gate: %s",
+                 clin_util$discrimination$auc_corrected,
+                 clin_util$discrimination$auc_corrected_ci[1],
+                 clin_util$discrimination$auc_corrected_ci[2],
+                 clin_util$discrimination$auc_optimism, clin_util$gate_provenance)
+
+  patchwork::wrap_plots(pA, pB, nrow = 1) +
+    patchwork::plot_annotation(title = ttl, subtitle = sub, tag_levels = "A",
+      theme = theme(plot.title = element_text(face = "bold", hjust = 0.5),
+                    plot.subtitle = element_text(hjust = 0.5, colour = "gray40")))
 }
