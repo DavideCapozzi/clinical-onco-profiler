@@ -38,6 +38,18 @@ if (!is.null(base_config$experiments) && length(base_config$experiments) > 0) {
   message("[System] Detected flat single-cohort configuration.")
 }
 
+# Optional experiment filter: EXPERIMENTS="A,B" restricts this run to the named
+# experiments (e.g. for the golden snapshot test). Unset -> run all (default).
+exp_filter <- Sys.getenv("EXPERIMENTS", unset = "")
+if (nzchar(exp_filter)) {
+  wanted <- trimws(strsplit(exp_filter, ",")[[1]])
+  missing <- setdiff(wanted, names(experiments_list))
+  if (length(missing) > 0)
+    stop(sprintf("[System] EXPERIMENTS names not found in config: %s", paste(missing, collapse = ", ")))
+  experiments_list <- experiments_list[wanted]
+  message(sprintf("[System] EXPERIMENTS filter active -> %s", paste(wanted, collapse = ", ")))
+}
+
 # --- Module Loading ---
 message("\n>>> LOADING MODULES <<<")
 list.files(here("R"), pattern = "\\.R$", full.names = TRUE) %>% purrr::walk(source)

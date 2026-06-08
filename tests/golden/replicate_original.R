@@ -1,9 +1,16 @@
-# replicate_original.R
+#!/usr/bin/env Rscript
+# tests/golden/replicate_original.R
 # ==============================================================================
-# Definitive replication test: run the CURRENT code on the ORIGINAL anonimi
-# cohort (77 raw) with NO validation split — i.e. the exact data conditions of
-# oldresults (0.716). Isolates "cohort + no-split" as the cause of the drop.
-# Steps: 01 standard -> 01 long + 04 (LMM gate) -> 06 ML. Bootstrap CI off.
+# SACRED GUARDRAIL. Runs the CURRENT code on the ORIGINAL anonimi cohort (77 raw)
+# with NO validation split — the exact data conditions of oldresults (0.716) —
+# and ASSERTS the headline metrics against tests/golden/expected_metrics.yml.
+#
+# This is the regression test that protects every refactor: if a change moves the
+# replicated 0.7158 / perm-p 0.001 / nested-LOO 0.7542 / gate, this exits non-zero.
+#
+# Run:  Rscript tests/golden/replicate_original.R
+# Pass = exit 0; Fail = exit 1 (prints every mismatch).
+# Heavy (~8-9 min): full Step 01 -> 04 -> 06 with permutation test.
 # ==============================================================================
 
 suppressPackageStartupMessages({
@@ -12,23 +19,26 @@ suppressPackageStartupMessages({
 })
 options(crayon.enabled = FALSE)
 list.files(here("R"), pattern = "\\.R$", full.names = TRUE) %>% purrr::walk(source)
+source(here("tests/golden/assert_metrics.R"))
+
+expected <- yaml::read_yaml(here("tests/golden/expected_metrics.yml"))
+EXP_NAME <- "BestResponse_2v3_4"
 
 base_config <- yaml::read_yaml(here("config/global_params.yml"))
-base_config$lmm_bootstrap$enabled <- FALSE
-EXP_NAME <- "BestResponse_2v3_4"
-exp_cfg  <- base_config$experiments[[EXP_NAME]]
+base_config$lmm_bootstrap$enabled <- FALSE        # match oldresults conditions
+exp_cfg <- base_config$experiments[[EXP_NAME]]
 
-# Force ORIGINAL files, NO split (replicate oldresults conditions exactly)
+# Force ORIGINAL files, NO split (replicate oldresults conditions exactly).
 exp_cfg$validation_split <- NULL
 exp_cfg$input_file    <- "data/Dati_NSCLC_standardizzati_anonimi_T0.xlsx"
 exp_cfg$input_file_t0 <- "data/Dati_NSCLC_standardizzati_anonimi_T0.xlsx"
 exp_cfg$input_file_t1 <- "data/Dati_NSCLC_standardizzati_anonimi_T1.xlsx"
 
 run_root <- file.path(base_config$output_root,
-                      paste0("replicate_original_", format(Sys.time(), "%Y%m%d_%H%M%S")))
+                      paste0("golden_replicate_", format(Sys.time(), "%Y%m%d_%H%M%S")))
 exp_out  <- file.path(run_root, EXP_NAME)
 dir.create(exp_out, recursive = TRUE, showWarnings = FALSE)
-message(sprintf("[REPLICATE] root: %s", run_root))
+message(sprintf("[GOLDEN] replicate_original -> %s", run_root))
 
 # PASS 1: Step 01 standard
 config <- base_config
@@ -56,20 +66,20 @@ config$project_name <- EXP_NAME; config$run_mode <- "machine_learning"
 config$clinical <- exp_cfg$clinical; config$features <- exp_cfg$features
 config$input_file <- exp_cfg$input_file; config$input_file_t0 <- exp_cfg$input_file_t0
 if (!is.null(exp_cfg$machine_learning))
-  config$machine_learning <- modifyList(config$machine_learning %||% list(), exp_cfg$machine_learning)
+  config$machine_learning <- modifyList(
+    if (!is.null(config$machine_learning)) config$machine_learning else list(),
+    exp_cfg$machine_learning)
 config$output_root <- exp_out
 source(here("src/06_machine_learning.R"), echo = FALSE, local = FALSE)
 
-# Harvest
-ml <- jsonlite::fromJSON(file.path(exp_out, "06_machine_learning",
-        sprintf("Machine_Metrics_ML_%s.json", EXP_NAME)), simplifyVector = FALSE)
-gate <- paste(sapply(ml$nested_loocv_validation$gate_stability, function(x) x$Marker), collapse = "+")
-message("\n================ REPLICATION RESULT (original 77, no split) ================")
-message(sprintf("n_samples   : %s", ml$n_samples))
-message(sprintf("n_features  : %s", ml$n_features_total))
-message(sprintf("primary     : %s", ml$primary_method))
-message(sprintf("SVM AUC     : %.4f  (perm p = %s)", ml$svm_rbf$metrics$auc, ml$permutation_test$svm_rbf$p_value))
-message(sprintf("EN  AUC     : %.4f  (perm p = %s)", ml$elastic_net$metrics$auc, ml$permutation_test$elastic_net$p_value))
-message(sprintf("nested LOO  : %.4f", ml$nested_loocv_validation$auc))
-message(sprintf("gate        : %s", gate))
-message("\nEXPECTED (oldresults): SVM AUC 0.7158, perm p 0.001, nested LOO 0.7542")
+# ---- ASSERT against the frozen snapshot --------------------------------------
+m <- extract_run_metrics(exp_out, EXP_NAME)
+message("\n================ GOLDEN: original 77, no split ================")
+fails <- report_assertions("original_cohort", m, expected$original_cohort)
+
+if (length(fails) > 0) {
+  message("\n[GOLDEN] FAILED — the sacred replication has drifted. Refactor is NOT safe.")
+  quit(status = 1, save = "no")
+}
+message("\n[GOLDEN] PASSED — replication intact (0.7158 / 0.001 / 0.7542 / gate).")
+quit(status = 0, save = "no")

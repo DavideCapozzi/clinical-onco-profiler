@@ -1,0 +1,58 @@
+# tests/golden/expected_metrics.yml
+# ==============================================================================
+# Frozen HEADLINE metrics — the publishable numbers that must NOT drift across
+# refactors. The pipeline is seed-fixed (seed: 2026), so every value here is
+# deterministic and exactly reproducible.
+#
+# Provenance (current HEAD = d9bcb8a + uncommitted test-infra working tree):
+#   original_cohort     <- results/replicate_original_20260608_144919  (replicate_original.R)
+#   BestResponse_2v3_4  <- results/20260608_151803_golden_snapshot     (main.R, EXPERIMENTS filter)
+#   HNSCC_Response      <- results/20260608_151803_golden_snapshot
+#
+# To RE-FREEZE intentionally (new cohort / deliberate method change): regenerate
+# the run, update the affected block here in the SAME commit, and note the run id +
+# git SHA in the commit message. Never edit a value just to turn a red test green.
+# ==============================================================================
+
+# --- SACRED guardrail: original 77-patient cohort, NO split (oldresults) -------
+# replicate_original.R asserts this block. These are THE numbers that may never move.
+original_cohort:
+  gate_method: lmm
+  n_samples: 70
+  n_features: 2
+  primary_method: SVM-RBF
+  svm_auc: 0.7158
+  svm_perm_p: 0.001          # exact (k/n_perm, seed-fixed)
+  en_auc: 0.4983
+  nested_loo_auc: 0.7542
+  n_sig_fdr: 3               # Step 04 FDR-significant markers
+  gate: [KI67NAIVE, KI67CD4, CD28KI67]
+
+# --- Anti-drift snapshot: current honest results (check_snapshot.R) ------------
+# NSCLC v2, discovery-73 temporal split. Exploratory / non-significant (perm p>0.05).
+# `gate` here is the nested-LOO per-fold stability UNION (3 markers: KI67CD4 enters
+# some folds); the PRIMARY Step-04 FDR gate is 2 markers (n_sig_fdr).
+BestResponse_2v3_4:
+  gate_method: lmm
+  n_samples: 70
+  n_features: 2
+  primary_method: SVM-RBF
+  svm_auc: 0.5600
+  svm_perm_p: 0.1979
+  en_auc: 0.4542
+  nested_loo_auc: 0.5858
+  n_sig_fdr: 2
+  gate: [KI67NAIVE, CD28KI67, KI67CD4]
+
+# HNSCC cross-sectional, univariate gate (fully nested → svm_auc IS the nested LOO).
+# Null result (perm p>0.05). No Step 04 (no n_sig_fdr); the univariate "gate" is the
+# full 30-feature candidate set, so it is NOT asserted (would be brittle/meaningless).
+HNSCC_Response:
+  gate_method: univariate
+  n_samples: 52
+  n_features: 30
+  primary_method: SVM-RBF
+  svm_auc: 0.4864
+  svm_perm_p: 0.567
+  en_auc: 0.2773
+  nested_loo_auc: 0.4864

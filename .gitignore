@@ -8,3 +8,14 @@ results_results-hnscc/
 CLAUDE.md
 *output*
 NSCLC_validation_split_findings.md
+
+# Regenerable artifacts
+*.rds
+*.pdf
+Rplots.pdf
+
+# Diagnostics: not tracked for now — only the archive manifest is kept
+diagnostics/*
+!diagnostics/archive/
+diagnostics/archive/*
+!diagnostics/archive/README.md
