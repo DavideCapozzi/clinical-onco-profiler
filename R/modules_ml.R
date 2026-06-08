@@ -2385,3 +2385,239 @@ run_gate_signal_decomposition <- function(DATA_T0, DATA_LONG,
     )
   )
 }
+
+
+# ==============================================================================
+# CLINICAL-UTILITY LAYER (calibration + decision curve + optimism correction)
+# ==============================================================================
+#' Clinical-utility evaluation of a pre-specified composite biomarker.
+#'
+#' Builds a single pre-specified composite score (mean z of the supplied gate
+#' markers) at T0, fits a 1-feature logistic, and evaluates it the way a
+#' clinical-prediction manuscript (TRIPOD/REMARK) requires: discrimination
+#' (apparent + leakage-free LOO AUC + permutation p), Harrell enhanced-bootstrap
+#' OPTIMISM correction, CALIBRATION (intercept/slope/Brier, apparent + LOO) with
+#' logistic RECALIBRATION, and a DECISION CURVE (net benefit vs treat-all/none).
+#'
+#' Dataset-agnostic: the caller supplies `gate_markers` and `gate_provenance`;
+#' nothing is re-derived here. When the gate comes from the same T0 data
+#' (`gate_provenance = "univariate-selected"`) the composite is NOT independent —
+#' the returned `provenance_note` flags it as exploratory/conditional-on-selection
+#' so the optimism≈0 claim is never overstated.
+#'
+#' @param DATA_T0       Step 01 standard RDS list (`hybrid_data_z`, `metadata`).
+#' @param gate_markers  Character vector of marker names forming the composite.
+#' @param resp_label    Positive (responder) class label, e.g. "RP".
+#' @param gate_provenance "lmm-prespecified" or "univariate-selected".
+#' @param n_boot,n_perm Bootstrap / permutation reps (default 2000 each).
+#' @param min_n         Minimum sample size; below this the block is skipped.
+#' @param seed          RNG seed (state saved/restored — no side effects).
+#' @return Named list (scalars + `decision_curve`, `per_patient` data.frames), or
+#'         `NULL` (with an explanatory message) when prerequisites are not met.
+run_clinical_utility <- function(DATA_T0, gate_markers, resp_label,
+                                 gate_provenance = c("lmm-prespecified",
+                                                     "univariate-selected"),
+                                 n_boot = 2000L, n_perm = 2000L,
+                                 min_n = 20L, seed = 2026L) {
+
+  gate_provenance <- match.arg(gate_provenance)
+
+  # ── Reproducible RNG without disturbing the caller's stream ─────────────────
+  if (exists(".Random.seed", envir = .GlobalEnv)) {
+    old_seed <- get(".Random.seed", envir = .GlobalEnv)
+    on.exit(assign(".Random.seed", old_seed, envir = .GlobalEnv), add = TRUE)
+  }
+  set.seed(seed)
+
+  # ── Assemble composite + outcome ────────────────────────────────────────────
+  z      <- as.data.frame(DATA_T0$hybrid_data_z)
+  avail  <- intersect(gate_markers, colnames(z))
+  group  <- DATA_T0$metadata$Group
+  if (length(avail) == 0) {
+    message("[ML][CU] No gate markers present in T0 matrix — clinical utility skipped.")
+    return(NULL)
+  }
+  neg_label <- setdiff(unique(group), resp_label)
+  if (length(neg_label) != 1) {
+    message("[ML][CU] Outcome is not binary — clinical utility skipped.")
+    return(NULL)
+  }
+  Zc <- z[, avail, drop = FALSE]
+  Zc[] <- lapply(Zc, function(x) { x <- as.numeric(x); x[is.na(x)] <- median(x, na.rm = TRUE); x })
+  comp <- rowMeans(Zc)
+  keep <- !is.na(comp) & group %in% c(resp_label, neg_label)
+  comp <- comp[keep]; grp <- group[keep]
+  yb   <- as.integer(grp == resp_label)
+  y    <- factor(grp, levels = c(neg_label, resp_label))
+  n    <- length(yb)
+  if (n < min_n || length(unique(yb)) < 2) {
+    message(sprintf("[ML][CU] n=%d (< min_n=%d) or single class — clinical utility skipped.",
+                    n, min_n))
+    return(NULL)
+  }
+  message(sprintf("[ML][CU] composite=%s | n=%d (%s=%d, %s=%d) | provenance=%s",
+                  paste(avail, collapse = "+"), n, resp_label, sum(yb),
+                  neg_label, sum(1 - yb), gate_provenance))
+
+  # ── Local helpers (orientation fixed: positive class = resp_label) ──────────
+  auc_pos <- function(yv, p) as.numeric(pROC::auc(pROC::roc(
+    yv, p, levels = c(neg_label, resp_label), direction = "<", quiet = TRUE)))
+  brier   <- function(yvb, p) mean((p - yvb)^2)
+  calib_params <- function(yvb, p) {           # CITL + slope by logistic recalibration
+    p  <- pmin(pmax(p, 1e-6), 1 - 1e-6); lp <- qlogis(p)
+    slope <- tryCatch(coef(glm(yvb ~ lp, family = binomial()))[["lp"]],
+                      error = function(e) NA_real_)
+    citl  <- tryCatch(coef(glm(yvb ~ 1, family = binomial(), offset = lp))[[1]],
+                      error = function(e) NA_real_)
+    c(intercept = citl, slope = slope)
+  }
+  fac <- function(v) factor(ifelse(v == 1, resp_label, neg_label),
+                            levels = c(neg_label, resp_label))
+
+  # ── 1-feature logistic: apparent + leakage-free LOO probabilities ───────────
+  df  <- data.frame(yb = yb, comp = comp)
+  fit <- glm(yb ~ comp, data = df, family = binomial())
+  p_app <- as.numeric(predict(fit, type = "response"))
+  p_loo <- numeric(n)
+  for (i in seq_len(n)) {
+    fi <- suppressWarnings(glm(yb ~ comp, data = df[-i, , drop = FALSE], family = binomial()))
+    p_loo[i] <- as.numeric(predict(fi, newdata = df[i, , drop = FALSE], type = "response"))
+  }
+  auc_app <- auc_pos(y, p_app); auc_loo <- auc_pos(y, p_loo)
+  br_app  <- brier(yb, p_app);  br_loo  <- brier(yb, p_loo)
+  cp_app  <- calib_params(yb, p_app); cp_loo <- calib_params(yb, p_loo)
+
+  # permutation p for the LOO AUC (shuffle labels, full LOO refit)
+  cnt <- 1L
+  for (b in seq_len(n_perm)) {
+    yp <- sample(yb); dfp <- data.frame(yb = yp, comp = comp); pl <- numeric(n)
+    for (i in seq_len(n)) {
+      fi <- suppressWarnings(glm(yb ~ comp, data = dfp[-i, ], family = binomial()))
+      pl[i] <- as.numeric(predict(fi, newdata = dfp[i, ], type = "response"))
+    }
+    if (auc_pos(fac(yp), pl) >= auc_loo) cnt <- cnt + 1L
+  }
+  perm_p_loo <- cnt / (n_perm + 1)
+
+  # ── Harrell enhanced bootstrap: optimism of AUC & calibration slope ─────────
+  opt_auc <- opt_slope <- numeric(n_boot)
+  for (b in seq_len(n_boot)) {
+    idx <- sample(n, n, replace = TRUE); dfb <- df[idx, , drop = FALSE]
+    fb  <- suppressWarnings(glm(yb ~ comp, data = dfb, family = binomial()))
+    pb_boot <- as.numeric(predict(fb, newdata = dfb, type = "response"))
+    pb_orig <- as.numeric(predict(fb, newdata = df,  type = "response"))
+    a_boot  <- tryCatch(auc_pos(fac(dfb$yb), pb_boot), error = function(e) NA_real_)
+    opt_auc[b]   <- a_boot - auc_pos(y, pb_orig)
+    opt_slope[b] <- calib_params(dfb$yb, pb_boot)["slope"] - calib_params(yb, pb_orig)["slope"]
+  }
+  opt_auc_m   <- mean(opt_auc,   na.rm = TRUE)
+  opt_slope_m <- mean(opt_slope, na.rm = TRUE)
+  auc_corr    <- auc_app - opt_auc_m
+  auc_corr_ci <- as.numeric(quantile(auc_app - opt_auc, c(.025, .975), na.rm = TRUE))
+  slope_corr  <- cp_app[["slope"]] - opt_slope_m
+
+  # ── Logistic recalibration of the LOO probabilities (shrinkage) ─────────────
+  lp_loo  <- qlogis(pmin(pmax(p_loo, 1e-6), 1 - 1e-6))
+  p_recal <- as.numeric(plogis(cp_loo[["intercept"]] + cp_loo[["slope"]] * lp_loo))
+  cp_recal <- calib_params(yb, p_recal); br_recal <- brier(yb, p_recal)
+
+  # ── Decision curve (net benefit on honest LOO probabilities) ────────────────
+  prev    <- mean(yb)
+  pt_grid <- seq(0.01, 0.60, by = 0.01)
+  dc <- do.call(rbind, lapply(pt_grid, function(pt) {
+    pos <- p_loo >= pt; w <- pt / (1 - pt)
+    data.frame(threshold = pt,
+               model      = sum(pos & yb == 1) / n - sum(pos & yb == 0) / n * w,
+               treat_all  = prev - (1 - prev) * w,
+               treat_none = 0)
+  }))
+  dom <- dc[dc$model > dc$treat_all & dc$model > dc$treat_none, , drop = FALSE]
+  dom_range <- if (nrow(dom))
+    sprintf("%.0f%%-%.0f%%", 100 * min(dom$threshold), 100 * max(dom$threshold)) else "none"
+
+  # ── Youden cutpoint on the composite score ──────────────────────────────────
+  roc_comp <- pROC::roc(y, comp, levels = c(neg_label, resp_label),
+                        direction = "<", quiet = TRUE)
+  yj_df <- as.data.frame(pROC::coords(roc_comp, "best", best.method = "youden",
+                                      ret = c("threshold", "sensitivity", "specificity"),
+                                      transpose = FALSE))
+  yj <- as.numeric(yj_df[1, c("threshold", "sensitivity", "specificity")])
+
+  provenance_note <- if (gate_provenance == "lmm-prespecified") {
+    paste("Composite pre-specified from the Step 04 LMM gate (longitudinal data,",
+          "disjoint from this T0 classifier): optimism correction is a genuine",
+          "stability property, not an in-sample artefact.")
+  } else {
+    paste("Composite built from markers selected on these same T0 data",
+          "(univariate gate): EXPLORATORY / conditional-on-selection — the",
+          "optimism estimate is a lower bound and calibration is not independent.")
+  }
+  message(sprintf("[ML][CU] AUC app=%.3f LOO=%.3f (perm p=%.4f) | corrected=%.3f [%.3f-%.3f] | optimism=%.4f",
+                  auc_app, auc_loo, perm_p_loo, auc_corr, auc_corr_ci[1], auc_corr_ci[2], opt_auc_m))
+  message(sprintf("[ML][CU] calib LOO: CITL=%.2f slope=%.2f Brier=%.3f | DCA dominates over pt [%s]",
+                  cp_loo[["intercept"]], cp_loo[["slope"]], br_loo, dom_range))
+
+  list(
+    composite_markers = avail,
+    gate_provenance   = gate_provenance,
+    provenance_note   = provenance_note,
+    n                 = n, n_pos = sum(yb), n_neg = sum(1 - yb),
+    prevalence        = prev,
+    positive_label    = resp_label, negative_label = neg_label,
+    discrimination = list(
+      auc_apparent = auc_app, auc_loo = auc_loo, loo_perm_p = perm_p_loo,
+      n_perm = n_perm, auc_optimism = opt_auc_m,
+      auc_corrected = auc_corr, auc_corrected_ci = auc_corr_ci),
+    calibration = list(
+      apparent    = list(intercept = cp_app[["intercept"]], slope = cp_app[["slope"]], brier = br_app),
+      loo         = list(intercept = cp_loo[["intercept"]], slope = cp_loo[["slope"]], brier = br_loo),
+      recalibrated = list(intercept = cp_recal[["intercept"]], slope = cp_recal[["slope"]], brier = br_recal),
+      slope_optimism = opt_slope_m, slope_corrected = slope_corr),
+    youden = list(threshold = yj[1], sensitivity = yj[2], specificity = yj[3]),
+    decision_curve = list(prevalence = prev, dominance_range = dom_range, curve = dc),
+    per_patient = data.frame(
+      Patient_ID  = as.character(DATA_T0$metadata$Patient_ID[keep]),
+      True_Group  = as.character(grp),
+      Composite   = round(comp, 4),
+      Prob_LOO    = round(p_loo, 4),
+      Prob_Recal  = round(p_recal, 4),
+      stringsAsFactors = FALSE)
+  )
+}
+
+
+#' JSON-serializable view of a clinical-utility result (drops the per-patient
+#' table, which is written to Excel instead). Returns NULL passthrough.
+clinical_utility_json <- function(cu) {
+  if (is.null(cu)) return(NULL)
+  cu$per_patient <- NULL
+  cu
+}
+
+
+#' Flat Metric/Value summary of a clinical-utility result, for the Excel report.
+write_clinical_utility_summary <- function(cu) {
+  d <- cu$discrimination; cb <- cu$calibration; dc <- cu$decision_curve; yj <- cu$youden
+  data.frame(
+    Metric = c("Composite markers", "Gate provenance", "N (pos/neg)", "Prevalence",
+               "AUC apparent", "AUC LOO", "LOO permutation p", "AUC optimism",
+               "AUC corrected", "AUC corrected CI",
+               "Calibration CITL (LOO)", "Calibration slope (LOO)", "Brier (LOO)",
+               "Calibration slope (recalibrated)", "Brier (recalibrated)",
+               "Decision-curve dominance range",
+               "Youden threshold", "Youden sensitivity", "Youden specificity",
+               "Provenance note"),
+    Value = c(
+      paste(cu$composite_markers, collapse = "+"), cu$gate_provenance,
+      sprintf("%d (%d/%d)", cu$n, cu$n_pos, cu$n_neg), sprintf("%.3f", cu$prevalence),
+      sprintf("%.3f", d$auc_apparent), sprintf("%.3f", d$auc_loo),
+      sprintf("%.4f", d$loo_perm_p), sprintf("%.4f", d$auc_optimism),
+      sprintf("%.3f", d$auc_corrected),
+      sprintf("[%.3f, %.3f]", d$auc_corrected_ci[1], d$auc_corrected_ci[2]),
+      sprintf("%.3f", cb$loo$intercept), sprintf("%.3f", cb$loo$slope),
+      sprintf("%.3f", cb$loo$brier), sprintf("%.3f", cb$recalibrated$slope),
+      sprintf("%.3f", cb$recalibrated$brier), dc$dominance_range,
+      sprintf("%.3f", yj$threshold), sprintf("%.3f", yj$sensitivity),
+      sprintf("%.3f", yj$specificity), cu$provenance_note),
+    stringsAsFactors = FALSE)
+}

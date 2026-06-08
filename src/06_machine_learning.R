@@ -418,6 +418,27 @@ if (lmm_robust$n_robust == 0) {
     }
   }
 
+  # 12b. Clinical-Utility Layer (calibration + decision curve + optimism)
+  # Pre-specified composite = mean z of the LMM gate markers (Step 04, disjoint
+  # from this T0 classifier). TRIPOD/REMARK-ready; additive, never alters results.
+  # ------------------------------------------------------------------------------
+  clin_util <- NULL
+  if (isTRUE(config$run_clinical_utility)) {
+    cu_cfg <- if (!is.null(ml_cfg$clinical_utility)) ml_cfg$clinical_utility else list()
+    clin_util <- tryCatch(
+      run_clinical_utility(
+        DATA_T0         = DATA,
+        gate_markers    = lmm_robust$markers,
+        resp_label      = config$clinical$responder_label,
+        gate_provenance = "lmm-prespecified",
+        n_boot          = if (!is.null(cu_cfg$n_boot)) as.integer(cu_cfg$n_boot) else 2000L
+      ),
+      error = function(e) {
+        warning(sprintf("[ML] Clinical-utility layer failed (non-fatal): %s", e$message)); NULL
+      }
+    )
+  }
+
   # 13. Export Machine-Readable JSON
   # ------------------------------------------------------------------------------
   machine_output <- list(
@@ -525,7 +546,8 @@ if (lmm_robust$n_robust == 0) {
         gate_t0_scan_rank  = gate_decomp$gate_t0_scan_rank,
         note               = gate_decomp$note
       )
-    } else NULL
+    } else NULL,
+    clinical_utility = clinical_utility_json(clin_util)
   )
 
   json_path <- file.path(out_dir, sprintf("Machine_Metrics_ML_%s.json", config$project_name))
@@ -754,6 +776,13 @@ if (lmm_robust$n_robust == 0) {
     openxlsx::writeData(wb, "Gate_T0_Scan_Rank", gate_decomp$gate_t0_scan_rank)
   }
 
+  if (!is.null(clin_util)) {
+    openxlsx::addWorksheet(wb, "Clinical_Utility")
+    openxlsx::writeData(wb, "Clinical_Utility", write_clinical_utility_summary(clin_util))
+    openxlsx::addWorksheet(wb, "Clinical_Utility_Patients")
+    openxlsx::writeData(wb, "Clinical_Utility_Patients", clin_util$per_patient)
+  }
+
   excel_path <- file.path(out_dir, sprintf("ML_Classification_Report_%s.xlsx", config$project_name))
   openxlsx::saveWorkbook(wb, excel_path, overwrite = TRUE)
   message(sprintf("   [Output] Classification report saved: %s", basename(excel_path)))
@@ -809,6 +838,17 @@ if (lmm_robust$n_robust == 0) {
     if (!is.null(p_uni)) print(p_uni)
   }, error = function(e) warning(paste("Univariate ROC plot failed:", e$message)))
   dev.off()
+
+  # Clinical-utility figure (calibration + decision curve)
+  if (!is.null(clin_util)) {
+    pdf(file.path(out_dir, sprintf("ClinicalUtility_%s.pdf", config$project_name)),
+        width = 11, height = 5)
+    tryCatch({
+      p_cu <- viz_plot_clinical_utility(clin_util, colors_viz, title_prefix = config$project_name)
+      if (!is.null(p_cu)) print(p_cu)
+    }, error = function(e) warning(paste("Clinical-utility figure failed:", e$message)))
+    dev.off()
+  }
 
   # Benchmark-stratified figure (clinical-strata + subgroup ROC)
   if (!is.null(stratified_result)) {
@@ -1166,6 +1206,35 @@ if (lmm_robust$n_robust == 0) {
     }
   }
 
+  # Clinical-Utility Layer (univariate path). Composite = markers selected in
+  # >= stability_pct of the outer folds. The gate is re-selected on THESE T0 data,
+  # so the composite is exploratory/conditional-on-selection (flagged in output).
+  # ------------------------------------------------------------------------------
+  clin_util <- NULL
+  if (isTRUE(config$run_clinical_utility)) {
+    cu_cfg     <- if (!is.null(ml_cfg$clinical_utility)) ml_cfg$clinical_utility else list()
+    stab_pct   <- if (!is.null(cu_cfg$stability_pct)) as.numeric(cu_cfg$stability_pct) else 50
+    gs         <- res_uni$gate_stability
+    cu_markers <- gs$Marker[gs$Pct_Folds_Selected >= stab_pct]
+    if (length(cu_markers) >= 1) {
+      clin_util <- tryCatch(
+        run_clinical_utility(
+          DATA_T0         = DATA,
+          gate_markers    = cu_markers,
+          resp_label      = config$clinical$responder_label,
+          gate_provenance = "univariate-selected",
+          n_boot          = if (!is.null(cu_cfg$n_boot)) as.integer(cu_cfg$n_boot) else 2000L
+        ),
+        error = function(e) {
+          warning(sprintf("[ML] Clinical-utility layer failed (non-fatal): %s", e$message)); NULL
+        }
+      )
+    } else {
+      message(sprintf("[ML][CU] No marker reaches %.0f%% fold-selection stability — clinical utility skipped.",
+                      stab_pct))
+    }
+  }
+
   # Write JSON — structure mirrors the LMM path, gate_stability replaces robust_markers
   machine_output <- list(
     project_name               = config$project_name,
@@ -1217,7 +1286,8 @@ if (lmm_robust$n_robust == 0) {
     } else NULL,
     benchmark_stratified    = if (!is.null(stratified_result)) stratified_result else NULL,
     benchmark_combined      = if (!is.null(combined_result))   combined_result   else NULL,
-    nested_loocv_validation = NULL  # explicitly NULL: univariate path is already fully-nested
+    nested_loocv_validation = NULL, # explicitly NULL: univariate path is already fully-nested
+    clinical_utility        = clinical_utility_json(clin_util)
   )
 
   json_path <- file.path(out_dir, sprintf("Machine_Metrics_ML_%s.json", config$project_name))
@@ -1289,6 +1359,13 @@ if (lmm_robust$n_robust == 0) {
     ))
   }
 
+  if (!is.null(clin_util)) {
+    openxlsx::addWorksheet(wb, "Clinical_Utility")
+    openxlsx::writeData(wb, "Clinical_Utility", write_clinical_utility_summary(clin_util))
+    openxlsx::addWorksheet(wb, "Clinical_Utility_Patients")
+    openxlsx::writeData(wb, "Clinical_Utility_Patients", clin_util$per_patient)
+  }
+
   excel_path <- file.path(out_dir, sprintf("ML_Classification_Report_%s.xlsx", config$project_name))
   openxlsx::saveWorkbook(wb, excel_path, overwrite = TRUE)
   message(sprintf("   [Output] Classification report: %s", basename(excel_path)))
@@ -1332,6 +1409,16 @@ if (lmm_robust$n_robust == 0) {
     if (!is.null(p)) print(p)
   }, error = function(e) warning(paste("Univariate ROC plot failed:", e$message)))
   dev.off()
+
+  if (!is.null(clin_util)) {
+    pdf(file.path(out_dir, sprintf("ClinicalUtility_%s.pdf", config$project_name)),
+        width = 11, height = 5)
+    tryCatch({
+      p_cu <- viz_plot_clinical_utility(clin_util, colors_viz, title_prefix = config$project_name)
+      if (!is.null(p_cu)) print(p_cu)
+    }, error = function(e) warning(paste("Clinical-utility figure failed:", e$message)))
+    dev.off()
+  }
 
   message(sprintf(
     "\n[ML] Summary — %s | Primary: %s | AUC(EN)=%.3f | AUC(SVM)=%.3f | Perm p(SVM)=%.4f",
