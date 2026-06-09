@@ -18,12 +18,11 @@ if (!exists("config")) {
   config <- load_config(config_path)
 }
 
-input_file <- file.path(config$output_root, "01_data_processing", sprintf("data_processed_%s_standard.rds", config$project_name))
+input_file <- step_output_path(config, 1, sprintf("data_processed_%s_standard", config$project_name), "rds")
 if (!file.exists(input_file)) stop("[FATAL] Standard data processing output not found.")
 
 DATA <- readRDS(input_file)
-results_dir <- file.path(config$output_root, "03_statistical_analysis")
-if (!dir.exists(results_dir)) dir.create(results_dir, recursive = TRUE)
+results_dir <- step_dir(config, 3, create = TRUE)
 
 df_global <- DATA$hybrid_data_z
 safe_markers <- DATA$hybrid_markers

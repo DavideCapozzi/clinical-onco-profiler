@@ -149,6 +149,44 @@ write_run_manifest <- function(path, run_id, config, experiments_meta) {
   invisible(path)
 }
 
+#' @title Per-Step Output Directory Names
+#' @description Single source of truth for the canonical step subdirectory names
+#'   (indexed by step number 1..6). Every step derives its paths from these, so a
+#'   rename happens in exactly one place.
+.STEP_DIRS <- c(
+  "01_data_processing",
+  "02_visualization",
+  "03_statistical_analysis",
+  "04_longitudinal_analysis",
+  "05_network_analysis",
+  "06_machine_learning"
+)
+
+#' @title Resolve a Step's Output Directory
+#' @param config Pass config (uses \code{config$output_root}).
+#' @param step Integer step number (1..6).
+#' @param create If TRUE, create the directory (recursively) when missing.
+#' @return The step directory path under the run's experiment root.
+step_dir <- function(config, step, create = FALSE) {
+  d <- file.path(config$output_root, .STEP_DIRS[[step]])
+  if (isTRUE(create) && !dir.exists(d)) dir.create(d, recursive = TRUE)
+  d
+}
+
+#' @title Build a Path to a Step Artifact
+#' @description Centralizes the \code{file.path(config$output_root, "0N_...", ...)}
+#'   pattern repeated across \code{src/}. The step subdirectory name lives only in
+#'   \code{.STEP_DIRS}.
+#' @param config Pass config (uses \code{config$output_root}).
+#' @param step Integer step number (1..6) owning the artifact.
+#' @param name File name without extension (or full name if \code{ext} is NULL).
+#' @param ext Optional extension (no dot), e.g. "rds", "json".
+#' @return The full artifact path.
+step_output_path <- function(config, step, name, ext = NULL) {
+  fname <- if (!is.null(ext) && nzchar(ext)) paste0(name, ".", ext) else name
+  file.path(step_dir(config, step), fname)
+}
+
 #' @title Load Raw Data (Excel)
 #' @description Iterates over sheets defined in config and merges them, preserving metadata.
 #' @param config The loaded configuration object.
@@ -559,4 +597,78 @@ validate_config <- function(cfg) {
   }
 
   invisible(TRUE)
+}
+
+#' @title Build an Isolated Per-Pass Configuration
+#' @description
+#' Encapsulates the null-guarded config assembly repeated once per pass in
+#' \code{main.R} (and the single-step diagnostics runners). Starts from a copy of
+#' \code{base_config}, layers the per-experiment overrides relevant to the given
+#' pass, points \code{output_root} at the experiment's run subdirectory (creating
+#' it), and returns the isolated config. Mutations never leak back into
+#' \code{base_config} or sibling passes.
+#'
+#' Pass-specific behaviour (mirrors the original inline blocks exactly):
+#'   - \strong{standard}: forces \code{is_longitudinal = FALSE}; applies
+#'     \code{input_file}; asserts non-empty \code{features.facs}.
+#'   - \strong{longitudinal}: forces \code{is_longitudinal = TRUE} and
+#'     \code{qc$remove_outliers = FALSE} (paired LMM needs both timepoints);
+#'     applies \code{input_file_t0}/\code{input_file_t1}.
+#'   - \strong{machine_learning}: applies \code{input_file}/\code{input_file_t0}
+#'     and merges \code{machine_learning} overrides via \code{modifyList}.
+#'
+#' @param base_config The global configuration (single source of truth).
+#' @param exp_cfg The per-experiment override block.
+#' @param exp_name Experiment name (becomes \code{project_name}).
+#' @param pass_mode One of "standard", "longitudinal", "machine_learning".
+#' @param run_root The run root directory; \code{output_root} becomes
+#'   \code{run_root/exp_name}.
+#' @return The isolated, pass-ready config list.
+prepare_pass_config <- function(base_config, exp_cfg, exp_name, pass_mode, run_root) {
+  valid_modes <- c("standard", "longitudinal", "machine_learning")
+  if (!pass_mode %in% valid_modes)
+    stop(sprintf("[CONFIG] Unknown pass_mode '%s' (expected one of: %s)",
+                 pass_mode, paste(valid_modes, collapse = ", ")))
+
+  config <- base_config
+  config$project_name <- exp_name
+  config$run_mode     <- pass_mode
+
+  # Clinical override (all passes)
+  if (!is.null(exp_cfg$clinical)) config$clinical <- exp_cfg$clinical
+
+  # Feature panel override (all passes). soluble may legitimately be empty
+  # (FACS-only panels); the standard pass additionally asserts non-empty FACS.
+  if (!is.null(exp_cfg$features)) {
+    config$features <- exp_cfg$features
+    if (pass_mode == "standard" && length(unlist(config$features$facs)) == 0)
+      stop(sprintf("[CONFIG] Experiment '%s': features.facs is empty", exp_name))
+  }
+
+  if (pass_mode == "standard") {
+    config$is_longitudinal <- FALSE
+    if (!is.null(exp_cfg$input_file)) config$input_file <- exp_cfg$input_file
+
+  } else if (pass_mode == "longitudinal") {
+    config$is_longitudinal <- TRUE
+    # Critical structural rule: disable multivariate outliers to prevent temporal censoring.
+    config$qc$remove_outliers <- FALSE
+    if (!is.null(exp_cfg$input_file_t0)) config$input_file_t0 <- exp_cfg$input_file_t0
+    if (!is.null(exp_cfg$input_file_t1)) config$input_file_t1 <- exp_cfg$input_file_t1
+
+  } else if (pass_mode == "machine_learning") {
+    if (!is.null(exp_cfg$input_file))    config$input_file    <- exp_cfg$input_file
+    if (!is.null(exp_cfg$input_file_t0)) config$input_file_t0 <- exp_cfg$input_file_t0
+    if (!is.null(exp_cfg$machine_learning)) {
+      config$machine_learning <- modifyList(
+        if (!is.null(config$machine_learning)) config$machine_learning else list(),
+        exp_cfg$machine_learning
+      )
+    }
+  }
+
+  config$output_root <- file.path(run_root, config$project_name)
+  if (!dir.exists(config$output_root)) dir.create(config$output_root, recursive = TRUE)
+
+  config
 }

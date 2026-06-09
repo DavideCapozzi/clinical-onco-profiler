@@ -17,7 +17,7 @@ if (!exists("config")) {
   config <- load_config(config_path)
 }
 
-input_file <- file.path(config$output_root, "01_data_processing", sprintf("data_processed_%s_standard.rds", config$project_name))
+input_file <- step_output_path(config, 1, sprintf("data_processed_%s_standard", config$project_name), "rds")
 if (!file.exists(input_file)) stop("[FATAL] Standard data processing output not found.")
 
 DATA <- readRDS(input_file)
@@ -30,8 +30,7 @@ raw_matrix <- DATA$raw_matrix
 unique_groups <- levels(meta_viz$Group)
 colors_viz <- get_clinical_colors(config)
 
-out_dir <- file.path(config$output_root, "02_visualization")
-if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+out_dir <- step_dir(config, 2, create = TRUE)
 
 # 3. Raw Distributions Generation
 # ------------------------------------------------------------------------------

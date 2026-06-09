@@ -15,11 +15,10 @@ message("\n=== PIPELINE STEP 4: LONGITUDINAL ANALYSIS (LMM) ===")
 # ------------------------------------------------------------------------------
 if (!exists("config")) stop("[FATAL] Global configuration object not detected in environment.")
 
-input_rds <- file.path(config$output_root, "01_data_processing", sprintf("data_processed_%s_longitudinal.rds", config$project_name))
+input_rds <- step_output_path(config, 1, sprintf("data_processed_%s_longitudinal", config$project_name), "rds")
 if (!file.exists(input_rds)) stop(sprintf("[FATAL] Step 01 longitudinal processed dataset not found at: %s", input_rds))
 
-out_dir <- file.path(config$output_root, "04_longitudinal_analysis")
-if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+out_dir <- step_dir(config, 4, create = TRUE)
 
 message(sprintf("[Data] Loading Joint Pharmacodynamic Dataset: %s", basename(input_rds)))
 DATA <- readRDS(input_rds)

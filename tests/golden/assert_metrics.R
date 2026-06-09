@@ -38,11 +38,14 @@ assert_block <- function(label, got, expected, tol_auc = 5e-4) {
   chk_num("n_sig_fdr", exact = TRUE)
   chk_chr("primary_method"); chk_chr("gate_method")
 
-  if (!is.null(expected$gate)) {
+  # Use [["gate"]] (not $gate): `$` does partial matching and would silently
+  # resolve to `gate_method` for experiments that omit an explicit gate (e.g. the
+  # univariate HNSCC block). `<-` (not `<<-`): `fails` is local to this function.
+  if (!is.null(expected[["gate"]])) {
     g <- got$gate
-    if (!setequal(g, expected$gate))
-      fails[[length(fails) + 1]] <<- sprintf("%s/gate: got {%s}, expected {%s}",
-        label, paste(sort(g), collapse = ","), paste(sort(unlist(expected$gate)), collapse = ","))
+    if (!setequal(g, expected[["gate"]]))
+      fails[[length(fails) + 1]] <- sprintf("%s/gate: got {%s}, expected {%s}",
+        label, paste(sort(g), collapse = ","), paste(sort(unlist(expected[["gate"]])), collapse = ","))
   }
   fails
 }

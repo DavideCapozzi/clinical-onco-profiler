@@ -177,8 +177,7 @@ final_markers  <- transform_results$hybrid_markers
 
 # 5. Export Final Artifacts
 # ------------------------------------------------------------------------------
-out_dir <- file.path(config$output_root, "01_data_processing")
-if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+out_dir <- step_dir(config, 1, create = TRUE)
 
 df_hybrid_raw <- cbind(metadata_raw, as.data.frame(mat_hybrid_raw))
 df_hybrid_z   <- cbind(metadata_raw, as.data.frame(mat_hybrid_z))
