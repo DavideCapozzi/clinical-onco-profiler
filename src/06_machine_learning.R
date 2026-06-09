@@ -33,10 +33,7 @@ if (gate_method == "lmm") {
 
 # 2. Load LMM LOO-Robust Features (auto-detect, graceful degradation)
 # ------------------------------------------------------------------------------
-lmm_json_path <- file.path(
-  config$output_root, "04_longitudinal_analysis",
-  sprintf("Machine_Metrics_LMM_%s.json", config$project_name)
-)
+lmm_json_path <- step_output_path(config, 4, sprintf("Machine_Metrics_LMM_%s", config$project_name), "json")
 
 lmm_robust <- load_lmm_robust_features(lmm_json_path, fdr_thresh, loo_thresh)
 
@@ -52,18 +49,14 @@ if (lmm_robust$n_robust == 0) {
   # feature gate was derived from longitudinal T0/T1 data in Step 04, keeping the
   # feature selection and classification data modalities strictly separate.
   # ------------------------------------------------------------------------------
-  input_rds <- file.path(
-    config$output_root, "01_data_processing",
-    sprintf("data_processed_%s_standard.rds", config$project_name)
-  )
+  input_rds <- step_output_path(config, 1, sprintf("data_processed_%s_standard", config$project_name), "rds")
   if (!file.exists(input_rds)) {
     stop(sprintf("[FATAL] Step 01 standard RDS not found at: %s", input_rds))
   }
 
   DATA <- readRDS(input_rds)
 
-  out_dir <- file.path(config$output_root, "06_machine_learning")
-  if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+  out_dir <- step_dir(config, 6, create = TRUE)
 
   colors_viz <- get_clinical_colors(config)
 
@@ -347,12 +340,10 @@ if (lmm_robust$n_robust == 0) {
 
   if (run_nested) {
     message("\n[ML] Running fully-nested LOO validation (LMM gate inside outer fold)...")
-    lmm_json_for_nested <- file.path(config$output_root, "04_longitudinal_analysis",
-                                     sprintf("Machine_Metrics_LMM_%s.json", config$project_name))
+    lmm_json_for_nested <- step_output_path(config, 4, sprintf("Machine_Metrics_LMM_%s", config$project_name), "json")
 
     DATA_LONG_nested <- tryCatch({
-      rds_long <- file.path(config$output_root, "01_data_processing",
-                            sprintf("data_processed_%s_longitudinal.rds", config$project_name))
+      rds_long <- step_output_path(config, 1, sprintf("data_processed_%s_longitudinal", config$project_name), "rds")
       if (file.exists(rds_long)) readRDS(rds_long) else NULL
     }, error = function(e) NULL)
 
@@ -396,10 +387,7 @@ if (lmm_robust$n_robust == 0) {
   # baseline-vs-dynamic narrative question (RC2).
   # ------------------------------------------------------------------------------
   gate_decomp      <- NULL
-  rds_long_decomp  <- file.path(
-    config$output_root, "01_data_processing",
-    sprintf("data_processed_%s_longitudinal.rds", config$project_name)
-  )
+  rds_long_decomp  <- step_output_path(config, 1, sprintf("data_processed_%s_longitudinal", config$project_name), "rds")
   if (file.exists(rds_long_decomp)) {
     DATA_LONG_decomp <- tryCatch(readRDS(rds_long_decomp), error = function(e) NULL)
     if (!is.null(DATA_LONG_decomp)) {
@@ -949,17 +937,13 @@ if (lmm_robust$n_robust == 0) {
   n_perm <- if (!is.null(ml_cfg$n_perm)) as.integer(ml_cfg$n_perm) else 999L
 
   # Load Step 01 standard RDS (cross-sectional data)
-  input_rds <- file.path(
-    config$output_root, "01_data_processing",
-    sprintf("data_processed_%s_standard.rds", config$project_name)
-  )
+  input_rds <- step_output_path(config, 1, sprintf("data_processed_%s_standard", config$project_name), "rds")
   if (!file.exists(input_rds)) {
     stop(sprintf("[FATAL] Step 01 standard RDS not found at: %s", input_rds))
   }
   DATA <- readRDS(input_rds)
 
-  out_dir <- file.path(config$output_root, "06_machine_learning")
-  if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+  out_dir <- step_dir(config, 6, create = TRUE)
 
   colors_viz <- get_clinical_colors(config)
 

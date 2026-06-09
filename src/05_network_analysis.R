@@ -18,16 +18,14 @@ message("\n=== PIPELINE STEP 5: DIFFERENTIAL NETWORK ANALYSIS ===")
 # ------------------------------------------------------------------------------
 if (!exists("config")) stop("[FATAL] Global configuration object not detected in environment.")
 
-input_rds <- file.path(config$output_root, "01_data_processing",
-                       sprintf("data_processed_%s_standard.rds", config$project_name))
+input_rds <- step_output_path(config, 1, sprintf("data_processed_%s_standard", config$project_name), "rds")
 if (!file.exists(input_rds)) stop(sprintf("[FATAL] Step 01 standard output not found at: %s", input_rds))
 
 DATA <- readRDS(input_rds)
 message(sprintf("[Data] Loaded Step 01 output: %d samples x %d markers",
                 nrow(DATA$metadata), length(DATA$hybrid_markers)))
 
-out_dir <- file.path(config$output_root, "05_network_analysis")
-if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+out_dir <- step_dir(config, 5, create = TRUE)
 
 # 2. Group Setup
 # ------------------------------------------------------------------------------
@@ -111,8 +109,7 @@ pad_matrix <- function(small_mat, full_names, default_val = 0) {
 feat_sel_conf <- config$network$feature_selection
 
 if (!is.null(feat_sel_conf) && isTRUE(feat_sel_conf$enabled)) {
-  json_path_fs <- file.path(config$output_root, "03_statistical_analysis",
-                             sprintf("Machine_Metrics_%s.json", config$project_name))
+  json_path_fs <- step_output_path(config, 3, sprintf("Machine_Metrics_%s", config$project_name), "json")
   min_loading <- if (!is.null(feat_sel_conf$min_abs_loading)) feat_sel_conf$min_abs_loading else 0
   always_inc  <- if (!is.null(feat_sel_conf$always_include))  feat_sel_conf$always_include  else character(0)
   min_feats   <- if (!is.null(feat_sel_conf$min_features))    feat_sel_conf$min_features    else 8L
@@ -339,8 +336,7 @@ if (is.null(net_res) || nrow(net_res$edges_table) == 0) {
   dev.off()
 
   # 10. Hub-Driver Integration (requires sPLS-DA JSON from Step 03)
-  json_path <- file.path(config$output_root, "03_statistical_analysis",
-                         sprintf("Machine_Metrics_%s.json", config$project_name))
+  json_path <- step_output_path(config, 3, sprintf("Machine_Metrics_%s", config$project_name), "json")
 
   if (file.exists(json_path) && requireNamespace("jsonlite", quietly = TRUE)) {
     tryCatch({

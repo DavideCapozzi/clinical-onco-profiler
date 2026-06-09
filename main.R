@@ -137,29 +137,9 @@ for (exp_name in names(experiments_list)) {
   #       The two steps belong to independent analytical passes and different data modalities.
   # ============================================================================
   if (run_standard) {
-    # Isolate configuration state for this pass
-    config <- base_config
-    config$project_name <- exp_name 
-    config$run_mode <- "standard"   
-    
-    # Overwrite clinical logic if defined specifically in the experiment block
-    if (!is.null(exp_cfg$clinical)) config$clinical <- exp_cfg$clinical
+    # Isolate configuration state for this pass (see prepare_pass_config in utils_io.R)
+    config <- prepare_pass_config(base_config, exp_cfg, exp_name, "standard", run_root)
 
-    # Per-experiment feature panel override (e.g. HNSCC has a different marker set).
-    # soluble may legitimately be empty (FACS-only panels, e.g. the NSCLC v2 cohort).
-    if (!is.null(exp_cfg$features)) {
-      config$features <- exp_cfg$features
-      if (length(unlist(config$features$facs)) == 0)
-        stop(sprintf("[CONFIG] Experiment '%s': features.facs is empty", exp_name))
-    }
-
-    config$is_longitudinal <- FALSE
-
-    if (!is.null(exp_cfg$input_file)) config$input_file <- exp_cfg$input_file
-    
-    config$output_root <- file.path(run_root, config$project_name)
-    if (!dir.exists(config$output_root)) dir.create(config$output_root, recursive = TRUE)
-    
     log_file_std <- file.path(config$output_root, paste0("log_standard_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".txt"))
     
     message(sprintf("\n--- [PASS 1] STANDARD PIPELINE: %s ---", config$project_name))
@@ -195,27 +175,9 @@ for (exp_name in names(experiments_list)) {
   # PASS 2: LONGITUDINAL PIPELINE (01 Joint, 04 LMM)
   # ============================================================================
   if (run_longitudinal) {
-    # Isolate configuration state for this pass
-    config <- base_config
-    config$project_name <- exp_name     
-    config$run_mode <- "longitudinal"   
-    
-    if (!is.null(exp_cfg$clinical)) config$clinical <- exp_cfg$clinical
+    # Isolate configuration state for this pass (see prepare_pass_config in utils_io.R)
+    config <- prepare_pass_config(base_config, exp_cfg, exp_name, "longitudinal", run_root)
 
-    # Forward-compat: allow longitudinal experiments with custom feature panels
-    if (!is.null(exp_cfg$features)) config$features <- exp_cfg$features
-
-    config$is_longitudinal <- TRUE
-
-    # Critical Structural Rule: Disable Multivariate Outliers to prevent temporal censoring
-    config$qc$remove_outliers <- FALSE
-    
-    if (!is.null(exp_cfg$input_file_t0)) config$input_file_t0 <- exp_cfg$input_file_t0
-    if (!is.null(exp_cfg$input_file_t1)) config$input_file_t1 <- exp_cfg$input_file_t1
-    
-    config$output_root <- file.path(run_root, config$project_name)
-    if (!dir.exists(config$output_root)) dir.create(config$output_root, recursive = TRUE)
-    
     log_file_long <- file.path(config$output_root, paste0("log_longitudinal_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".txt"))
     
     message(sprintf("\n--- [PASS 2] LONGITUDINAL PIPELINE: %s ---", config$project_name))
@@ -244,25 +206,8 @@ for (exp_name in names(experiments_list)) {
   # no features survive the FDR + LOO gate — no per-experiment flag needed.
   # ============================================================================
   if (run_machine_learning) {
-    config <- base_config
-    config$project_name <- exp_name
-    config$run_mode     <- "machine_learning"
-
-    if (!is.null(exp_cfg$clinical)) config$clinical <- exp_cfg$clinical
-
-    # Per-experiment overrides needed for multi-dataset support
-    if (!is.null(exp_cfg$features))      config$features      <- exp_cfg$features
-    if (!is.null(exp_cfg$input_file))    config$input_file    <- exp_cfg$input_file
-    if (!is.null(exp_cfg$input_file_t0)) config$input_file_t0 <- exp_cfg$input_file_t0
-    if (!is.null(exp_cfg$machine_learning)) {
-      config$machine_learning <- modifyList(
-        if (!is.null(config$machine_learning)) config$machine_learning else list(),
-        exp_cfg$machine_learning
-      )
-    }
-
-    config$output_root <- file.path(run_root, config$project_name)
-    if (!dir.exists(config$output_root)) dir.create(config$output_root, recursive = TRUE)
+    # Isolate configuration state for this pass (see prepare_pass_config in utils_io.R)
+    config <- prepare_pass_config(base_config, exp_cfg, exp_name, "machine_learning", run_root)
 
     log_file_ml <- file.path(config$output_root, paste0("log_machine_learning_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".txt"))
 
