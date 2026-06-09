@@ -50,13 +50,10 @@ assert_block <- function(label, got, expected, tol_auc = 5e-4) {
   fails
 }
 
-# Flatten an extract_run_metrics() result ($ml + $lmm) into one named list for
-# assert_block(), so expected_metrics.yml can stay flat per experiment.
-flatten_metrics <- function(m) {
-  out <- m$ml
-  if (!is.null(m$lmm)) out$n_sig_fdr <- m$lmm$n_sig_fdr
-  out
-}
+# Flatten an extract_run_metrics() result for assert_block(). Delegates to the
+# single source of truth in R/utils_metrics.R (sourced before this file in both
+# golden runners), so the flattening rule lives in exactly one place.
+flatten_metrics <- function(m) flatten_run_metrics(m)
 
 # Top-level: given extracted metrics + expected block, print and return result.
 report_assertions <- function(label, m, expected, tol_auc = 5e-4) {

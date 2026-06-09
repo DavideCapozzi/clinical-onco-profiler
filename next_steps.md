@@ -48,19 +48,30 @@ Le 3 modifiche concordate in revisione + le decisioni di questa sessione sono qu
   `expected$gate` faceva partial-match su `gate_method` (→ `expected[["gate"]]`), e riga 44 usava
   `<<-` invece di `<-` nel corpo della funzione. Nessun valore atteso cambiato.
 
-### Fase 3 — Robustezza skill: logica in codice
-- Ampliare `R/utils_metrics.R` con:
-  - `compare_runs(run_a, run_b)` → tabella delta tra due run.
-  - `publishability_verdict(metrics)` → verdetto (perm p<0.05, nested-LOO>0.6, n_sig_fdr>0) + flag.
-- Aggiornare `/post-change` (SKILL.md) perché chiami questi helper (via piccolo runner R) invece di
-  jq/estrazioni ad-hoc → la skill smette di hardcodare path JSON e soglie. Stessa fonte del golden test.
-- Unificare `metrics_json_paths()` (in `utils_metrics.R`) su `.STEP_DIRS`/`step_output_path()` —
-  rimandato dalla Fase 2 per non sconfinare di fase: ora i nomi cartelle step sono definiti in 2 posti.
+### Fase 3 — Robustezza skill: logica in codice ✅
+- `R/utils_metrics.R` ampliato: `publishability_verdict(m)` (perm p<0.05 sul metodo primario,
+  nested-LOO>0.6, n_sig_fdr>0 solo path lmm), `compare_runs(base, new)` (tabella delta via
+  `extract_run_metrics`), `flatten_run_metrics()` (SSOT del flatten), `list_run_experiments()`.
+- `tools/metrics_report.R` (tracked, nuovo): CLI `--new/--base/--exp` → verdetto + delta table;
+  solo I/O+printing, tutta la logica/soglie negli helper.
+- `metrics_json_paths()` unificato su `.STEP_DIRS`/`step_output_path()` (nomi cartelle step in 1 posto).
+- `tests/golden/assert_metrics.R`: `flatten_metrics()` delega a `flatten_run_metrics()` (dedup).
+- `/post-change` (SKILL.md): fasi 1b+1c ora un solo comando `tools/metrics_report.R` (niente jq/sprintf);
+  tabella runner aggiornata ai runner `EXPERIMENT`-parametrici.
+- **Validato**: golden assertions re-check PASS (no rerun pipeline); CLI testato (base+new, verdict-only,
+  default-latest) — delta 0 metric changed.
 
-### Fase 4 — Spezzare i god file (protetta dal golden test)
-- `R/modules_ml.R` (2623 righe) → split per responsabilità: `modules_ml_gate.R`, `modules_ml_cv.R`,
-  `modules_ml_utility.R`, `modules_ml_plots.R` + un file che li sorgia. Nessun cambio comportamento.
-- Idem in piccolo per `src/06_machine_learning.R` se resta troppo denso.
+### Fase 4 — Spezzare i god file (protetta dal golden test) ✅
+- `R/modules_ml.R` (2623 righe) → split per responsabilità: `modules_ml_gate.R` (4 fn),
+  `modules_ml_cv.R` (10), `modules_ml_utility.R` (6), `modules_ml_plots.R` (5).
+  `modules_ml.R` resta come **aggregatore** (sorgia i 4 via `here()`) così
+  `src/06: source("R/modules_ml.R")` funziona invariato; sotto il glob `R/*.R` i 4 file
+  sono caricati direttamente (re-source idempotente).
+- **Validato**: deparse di tutte e 25 le funzioni **identico** pre/post split; `replicate_original`
+  PASS (lmm) + `check_snapshot` PASS (univariate HNSCC + v2). Nessun cambio comportamento.
+- `src/06_machine_learning.R` (1415 righe): **non splittato** — è uno script procedurale sequenziale
+  (non una libreria di funzioni); spezzarlo in sub-script che condividono variabili sarebbe fragile e
+  di basso valore. Deferred.
 
 ## Fuori scope ora (deprioritizzato)
 `renv.lock`, riconciliazione `.gitignore`↔CLAUDE.md, unificazione README/CLAUDE.md, CI.

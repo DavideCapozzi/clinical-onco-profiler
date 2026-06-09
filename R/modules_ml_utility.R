@@ -1,0 +1,779 @@
+# R/modules_ml_utility.R
+# ==============================================================================
+# MACHINE LEARNING MODULE — UTILITY
+# Split from the former monolithic R/modules_ml.R (sourced via that aggregator).
+# Dependencies: dplyr, ggplot2, tidyr, glmnet, e1071, pROC
+# ==============================================================================
+
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+
+#' @title Run Clinical Benchmark Comparison
+#' @description
+#' Loads a clinical biomarker column from the raw input Excel, merges by Patient_ID,
+#' computes its univariate AUC on available cases, and performs a DeLong test against
+#' the primary model's out-of-fold predicted probabilities. Returns NULL gracefully when
+#' the column is absent, has too many NAs, or the input file cannot be read.
+#'
+#' @param DATA Named list. Processed data object from Step 01 (for Patient_ID and Group).
+#' @param primary_probs Numeric vector. Out-of-fold predicted probabilities from the primary model.
+#' @param y_primary Factor. True class labels (same order as primary_probs).
+#' @param positive_label String. The positive class label.
+#' @param input_file String. Path to the raw input Excel (config$input_file_t0).
+#' @param benchmark_col String. Column name for the clinical biomarker.
+#' @param benchmark_label String. Human-readable label for reporting.
+#' @param min_n Integer. Minimum valid cases required to proceed (default 10).
+#' @return A named list: label, auc, auc_ci, n_valid, n_na, delong_p, predicted_probs,
+#'   y_true, positive_label. Returns NULL on failure.
+#' @export
+run_clinical_benchmark <- function(DATA, primary_probs, y_primary, positive_label,
+                                   input_file, benchmark_col, benchmark_label = NULL,
+                                   min_n = 10L) {
+  if (!requireNamespace("pROC",    quietly = TRUE)) return(NULL)
+  if (!requireNamespace("readxl",  quietly = TRUE)) return(NULL)
+  if (!requireNamespace("dplyr",   quietly = TRUE)) return(NULL)
+
+  if (is.null(benchmark_label)) benchmark_label <- benchmark_col
+
+  if (!file.exists(input_file)) {
+    message(sprintf("   [ML Benchmark] Input file not found: %s", input_file))
+    return(NULL)
+  }
+
+  df_raw <- tryCatch(
+    readxl::read_excel(input_file, sheet = 1),
+    error = function(e) { message(sprintf("   [ML Benchmark] Cannot read %s: %s", input_file, e$message)); NULL }
+  )
+  if (is.null(df_raw)) return(NULL)
+
+  if (!benchmark_col %in% names(df_raw)) {
+    message(sprintf("   [ML Benchmark] Column '%s' not found in %s", benchmark_col, basename(input_file)))
+    return(NULL)
+  }
+
+  # Merge: raw file → processed metadata by Patient_ID
+  df_bench <- df_raw %>%
+    dplyr::select(Patient_ID, dplyr::all_of(benchmark_col)) %>%
+    dplyr::mutate(Patient_ID = as.character(Patient_ID))
+
+  df_meta <- DATA$metadata %>%
+    dplyr::mutate(Patient_ID = as.character(Patient_ID)) %>%
+    dplyr::left_join(df_bench, by = "Patient_ID")
+
+  bench_vals <- as.numeric(df_meta[[benchmark_col]])
+  n_na    <- sum(is.na(bench_vals))
+  n_valid <- sum(!is.na(bench_vals))
+
+  message(sprintf("   [ML Benchmark] '%s': %d valid / %d total (NA=%d)",
+                  benchmark_label, n_valid, nrow(df_meta), n_na))
+
+  if (n_valid < min_n) {
+    message(sprintf("   [ML Benchmark] Insufficient valid cases (%d < %d). Skipping.", n_valid, min_n))
+    return(NULL)
+  }
+
+  valid_mask <- !is.na(bench_vals)
+  y_bench    <- y_primary[valid_mask]
+  y_bin      <- as.integer(y_bench == positive_label)
+  x_bench    <- bench_vals[valid_mask]
+
+  # Univariate AUC (direction auto-selected for maximum AUC)
+  roc_fwd <- tryCatch(pROC::roc(y_bin, x_bench, direction = "<", quiet = TRUE), error = function(e) NULL)
+  roc_rev <- tryCatch(pROC::roc(y_bin, x_bench, direction = ">", quiet = TRUE), error = function(e) NULL)
+  auc_fwd <- if (!is.null(roc_fwd)) as.numeric(pROC::auc(roc_fwd)) else 0
+  auc_rev <- if (!is.null(roc_rev)) as.numeric(pROC::auc(roc_rev)) else 0
+  roc_best  <- if (auc_fwd >= auc_rev) roc_fwd else roc_rev
+  bench_auc <- max(auc_fwd, auc_rev)
+
+  ci_bench <- tryCatch(
+    as.numeric(pROC::ci.auc(roc_best, method = "delong")),
+    error = function(e) c(NA_real_, bench_auc, NA_real_)
+  )
+
+  # DeLong test: primary model (subset) vs benchmark
+  probs_subset <- primary_probs[valid_mask]
+  y_bin_sub    <- as.integer(y_primary[valid_mask] == positive_label)
+  roc_primary  <- tryCatch(
+    pROC::roc(y_bin_sub, probs_subset, direction = "<", quiet = TRUE),
+    error = function(e) NULL
+  )
+  primary_auc_subset <- if (!is.null(roc_primary)) as.numeric(pROC::auc(roc_primary)) else NA_real_
+
+  delong_result <- if (!is.null(roc_primary) && !is.null(roc_best)) {
+    tryCatch(pROC::roc.test(roc_primary, roc_best, method = "delong"), error = function(e) NULL)
+  } else NULL
+
+  delong_p <- if (!is.null(delong_result)) round(delong_result$p.value, 5) else NA_real_
+
+  message(sprintf(
+    "   [ML Benchmark] %s: AUC=%.3f [%.3f-%.3f] | Primary(n=%d)=%.3f | DeLong p=%.4f",
+    benchmark_label, bench_auc, ci_bench[1], ci_bench[3],
+    n_valid, primary_auc_subset, if (is.na(delong_p)) 0 else delong_p
+  ))
+
+  list(
+    label                 = benchmark_label,
+    column                = benchmark_col,
+    auc                   = bench_auc,
+    auc_ci                = ci_bench,
+    n_valid               = n_valid,
+    n_na                  = n_na,
+    primary_auc_on_subset = primary_auc_subset,
+    delong_p              = delong_p,
+    direction             = if (auc_fwd >= auc_rev) "<" else ">",
+    predicted_probs       = x_bench,
+    y_true                = y_bench,
+    positive_label        = positive_label
+  )
+}
+
+#' @title Benchmark-Stratified Subgroup Analysis
+#' @description
+#' Stratifies the cohort by clinical-standard categorical bins of the benchmark
+#' biomarker (e.g. PD-L1 TPS at <1%, 1-49%, >=50%) and quantifies:
+#'   - Frequency table of bins vs outcome (Fisher exact + Cochran-Armitage trend)
+#'   - Binary cut performance ("benchmark high" vs "benchmark low") as classifier
+#'   - Primary-model AUC restricted to the "benchmark low" subgroup, which is
+#'     the clinically actionable population where the standard biomarker is
+#'     insufficient for treatment decision
+#'
+#' @param DATA Step 01 standard DATA object (with metadata$Patient_ID).
+#' @param X_main Numeric matrix of main-effect features (n_patients x n_main).
+#' @param y Factor outcome aligned with X_main.
+#' @param positive_label Positive class label.
+#' @param input_file Path to raw clinical Excel (T0) with benchmark column.
+#' @param benchmark_col Column name in raw Excel.
+#' @param benchmark_label Optional human-readable label.
+#' @param bin_breaks Numeric vector of bin breakpoints (default c(0.99, 49.99)
+#'   for PD-L1 TPS clinical strata <1%, 1-49%, >=50%).
+#' @param bin_labels Character vector of bin labels (default
+#'   c("neg(<1%)", "low(1-49%)", "high(>=50%)")).
+#' @param high_threshold Numeric. Cutoff defining "benchmark high" for the
+#'   binary clinical-cut classifier (default 50).
+#' @param C_grid,gamma_grid,inner_folds,seed SVM tuning hyperparameters.
+#' @param min_subgroup_n Minimum patients per subgroup to attempt SVM fit
+#'   (default 20). Smaller subgroups are reported with raw counts only.
+#' @return A list with crosstab, fisher_p, ca_trend_p, binary_cut metrics, and
+#'   per-subgroup nested-LOOCV SVM AUC (when subgroup_n >= min_subgroup_n).
+#'   Returns NULL if benchmark column is unavailable.
+#' @export
+run_pdl1_stratified <- function(DATA, X_main, y, positive_label,
+                                input_file, benchmark_col, benchmark_label = NULL,
+                                bin_breaks     = c(0.99, 49.99),
+                                bin_labels     = c("neg(<1%)", "low(1-49%)", "high(>=50%)"),
+                                high_threshold = 50,
+                                C_grid         = c(0.01, 0.1, 1, 10, 100),
+                                gamma_grid     = c(0.01, 0.1, 1, 10),
+                                inner_folds    = 5L,
+                                seed           = 2026,
+                                min_subgroup_n = 15L) {
+  if (!requireNamespace("readxl", quietly = TRUE)) return(NULL)
+  if (!requireNamespace("dplyr",  quietly = TRUE)) return(NULL)
+  if (!requireNamespace("pROC",   quietly = TRUE)) return(NULL)
+
+  if (is.null(benchmark_label)) benchmark_label <- benchmark_col
+  if (!file.exists(input_file)) {
+    message(sprintf("   [ML Stratified] Input file not found: %s", input_file))
+    return(NULL)
+  }
+
+  df_raw <- tryCatch(readxl::read_excel(input_file, sheet = 1),
+                     error = function(e) NULL)
+  if (is.null(df_raw) || !benchmark_col %in% names(df_raw)) {
+    message(sprintf("   [ML Stratified] Column '%s' not available — skipping.", benchmark_col))
+    return(NULL)
+  }
+
+  df_bench <- df_raw %>%
+    dplyr::select(Patient_ID, dplyr::all_of(benchmark_col)) %>%
+    dplyr::mutate(Patient_ID = as.character(Patient_ID))
+
+  df_meta <- DATA$metadata %>%
+    dplyr::mutate(Patient_ID = as.character(Patient_ID)) %>%
+    dplyr::left_join(df_bench, by = "Patient_ID")
+
+  bench_vals <- as.numeric(df_meta[[benchmark_col]])
+  n_valid <- sum(!is.na(bench_vals))
+  if (n_valid < min_subgroup_n) {
+    message(sprintf("   [ML Stratified] Insufficient valid cases (%d). Skipping.", n_valid))
+    return(NULL)
+  }
+
+  # ---- Categorical bins (3 levels) ----
+  bins <- cut(bench_vals,
+              breaks = c(-Inf, bin_breaks, Inf),
+              labels = bin_labels, include.lowest = TRUE)
+
+  y_chr  <- as.character(y)
+  pos    <- positive_label
+  neg    <- setdiff(unique(y_chr), pos)
+  tab3   <- table(bins, factor(y_chr, levels = c(neg, pos)), useNA = "no")
+  fish3  <- tryCatch(fisher.test(tab3)$p.value, error = function(e) NA_real_)
+
+  ca_p <- NA_real_
+  if (nrow(tab3) >= 2) {
+    rs <- rowSums(tab3)
+    if (all(rs > 0)) {
+      ca_x <- tab3[, pos]
+      ca_n <- rs
+      ca_p <- tryCatch(prop.trend.test(x = ca_x, n = ca_n)$p.value,
+                       error = function(e) NA_real_)
+    }
+  }
+
+  rr_per_bin <- as.numeric(prop.table(tab3, margin = 1)[, pos]) * 100
+  bin_summary <- data.frame(
+    Bin            = rownames(tab3),
+    N              = as.numeric(rowSums(tab3)),
+    N_Responder    = as.numeric(tab3[, pos]),
+    Response_Rate  = round(rr_per_bin, 1),
+    stringsAsFactors = FALSE
+  )
+
+  # ---- Binary cut (clinical threshold) as a classifier ----
+  high_mask <- !is.na(bench_vals) & bench_vals >= high_threshold
+  low_mask  <- !is.na(bench_vals) & bench_vals <  high_threshold
+  y_b <- y_chr[high_mask | low_mask]
+  pred_high <- ifelse(bench_vals[high_mask | low_mask] >= high_threshold, pos, neg)
+  sens_b <- mean(pred_high[y_b == pos] == pos)
+  spec_b <- mean(pred_high[y_b == neg] == neg)
+  bal_b  <- (sens_b + spec_b) / 2
+  tab2   <- table(factor(pred_high, levels = c(neg, pos)),
+                  factor(y_b, levels = c(neg, pos)))
+  fish2  <- tryCatch(fisher.test(tab2), error = function(e) NULL)
+  binary_cut <- list(
+    threshold         = high_threshold,
+    n                 = length(y_b),
+    n_high            = sum(high_mask),
+    n_low             = sum(low_mask),
+    balanced_accuracy = round(bal_b, 4),
+    sensitivity       = round(sens_b, 4),
+    specificity       = round(spec_b, 4),
+    fisher_p          = if (!is.null(fish2)) round(fish2$p.value, 4) else NA_real_,
+    odds_ratio        = if (!is.null(fish2)) round(as.numeric(fish2$estimate), 4) else NA_real_
+  )
+
+  # ---- Per-subgroup nested-LOOCV SVM on the LMM-gate features ----
+  run_subgroup_svm <- function(mask, label) {
+    n_s <- sum(mask)
+    if (n_s < min_subgroup_n) {
+      return(list(n = n_s,
+                  n_responder = sum(y[mask] == pos),
+                  auc = NA_real_, auc_ci = c(NA_real_, NA_real_, NA_real_),
+                  predicted_probs = NULL, y_true = NULL, benchmark_vals = NULL,
+                  note = sprintf("n=%d below min_subgroup_n=%d — not fitted.",
+                                 n_s, min_subgroup_n)))
+    }
+    y_sub <- y[mask]
+    if (length(unique(y_sub)) < 2 || min(table(y_sub)) < 3) {
+      return(list(n = n_s,
+                  n_responder = sum(y_sub == pos),
+                  auc = NA_real_, auc_ci = c(NA_real_, NA_real_, NA_real_),
+                  predicted_probs = NULL, y_true = NULL, benchmark_vals = NULL,
+                  note = "Degenerate class distribution — not fitted."))
+    }
+    X_sub <- X_main[mask, , drop = FALSE]
+    res <- run_nested_loocv_svm(
+      X = X_sub, y = factor(as.character(y_sub), levels = c(neg, pos)),
+      C_grid = C_grid, gamma_grid = gamma_grid,
+      inner_folds = inner_folds, seed = seed
+    )
+    metrics <- compute_classification_metrics(res$y_true, res$predicted_probs, pos)
+    small_n <- n_s < 20L
+    inverted <- !is.na(metrics$auc) && metrics$auc < 0.5
+    notes <- sprintf("SVM-RBF nested-LOOCV on KI67 gate, %s subgroup.", label)
+    if (small_n) {
+      notes <- paste0(notes,
+                      sprintf(" CAVEAT: n=%d is small (< 20); estimate is indicative only.",
+                              n_s))
+    }
+    if (inverted) {
+      notes <- paste0(notes,
+                      " WARNING: AUC < 0.5 means the gate-features ordering inverts on this subgroup — interpret as no signal (or anti-correlation) on the subset, not negative information.")
+    }
+    list(
+      n                 = n_s,
+      n_responder       = sum(y_sub == pos),
+      auc               = round(metrics$auc, 4),
+      auc_ci            = round(metrics$auc_ci, 4),
+      balanced_accuracy = round(metrics$balanced_accuracy, 4),
+      sensitivity       = round(metrics$sensitivity, 4),
+      specificity       = round(metrics$specificity, 4),
+      small_n_caveat    = small_n,
+      inverted_auc      = inverted,
+      predicted_probs   = res$predicted_probs,
+      y_true            = as.character(res$y_true),
+      benchmark_vals    = as.numeric(bench_vals[mask]),
+      note              = notes
+    )
+  }
+
+  sub_low  <- run_subgroup_svm(low_mask,  sprintf("%s < %g", benchmark_label, high_threshold))
+  sub_high <- run_subgroup_svm(high_mask, sprintf("%s >= %g", benchmark_label, high_threshold))
+
+  list(
+    label              = benchmark_label,
+    column             = benchmark_col,
+    n_valid            = n_valid,
+    bin_breaks         = bin_breaks,
+    bin_labels         = bin_labels,
+    bin_crosstab       = bin_summary,
+    fisher_3bins_p     = round(fish3, 4),
+    ca_trend_p         = round(ca_p, 4),
+    binary_cut         = binary_cut,
+    subgroup_low       = sub_low,
+    subgroup_high      = sub_high,
+    note               = sprintf(
+      "Stratified analysis on n=%d valid %s values. Categorical bins at %s. Binary clinical cut at %g. Subgroup SVM uses LMM gate features.",
+      n_valid, benchmark_label,
+      paste(bin_breaks, collapse = "/"), high_threshold
+    )
+  )
+}
+
+#' @title Combined Benchmark + Model Information Gain (IDI/NRI)
+#' @description
+#' Quantifies how much the LMM-gate features add over a continuous clinical
+#' benchmark biomarker (e.g. PD-L1). Two complementary perspectives:
+#'   1. Logistic (apparent/in-sample): benchmark alone vs benchmark + main
+#'      features, scored with apparent (resubstitution) probabilities — the
+#'      conventional setup for Pencina IDI / continuous NRI. Patient-level
+#'      bootstrap refits both models inside each iteration to give an honest
+#'      CI accounting for fit uncertainty. We deliberately avoid LOOCV here
+#'      because univariate LOOCV on a weak baseline (e.g. PD-L1 with AUC ~ 0.6)
+#'      is unstable: fold-to-fold sign flips of the slope can drive the
+#'      "benchmark-alone" AUC below chance, which mechanically inflates IDI.
+#'   2. SVM-RBF nested-LOOCV: same-subset comparison of model-with-benchmark
+#'      vs model-without (informs whether the benchmark adds noise to the
+#'      non-linear classifier).
+#'
+#' @param DATA Step 01 DATA object (for metadata).
+#' @param X_main Numeric matrix of main-effect features (already z-scored at
+#'   Step 01) aligned with DATA$metadata$Patient_ID.
+#' @param y Factor outcome aligned with X_main.
+#' @param positive_label Positive class label.
+#' @param input_file Path to raw clinical Excel (T0).
+#' @param benchmark_col Column name in raw Excel.
+#' @param benchmark_label Optional label.
+#' @param n_boot Number of patient-level bootstrap iterations for IDI/cNRI CI.
+#' @param C_grid,gamma_grid,inner_folds SVM tuning.
+#' @param seed RNG seed.
+#' @return List with logistic, idi/nri, and SVM comparison. NULL if benchmark
+#'   unavailable.
+#' @export
+run_combined_benchmark_model <- function(DATA, X_main, y, positive_label,
+                                         input_file, benchmark_col,
+                                         benchmark_label = NULL,
+                                         n_boot          = 1000L,
+                                         C_grid          = c(0.01, 0.1, 1, 10, 100),
+                                         gamma_grid      = c(0.01, 0.1, 1, 10),
+                                         inner_folds     = 5L,
+                                         seed            = 2026) {
+  if (!requireNamespace("readxl", quietly = TRUE)) return(NULL)
+  if (!requireNamespace("dplyr",  quietly = TRUE)) return(NULL)
+  if (!requireNamespace("pROC",   quietly = TRUE)) return(NULL)
+
+  if (is.null(benchmark_label)) benchmark_label <- benchmark_col
+  if (!file.exists(input_file)) return(NULL)
+
+  df_raw <- tryCatch(readxl::read_excel(input_file, sheet = 1),
+                     error = function(e) NULL)
+  if (is.null(df_raw) || !benchmark_col %in% names(df_raw)) return(NULL)
+
+  df_bench <- df_raw %>%
+    dplyr::select(Patient_ID, dplyr::all_of(benchmark_col)) %>%
+    dplyr::mutate(Patient_ID = as.character(Patient_ID))
+  df_meta <- DATA$metadata %>%
+    dplyr::mutate(Patient_ID = as.character(Patient_ID)) %>%
+    dplyr::left_join(df_bench, by = "Patient_ID")
+
+  bench_vals <- as.numeric(df_meta[[benchmark_col]])
+  valid_mask <- !is.na(bench_vals)
+  if (sum(valid_mask) < 20) return(NULL)
+
+  pos <- positive_label
+  neg <- setdiff(levels(y), pos)
+  y_sub <- y[valid_mask]
+  y_bin <- as.integer(y_sub == pos)
+  x_bench <- bench_vals[valid_mask]
+  X_sub  <- X_main[valid_mask, , drop = FALSE]
+
+  # ---- Apparent (in-sample) logistic: benchmark alone vs benchmark + features
+  # We use resubstitution predictions (the standard Pencina 2008 IDI setup).
+  # CI honesty is delivered by the patient-level bootstrap below, which refits
+  # both models on each resample.
+  df_lr <- data.frame(y = y_bin, bench = x_bench, X_sub, check.names = FALSE)
+  feat_names_lr <- make.names(colnames(X_sub), unique = TRUE)
+  colnames(df_lr)[3:ncol(df_lr)] <- feat_names_lr
+
+  formula_bench <- as.formula("y ~ bench")
+  formula_comb  <- as.formula(paste("y ~ bench +", paste(feat_names_lr, collapse = " + ")))
+
+  insample_glm <- function(formula_obj, df) {
+    fit <- suppressWarnings(glm(formula_obj, data = df, family = binomial()))
+    as.numeric(predict(fit, newdata = df, type = "response"))
+  }
+
+  p_bench <- insample_glm(formula_bench, df_lr)
+  p_comb  <- insample_glm(formula_comb,  df_lr)
+
+  roc_bench <- pROC::roc(y_bin, p_bench, direction = "<", quiet = TRUE)
+  roc_comb  <- pROC::roc(y_bin, p_comb,  direction = "<", quiet = TRUE)
+  auc_bench <- as.numeric(pROC::auc(roc_bench))
+  auc_comb  <- as.numeric(pROC::auc(roc_comb))
+  ci_bench  <- tryCatch(as.numeric(pROC::ci.auc(roc_bench, method = "delong")),
+                        error = function(e) c(NA_real_, auc_bench, NA_real_))
+  ci_comb   <- tryCatch(as.numeric(pROC::ci.auc(roc_comb,  method = "delong")),
+                        error = function(e) c(NA_real_, auc_comb,  NA_real_))
+  delong_p  <- tryCatch(pROC::roc.test(roc_bench, roc_comb,
+                                       method = "delong", paired = TRUE)$p.value,
+                        error = function(e) NA_real_)
+
+  # ---- IDI / Continuous NRI ----
+  idi_components <- function(p_old, p_new, y_bin) {
+    evt <- y_bin == 1
+    imp_evt <- mean(p_new[evt]) - mean(p_old[evt])
+    red_nev <- mean(p_old[!evt]) - mean(p_new[!evt])
+    list(IDI = imp_evt + red_nev, IDI_event = imp_evt, IDI_nonevent = red_nev)
+  }
+  cnri_components <- function(p_old, p_new, y_bin) {
+    evt <- y_bin == 1
+    up_evt <- mean((p_new - p_old)[evt] > 0) - mean((p_new - p_old)[evt] < 0)
+    dn_nev <- mean((p_new - p_old)[!evt] < 0) - mean((p_new - p_old)[!evt] > 0)
+    list(NRI = up_evt + dn_nev, NRI_event = up_evt, NRI_nonevent = dn_nev)
+  }
+
+  idi <- idi_components(p_bench, p_comb, y_bin)
+  nri <- cnri_components(p_bench, p_comb, y_bin)
+
+  # Patient-level bootstrap CI for IDI / cNRI. Refits both logistic models
+  # inside each iteration so the CI reflects fit-uncertainty in addition to
+  # sampling variability (resampling predicted-probability tuples alone would
+  # understate variance with apparent predictions).
+  set.seed(seed)
+  n_y <- length(y_bin)
+  idi_boot <- numeric(n_boot); nri_boot <- numeric(n_boot)
+  for (b in seq_len(n_boot)) {
+    idx <- sample(n_y, n_y, replace = TRUE)
+    if (length(unique(y_bin[idx])) < 2) { idi_boot[b] <- NA_real_; nri_boot[b] <- NA_real_; next }
+    df_b <- df_lr[idx, , drop = FALSE]
+    pb <- tryCatch(insample_glm(formula_bench, df_b), error = function(e) NULL)
+    pc <- tryCatch(insample_glm(formula_comb,  df_b), error = function(e) NULL)
+    if (is.null(pb) || is.null(pc)) { idi_boot[b] <- NA_real_; nri_boot[b] <- NA_real_; next }
+    yb <- y_bin[idx]
+    idi_boot[b] <- idi_components(pb, pc, yb)$IDI
+    nri_boot[b] <- cnri_components(pb, pc, yb)$NRI
+  }
+  idi_ci <- as.numeric(quantile(idi_boot, c(0.025, 0.975), na.rm = TRUE))
+  nri_ci <- as.numeric(quantile(nri_boot, c(0.025, 0.975), na.rm = TRUE))
+  idi_p  <- 2 * min(mean(idi_boot <= 0, na.rm = TRUE), mean(idi_boot > 0, na.rm = TRUE))
+  nri_p  <- 2 * min(mean(nri_boot <= 0, na.rm = TRUE), mean(nri_boot > 0, na.rm = TRUE))
+
+  # ---- SVM-RBF on the same subset: benchmark + features vs features only ----
+  bench_z <- as.numeric(scale(x_bench))  # standardize benchmark to feature scale
+  X_with  <- cbind(BENCHMARK = bench_z, X_sub)
+  res_with <- run_nested_loocv_svm(X = X_with, y = y_sub,
+                                   C_grid = C_grid, gamma_grid = gamma_grid,
+                                   inner_folds = inner_folds, seed = seed)
+  res_only <- run_nested_loocv_svm(X = X_sub, y = y_sub,
+                                   C_grid = C_grid, gamma_grid = gamma_grid,
+                                   inner_folds = inner_folds, seed = seed)
+  m_with <- compute_classification_metrics(res_with$y_true, res_with$predicted_probs, pos)
+  m_only <- compute_classification_metrics(res_only$y_true, res_only$predicted_probs, pos)
+  roc_with <- tryCatch(pROC::roc(as.integer(res_with$y_true == pos),
+                                 res_with$predicted_probs, direction = "<", quiet = TRUE),
+                       error = function(e) NULL)
+  roc_only <- tryCatch(pROC::roc(as.integer(res_only$y_true == pos),
+                                 res_only$predicted_probs, direction = "<", quiet = TRUE),
+                       error = function(e) NULL)
+  svm_delong_p <- if (!is.null(roc_with) && !is.null(roc_only)) {
+    tryCatch(pROC::roc.test(roc_only, roc_with, method = "delong", paired = TRUE)$p.value,
+             error = function(e) NA_real_)
+  } else NA_real_
+
+  list(
+    label   = benchmark_label,
+    column  = benchmark_col,
+    n_valid = sum(valid_mask),
+    logistic = list(
+      auc_benchmark           = round(auc_bench, 4),
+      auc_benchmark_ci        = as.list(round(ci_bench, 4)),
+      auc_combined            = round(auc_comb, 4),
+      auc_combined_ci         = as.list(round(ci_comb, 4)),
+      delta_auc               = round(auc_comb - auc_bench, 4),
+      delong_p                = round(delong_p, 5)
+    ),
+    information_gain = list(
+      IDI                = round(idi$IDI, 4),
+      IDI_event          = round(idi$IDI_event, 4),
+      IDI_nonevent       = round(idi$IDI_nonevent, 4),
+      IDI_95CI           = as.list(round(idi_ci, 4)),
+      IDI_bootstrap_p    = round(idi_p, 4),
+      cNRI               = round(nri$NRI, 4),
+      cNRI_event         = round(nri$NRI_event, 4),
+      cNRI_nonevent      = round(nri$NRI_nonevent, 4),
+      cNRI_95CI          = as.list(round(nri_ci, 4)),
+      cNRI_bootstrap_p   = round(nri_p, 4),
+      n_boot             = n_boot
+    ),
+    svm_comparison = list(
+      auc_features_only        = round(m_only$auc, 4),
+      auc_features_with_bench  = round(m_with$auc, 4),
+      delta_auc                = round(m_with$auc - m_only$auc, 4),
+      delong_p                 = round(svm_delong_p, 5),
+      note = sprintf(
+        "Same n=%d subset. Negative delta means adding %s to the SVM-RBF kernel inputs degrades AUC — interpretable as the benchmark contributing noise relative to the LMM gate.",
+        sum(valid_mask), benchmark_label
+      )
+    ),
+    note = sprintf(
+      "Apparent (in-sample) logistic: %s alone vs %s + %d gate marker(s). IDI/cNRI estimated with patient-level bootstrap (B=%d) that refits both models per resample.",
+      benchmark_label, benchmark_label, ncol(X_sub), n_boot
+    ),
+    plot_data = list(
+      y_bin                      = y_bin,
+      positive_label             = pos,
+      p_bench_logistic           = p_bench,
+      p_combined_logistic        = p_comb,
+      p_svm_features_only        = res_only$predicted_probs,
+      p_svm_features_with_bench  = res_with$predicted_probs,
+      auc_svm_features_only      = round(m_only$auc, 4),
+      auc_svm_features_with_bench= round(m_with$auc, 4)
+    )
+  )
+}
+
+# ==============================================================================
+# CLINICAL-UTILITY LAYER (calibration + decision curve + optimism correction)
+# ==============================================================================
+#' Clinical-utility evaluation of a pre-specified composite biomarker.
+#'
+#' Builds a single pre-specified composite score (mean z of the supplied gate
+#' markers) at T0, fits a 1-feature logistic, and evaluates it the way a
+#' clinical-prediction manuscript (TRIPOD/REMARK) requires: discrimination
+#' (apparent + leakage-free LOO AUC + permutation p), Harrell enhanced-bootstrap
+#' OPTIMISM correction, CALIBRATION (intercept/slope/Brier, apparent + LOO) with
+#' logistic RECALIBRATION, and a DECISION CURVE (net benefit vs treat-all/none).
+#'
+#' Dataset-agnostic: the caller supplies `gate_markers` and `gate_provenance`;
+#' nothing is re-derived here. When the gate comes from the same T0 data
+#' (`gate_provenance = "univariate-selected"`) the composite is NOT independent —
+#' the returned `provenance_note` flags it as exploratory/conditional-on-selection
+#' so the optimism≈0 claim is never overstated.
+#'
+#' @param DATA_T0       Step 01 standard RDS list (`hybrid_data_z`, `metadata`).
+#' @param gate_markers  Character vector of marker names forming the composite.
+#' @param resp_label    Positive (responder) class label, e.g. "RP".
+#' @param gate_provenance "lmm-prespecified" or "univariate-selected".
+#' @param n_boot,n_perm Bootstrap / permutation reps (default 2000 each).
+#' @param min_n         Minimum sample size; below this the block is skipped.
+#' @param seed          RNG seed (state saved/restored — no side effects).
+#' @return Named list (scalars + `decision_curve`, `per_patient` data.frames), or
+#'         `NULL` (with an explanatory message) when prerequisites are not met.
+run_clinical_utility <- function(DATA_T0, gate_markers, resp_label,
+                                 gate_provenance = c("lmm-prespecified",
+                                                     "univariate-selected"),
+                                 n_boot = 2000L, n_perm = 2000L,
+                                 min_n = 20L, seed = 2026L) {
+
+  gate_provenance <- match.arg(gate_provenance)
+
+  # ── Reproducible RNG without disturbing the caller's stream ─────────────────
+  if (exists(".Random.seed", envir = .GlobalEnv)) {
+    old_seed <- get(".Random.seed", envir = .GlobalEnv)
+    on.exit(assign(".Random.seed", old_seed, envir = .GlobalEnv), add = TRUE)
+  }
+  set.seed(seed)
+
+  # ── Assemble composite + outcome ────────────────────────────────────────────
+  z      <- as.data.frame(DATA_T0$hybrid_data_z)
+  avail  <- intersect(gate_markers, colnames(z))
+  group  <- DATA_T0$metadata$Group
+  if (length(avail) == 0) {
+    message("[ML][CU] No gate markers present in T0 matrix — clinical utility skipped.")
+    return(NULL)
+  }
+  neg_label <- setdiff(unique(group), resp_label)
+  if (length(neg_label) != 1) {
+    message("[ML][CU] Outcome is not binary — clinical utility skipped.")
+    return(NULL)
+  }
+  Zc <- z[, avail, drop = FALSE]
+  Zc[] <- lapply(Zc, function(x) { x <- as.numeric(x); x[is.na(x)] <- median(x, na.rm = TRUE); x })
+  comp <- rowMeans(Zc)
+  keep <- !is.na(comp) & group %in% c(resp_label, neg_label)
+  comp <- comp[keep]; grp <- group[keep]
+  yb   <- as.integer(grp == resp_label)
+  y    <- factor(grp, levels = c(neg_label, resp_label))
+  n    <- length(yb)
+  if (n < min_n || length(unique(yb)) < 2) {
+    message(sprintf("[ML][CU] n=%d (< min_n=%d) or single class — clinical utility skipped.",
+                    n, min_n))
+    return(NULL)
+  }
+  message(sprintf("[ML][CU] composite=%s | n=%d (%s=%d, %s=%d) | provenance=%s",
+                  paste(avail, collapse = "+"), n, resp_label, sum(yb),
+                  neg_label, sum(1 - yb), gate_provenance))
+
+  # ── Local helpers (orientation fixed: positive class = resp_label) ──────────
+  auc_pos <- function(yv, p) as.numeric(pROC::auc(pROC::roc(
+    yv, p, levels = c(neg_label, resp_label), direction = "<", quiet = TRUE)))
+  brier   <- function(yvb, p) mean((p - yvb)^2)
+  calib_params <- function(yvb, p) {           # CITL + slope by logistic recalibration
+    p  <- pmin(pmax(p, 1e-6), 1 - 1e-6); lp <- qlogis(p)
+    slope <- tryCatch(coef(glm(yvb ~ lp, family = binomial()))[["lp"]],
+                      error = function(e) NA_real_)
+    citl  <- tryCatch(coef(glm(yvb ~ 1, family = binomial(), offset = lp))[[1]],
+                      error = function(e) NA_real_)
+    c(intercept = citl, slope = slope)
+  }
+  fac <- function(v) factor(ifelse(v == 1, resp_label, neg_label),
+                            levels = c(neg_label, resp_label))
+
+  # ── 1-feature logistic: apparent + leakage-free LOO probabilities ───────────
+  df  <- data.frame(yb = yb, comp = comp)
+  fit <- glm(yb ~ comp, data = df, family = binomial())
+  p_app <- as.numeric(predict(fit, type = "response"))
+  p_loo <- numeric(n)
+  for (i in seq_len(n)) {
+    fi <- suppressWarnings(glm(yb ~ comp, data = df[-i, , drop = FALSE], family = binomial()))
+    p_loo[i] <- as.numeric(predict(fi, newdata = df[i, , drop = FALSE], type = "response"))
+  }
+  auc_app <- auc_pos(y, p_app); auc_loo <- auc_pos(y, p_loo)
+  br_app  <- brier(yb, p_app);  br_loo  <- brier(yb, p_loo)
+  cp_app  <- calib_params(yb, p_app); cp_loo <- calib_params(yb, p_loo)
+
+  # permutation p for the LOO AUC (shuffle labels, full LOO refit)
+  cnt <- 1L
+  for (b in seq_len(n_perm)) {
+    yp <- sample(yb); dfp <- data.frame(yb = yp, comp = comp); pl <- numeric(n)
+    for (i in seq_len(n)) {
+      fi <- suppressWarnings(glm(yb ~ comp, data = dfp[-i, ], family = binomial()))
+      pl[i] <- as.numeric(predict(fi, newdata = dfp[i, ], type = "response"))
+    }
+    if (auc_pos(fac(yp), pl) >= auc_loo) cnt <- cnt + 1L
+  }
+  perm_p_loo <- cnt / (n_perm + 1)
+
+  # ── Harrell enhanced bootstrap: optimism of AUC & calibration slope ─────────
+  opt_auc <- opt_slope <- numeric(n_boot)
+  for (b in seq_len(n_boot)) {
+    idx <- sample(n, n, replace = TRUE); dfb <- df[idx, , drop = FALSE]
+    fb  <- suppressWarnings(glm(yb ~ comp, data = dfb, family = binomial()))
+    pb_boot <- as.numeric(predict(fb, newdata = dfb, type = "response"))
+    pb_orig <- as.numeric(predict(fb, newdata = df,  type = "response"))
+    a_boot  <- tryCatch(auc_pos(fac(dfb$yb), pb_boot), error = function(e) NA_real_)
+    opt_auc[b]   <- a_boot - auc_pos(y, pb_orig)
+    opt_slope[b] <- calib_params(dfb$yb, pb_boot)["slope"] - calib_params(yb, pb_orig)["slope"]
+  }
+  opt_auc_m   <- mean(opt_auc,   na.rm = TRUE)
+  opt_slope_m <- mean(opt_slope, na.rm = TRUE)
+  auc_corr    <- auc_app - opt_auc_m
+  auc_corr_ci <- as.numeric(quantile(auc_app - opt_auc, c(.025, .975), na.rm = TRUE))
+  slope_corr  <- cp_app[["slope"]] - opt_slope_m
+
+  # ── Logistic recalibration of the LOO probabilities (shrinkage) ─────────────
+  lp_loo  <- qlogis(pmin(pmax(p_loo, 1e-6), 1 - 1e-6))
+  p_recal <- as.numeric(plogis(cp_loo[["intercept"]] + cp_loo[["slope"]] * lp_loo))
+  cp_recal <- calib_params(yb, p_recal); br_recal <- brier(yb, p_recal)
+
+  # ── Decision curve (net benefit on honest LOO probabilities) ────────────────
+  prev    <- mean(yb)
+  pt_grid <- seq(0.01, 0.60, by = 0.01)
+  dc <- do.call(rbind, lapply(pt_grid, function(pt) {
+    pos <- p_loo >= pt; w <- pt / (1 - pt)
+    data.frame(threshold = pt,
+               model      = sum(pos & yb == 1) / n - sum(pos & yb == 0) / n * w,
+               treat_all  = prev - (1 - prev) * w,
+               treat_none = 0)
+  }))
+  dom <- dc[dc$model > dc$treat_all & dc$model > dc$treat_none, , drop = FALSE]
+  dom_range <- if (nrow(dom))
+    sprintf("%.0f%%-%.0f%%", 100 * min(dom$threshold), 100 * max(dom$threshold)) else "none"
+
+  # ── Youden cutpoint on the composite score ──────────────────────────────────
+  roc_comp <- pROC::roc(y, comp, levels = c(neg_label, resp_label),
+                        direction = "<", quiet = TRUE)
+  yj_df <- as.data.frame(pROC::coords(roc_comp, "best", best.method = "youden",
+                                      ret = c("threshold", "sensitivity", "specificity"),
+                                      transpose = FALSE))
+  yj <- as.numeric(yj_df[1, c("threshold", "sensitivity", "specificity")])
+
+  provenance_note <- if (gate_provenance == "lmm-prespecified") {
+    paste("Composite pre-specified from the Step 04 LMM gate (longitudinal data,",
+          "disjoint from this T0 classifier): optimism correction is a genuine",
+          "stability property, not an in-sample artefact.")
+  } else {
+    paste("Composite built from markers selected on these same T0 data",
+          "(univariate gate): EXPLORATORY / conditional-on-selection — the",
+          "optimism estimate is a lower bound and calibration is not independent.")
+  }
+  message(sprintf("[ML][CU] AUC app=%.3f LOO=%.3f (perm p=%.4f) | corrected=%.3f [%.3f-%.3f] | optimism=%.4f",
+                  auc_app, auc_loo, perm_p_loo, auc_corr, auc_corr_ci[1], auc_corr_ci[2], opt_auc_m))
+  message(sprintf("[ML][CU] calib LOO: CITL=%.2f slope=%.2f Brier=%.3f | DCA dominates over pt [%s]",
+                  cp_loo[["intercept"]], cp_loo[["slope"]], br_loo, dom_range))
+
+  list(
+    composite_markers = avail,
+    gate_provenance   = gate_provenance,
+    provenance_note   = provenance_note,
+    n                 = n, n_pos = sum(yb), n_neg = sum(1 - yb),
+    prevalence        = prev,
+    positive_label    = resp_label, negative_label = neg_label,
+    discrimination = list(
+      auc_apparent = auc_app, auc_loo = auc_loo, loo_perm_p = perm_p_loo,
+      n_perm = n_perm, auc_optimism = opt_auc_m,
+      auc_corrected = auc_corr, auc_corrected_ci = auc_corr_ci),
+    calibration = list(
+      apparent    = list(intercept = cp_app[["intercept"]], slope = cp_app[["slope"]], brier = br_app),
+      loo         = list(intercept = cp_loo[["intercept"]], slope = cp_loo[["slope"]], brier = br_loo),
+      recalibrated = list(intercept = cp_recal[["intercept"]], slope = cp_recal[["slope"]], brier = br_recal),
+      slope_optimism = opt_slope_m, slope_corrected = slope_corr),
+    youden = list(threshold = yj[1], sensitivity = yj[2], specificity = yj[3]),
+    decision_curve = list(prevalence = prev, dominance_range = dom_range, curve = dc),
+    per_patient = data.frame(
+      Patient_ID  = as.character(DATA_T0$metadata$Patient_ID[keep]),
+      True_Group  = as.character(grp),
+      Composite   = round(comp, 4),
+      Prob_LOO    = round(p_loo, 4),
+      Prob_Recal  = round(p_recal, 4),
+      stringsAsFactors = FALSE)
+  )
+}
+
+#' JSON-serializable view of a clinical-utility result (drops the per-patient
+#' table, which is written to Excel instead). Returns NULL passthrough.
+clinical_utility_json <- function(cu) {
+  if (is.null(cu)) return(NULL)
+  cu$per_patient <- NULL
+  cu
+}
+
+#' Flat Metric/Value summary of a clinical-utility result, for the Excel report.
+write_clinical_utility_summary <- function(cu) {
+  d <- cu$discrimination; cb <- cu$calibration; dc <- cu$decision_curve; yj <- cu$youden
+  data.frame(
+    Metric = c("Composite markers", "Gate provenance", "N (pos/neg)", "Prevalence",
+               "AUC apparent", "AUC LOO", "LOO permutation p", "AUC optimism",
+               "AUC corrected", "AUC corrected CI",
+               "Calibration CITL (LOO)", "Calibration slope (LOO)", "Brier (LOO)",
+               "Calibration slope (recalibrated)", "Brier (recalibrated)",
+               "Decision-curve dominance range",
+               "Youden threshold", "Youden sensitivity", "Youden specificity",
+               "Provenance note"),
+    Value = c(
+      paste(cu$composite_markers, collapse = "+"), cu$gate_provenance,
+      sprintf("%d (%d/%d)", cu$n, cu$n_pos, cu$n_neg), sprintf("%.3f", cu$prevalence),
+      sprintf("%.3f", d$auc_apparent), sprintf("%.3f", d$auc_loo),
+      sprintf("%.4f", d$loo_perm_p), sprintf("%.4f", d$auc_optimism),
+      sprintf("%.3f", d$auc_corrected),
+      sprintf("[%.3f, %.3f]", d$auc_corrected_ci[1], d$auc_corrected_ci[2]),
+      sprintf("%.3f", cb$loo$intercept), sprintf("%.3f", cb$loo$slope),
+      sprintf("%.3f", cb$loo$brier), sprintf("%.3f", cb$recalibrated$slope),
+      sprintf("%.3f", cb$recalibrated$brier), dc$dominance_range,
+      sprintf("%.3f", yj$threshold), sprintf("%.3f", yj$sensitivity),
+      sprintf("%.3f", yj$specificity), cu$provenance_note),
+    stringsAsFactors = FALSE)
+}
+
