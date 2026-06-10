@@ -427,6 +427,32 @@ if (lmm_robust$n_robust == 0) {
     )
   }
 
+  # 12b. Clinical + cytometric ADDED-VALUE layer (additive; pre-specified)
+  # ------------------------------------------------------------------------------
+  # Does the immune gate composite add over a standard-of-care clinical model?
+  # Config-gated (ml_cfg$clinical_model present) → NSCLC only; skipped elsewhere.
+  clin_addval <- NULL
+  if (!is.null(ml_cfg$clinical_model) && !is.null(config$input_file_t0)) {
+    cm  <- ml_cfg$clinical_model
+    cu_cfg <- if (!is.null(ml_cfg$clinical_utility)) ml_cfg$clinical_utility else list()
+    clin_addval <- tryCatch(
+      run_clinical_immune_added_value(
+        DATA_T0         = DATA,
+        gate_markers    = lmm_robust$markers,
+        resp_label      = config$clinical$responder_label,
+        input_file      = config$input_file_t0,
+        clinical_vars   = unlist(cm$vars),
+        gate_provenance = "lmm-prespecified",
+        surv_cols       = if (!is.null(cm$survival)) unlist(cm$survival)
+                          else c(os = "OS", pfs = "PFS", death = "Alive_0/Dead_1"),
+        n_boot          = if (!is.null(cu_cfg$n_boot)) as.integer(cu_cfg$n_boot) else 2000L
+      ),
+      error = function(e) {
+        warning(sprintf("[ML] Added-value layer failed (non-fatal): %s", e$message)); NULL
+      }
+    )
+  }
+
   # 13. Export Machine-Readable JSON
   # ------------------------------------------------------------------------------
   machine_output <- list(
@@ -535,7 +561,8 @@ if (lmm_robust$n_robust == 0) {
         note               = gate_decomp$note
       )
     } else NULL,
-    clinical_utility = clinical_utility_json(clin_util)
+    clinical_utility = clinical_utility_json(clin_util),
+    clinical_immune_added_value = clinical_immune_json(clin_addval)
   )
 
   json_path <- file.path(out_dir, sprintf("Machine_Metrics_ML_%s.json", config$project_name))
@@ -771,6 +798,13 @@ if (lmm_robust$n_robust == 0) {
     openxlsx::writeData(wb, "Clinical_Utility_Patients", clin_util$per_patient)
   }
 
+  if (!is.null(clin_addval)) {
+    openxlsx::addWorksheet(wb, "ClinImmune_AddedValue")
+    openxlsx::writeData(wb, "ClinImmune_AddedValue", write_clinical_immune_summary(clin_addval))
+    openxlsx::addWorksheet(wb, "ClinImmune_Patients")
+    openxlsx::writeData(wb, "ClinImmune_Patients", clin_addval$per_patient)
+  }
+
   excel_path <- file.path(out_dir, sprintf("ML_Classification_Report_%s.xlsx", config$project_name))
   openxlsx::saveWorkbook(wb, excel_path, overwrite = TRUE)
   message(sprintf("   [Output] Classification report saved: %s", basename(excel_path)))
@@ -835,6 +869,17 @@ if (lmm_robust$n_robust == 0) {
       p_cu <- viz_plot_clinical_utility(clin_util, colors_viz, title_prefix = config$project_name)
       if (!is.null(p_cu)) print(p_cu)
     }, error = function(e) warning(paste("Clinical-utility figure failed:", e$message)))
+    dev.off()
+  }
+
+  # Clinical + cytometric added-value figure (decision curve: clinical vs combined)
+  if (!is.null(clin_addval)) {
+    pdf(file.path(out_dir, sprintf("ClinicalImmune_AddedValue_%s.pdf", config$project_name)),
+        width = 11, height = 5)
+    tryCatch({
+      p_av <- viz_plot_added_value(clin_addval, colors_viz, title_prefix = config$project_name)
+      if (!is.null(p_av)) print(p_av)
+    }, error = function(e) warning(paste("Added-value figure failed:", e$message)))
     dev.off()
   }
 

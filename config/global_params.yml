@@ -91,6 +91,25 @@ experiments:
       # Reveals whether the dichotomized interaction is graded or driven by
       # a single sub-group (e.g. SD behaves like RP, not like PD).
       split_nonresponder: true
+    machine_learning:
+      # Clinical + cytometric ADDED-VALUE layer (run_clinical_immune_added_value):
+      # does the immune gate composite add predictive value BEYOND a pre-specified
+      # standard-of-care clinical model? Baseline LOCKED from NSCLC-ICI literature
+      # (PD-L1 + NLR + PS), NOT data-selected — dropping PD-L1 would be a fatal
+      # reviewer critique (it is the FDA companion biomarker). In-fold median
+      # imputation keeps n=70 (complete-case n=55 is the sensitivity analysis).
+      # Endpoint = response (primary); OS/PFS Cox = secondary/sanity. NSCLC-specific
+      # (column names are dataset-specific); absent on other experiments → layer skipped.
+      clinical_model:
+        vars:
+          PD_L1: "PD_L1"
+          NLR:   "neutrophils/lymphocytes"
+          PS:    "PS_prima_immuno"
+        impute: "median"
+        survival:
+          os:    "OS"
+          pfs:   "PFS"
+          death: "Alive_0/Dead_1"
 
   Comorbidity_1v0:
     is_longitudinal: true

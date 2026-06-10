@@ -777,3 +777,295 @@ write_clinical_utility_summary <- function(cu) {
     stringsAsFactors = FALSE)
 }
 
+# =============================================================================
+# Clinical + cytometric ADDED-VALUE layer
+# -----------------------------------------------------------------------------
+# Pre-specified question: does the immune composite (gate markers) add predictive
+# value BEYOND a standard-of-care clinical model? Additive — never alters the
+# gate/X/classifiers. Compares three nested logistic models (clinical-only,
+# immune-only, clinical+immune) with leakage-free LOO + in-fold imputation,
+# Harrell optimism on the combined model, IDI/cNRI (apparent + bootstrap CI),
+# DeLong on LOO probabilities, calibration and a decision curve (clinical vs
+# combined), and an OS/PFS Cox secondary (C + likelihood-ratio test).
+#
+# `clinical_vars` is a named character vector: names = model-safe labels,
+# values = exact column names in `input_file` (e.g. c(NLR="neutrophils/lymphocytes")).
+# =============================================================================
+run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
+                                            input_file, clinical_vars,
+                                            gate_provenance = "lmm-prespecified",
+                                            surv_cols = c(os = "OS", pfs = "PFS",
+                                                          death = "Alive_0/Dead_1"),
+                                            n_boot = 2000L, n_perm = 2000L,
+                                            min_n = 30L, seed = 2026L) {
+  if (!requireNamespace("readxl", quietly = TRUE) ||
+      !requireNamespace("pROC",   quietly = TRUE) ||
+      !requireNamespace("dplyr",  quietly = TRUE)) return(NULL)
+  if (is.null(input_file) || !file.exists(input_file)) {
+    message("[ML][AV] input_file missing — added-value layer skipped."); return(NULL)
+  }
+  clinical_vars <- unlist(clinical_vars)
+  if (length(clinical_vars) == 0) return(NULL)
+  if (is.null(names(clinical_vars))) names(clinical_vars) <- clinical_vars
+
+  if (exists(".Random.seed", envir = .GlobalEnv)) {
+    old_seed <- get(".Random.seed", envir = .GlobalEnv)
+    on.exit(assign(".Random.seed", old_seed, envir = .GlobalEnv), add = TRUE)
+  }
+  set.seed(seed)
+
+  # ── Immune composite (mean z of gate markers; median-imputed) ───────────────
+  z     <- as.data.frame(DATA_T0$hybrid_data_z)
+  avail <- intersect(gate_markers, colnames(z))
+  if (length(avail) == 0) { message("[ML][AV] no gate markers in T0 — skipped."); return(NULL) }
+  group <- DATA_T0$metadata$Group
+  neg_label <- setdiff(unique(group), resp_label)
+  if (length(neg_label) != 1) { message("[ML][AV] outcome not binary — skipped."); return(NULL) }
+  Zc <- z[, avail, drop = FALSE]
+  Zc[] <- lapply(Zc, function(x) { x <- as.numeric(x); x[is.na(x)] <- median(x, na.rm = TRUE); x })
+  composite <- rowMeans(Zc)
+
+  # ── Clinical design from the raw file, joined by Patient_ID ─────────────────
+  raw <- tryCatch(readxl::read_excel(input_file, sheet = 1), error = function(e) NULL)
+  if (is.null(raw)) return(NULL)
+  names(raw) <- trimws(names(raw))
+  missing_cols <- setdiff(unname(clinical_vars), names(raw))
+  if (length(missing_cols)) {
+    message(sprintf("[ML][AV] clinical columns absent (%s) — skipped.",
+                    paste(missing_cols, collapse = ", "))); return(NULL)
+  }
+  raw$Patient_ID <- as.character(raw$Patient_ID)
+  meta_ids <- as.character(DATA_T0$metadata$Patient_ID)
+  ridx <- match(meta_ids, raw$Patient_ID)
+  Cmat <- sapply(clinical_vars, function(col) suppressWarnings(as.numeric(raw[[col]][ridx])))
+  Cmat <- matrix(Cmat, nrow = length(meta_ids),
+                 dimnames = list(NULL, names(clinical_vars)))
+
+  # ── Keep patients with a defined outcome (clinical NAs handled by imputation) ─
+  keep <- group %in% c(resp_label, neg_label) & !is.na(composite)
+  Cmat <- Cmat[keep, , drop = FALSE]; comp <- composite[keep]
+  grp  <- group[keep]; yb <- as.integer(grp == resp_label)
+  y    <- factor(grp, levels = c(neg_label, resp_label))
+  pid  <- meta_ids[keep]
+  n    <- length(yb)
+  n_cc <- sum(complete.cases(Cmat))
+  if (n < min_n || length(unique(yb)) < 2) {
+    message(sprintf("[ML][AV] n=%d (<%d) or single class — skipped.", n, min_n)); return(NULL)
+  }
+  message(sprintf("[ML][AV] clinical={%s} + immune composite={%s} | n=%d (cc=%d, %s=%d/%s=%d)",
+                  paste(names(clinical_vars), collapse = "+"), paste(avail, collapse = "+"),
+                  n, n_cc, resp_label, sum(yb), neg_label, sum(1 - yb)))
+
+  cl_names <- colnames(Cmat)
+  # ── Helpers ─────────────────────────────────────────────────────────────────
+  impute_median <- function(M, train_rows) {
+    med <- apply(M[train_rows, , drop = FALSE], 2, median, na.rm = TRUE)
+    med[!is.finite(med)] <- 0
+    for (j in seq_len(ncol(M))) M[is.na(M[, j]), j] <- med[j]
+    M
+  }
+  fit_predict <- function(Cm, cv, train_rows, test_rows, use_immune) {
+    Ci <- impute_median(Cm, train_rows)
+    dat <- data.frame(yb = yb, Ci, comp = cv, check.names = TRUE)
+    cn  <- make.names(cl_names, unique = TRUE); colnames(dat)[2:(1 + length(cn))] <- cn
+    rhs <- if (use_immune) c(cn, "comp") else cn
+    fit <- suppressWarnings(glm(reformulate(rhs, "yb"), data = dat[train_rows, , drop = FALSE],
+                                family = binomial()))
+    as.numeric(predict(fit, newdata = dat[test_rows, , drop = FALSE], type = "response"))
+  }
+  auc_pos <- function(p, yv = y) as.numeric(pROC::auc(pROC::roc(
+    yv, p, levels = c(neg_label, resp_label), direction = "<", quiet = TRUE)))
+  calib_params <- function(yvb, p) {
+    p <- pmin(pmax(p, 1e-6), 1 - 1e-6); lp <- qlogis(p)
+    c(intercept = tryCatch(coef(glm(yvb ~ 1, family = binomial(), offset = lp))[[1]], error = function(e) NA_real_),
+      slope     = tryCatch(coef(glm(yvb ~ lp, family = binomial()))[["lp"]],          error = function(e) NA_real_))
+  }
+  brier <- function(yvb, p) mean((p - yvb)^2)
+  all_rows <- seq_len(n)
+
+  # ── Apparent + leakage-free LOO probabilities ───────────────────────────────
+  pa_clin <- fit_predict(Cmat, comp, all_rows, all_rows, FALSE)
+  pa_comb <- fit_predict(Cmat, comp, all_rows, all_rows, TRUE)
+  pa_imm  <- { dat <- data.frame(yb = yb, comp = comp)
+               f <- suppressWarnings(glm(yb ~ comp, data = dat, family = binomial()))
+               as.numeric(predict(f, type = "response")) }
+  pl_clin <- pl_comb <- pl_imm <- numeric(n)
+  for (i in all_rows) {
+    tr <- all_rows[-i]
+    pl_clin[i] <- fit_predict(Cmat, comp, tr, i, FALSE)
+    pl_comb[i] <- fit_predict(Cmat, comp, tr, i, TRUE)
+    fi <- suppressWarnings(glm(yb ~ comp, data = data.frame(yb = yb, comp = comp)[tr, ], family = binomial()))
+    pl_imm[i] <- as.numeric(predict(fi, newdata = data.frame(comp = comp[i]), type = "response"))
+  }
+  auc <- list(
+    clinical = list(apparent = auc_pos(pa_clin), loo = auc_pos(pl_clin)),
+    immune   = list(apparent = auc_pos(pa_imm),  loo = auc_pos(pl_imm)),
+    combined = list(apparent = auc_pos(pa_comb), loo = auc_pos(pl_comb)))
+
+  # ── DeLong (LOO): clinical vs combined ──────────────────────────────────────
+  r_clin <- pROC::roc(y, pl_clin, levels = c(neg_label, resp_label), direction = "<", quiet = TRUE)
+  r_comb <- pROC::roc(y, pl_comb, levels = c(neg_label, resp_label), direction = "<", quiet = TRUE)
+  delong_p <- tryCatch(pROC::roc.test(r_clin, r_comb, method = "delong", paired = TRUE)$p.value,
+                       error = function(e) NA_real_)
+
+  # ── IDI / continuous NRI (apparent + patient-level bootstrap CI) ─────────────
+  idi_fun <- function(po, pn) { e <- yb == 1; (mean(pn[e]) - mean(po[e])) + (mean(po[!e]) - mean(pn[!e])) }
+  nri_fun <- function(po, pn) { e <- yb == 1; d <- pn - po
+    (mean(d[e] > 0) - mean(d[e] < 0)) + (mean(d[!e] < 0) - mean(d[!e] > 0)) }
+  idi_app <- idi_fun(pa_clin, pa_comb); nri_app <- nri_fun(pa_clin, pa_comb)
+  idi_bs <- nri_bs <- numeric(n_boot)
+  for (b in seq_len(n_boot)) {
+    idx <- sample(n, n, replace = TRUE)
+    Cb <- Cmat[idx, , drop = FALSE]; cb <- comp[idx]; ybb <- yb[idx]
+    Ci <- impute_median(Cb, seq_len(n))
+    cn <- make.names(cl_names, unique = TRUE)
+    db <- data.frame(yb = ybb, Ci, comp = cb); colnames(db)[2:(1 + length(cn))] <- cn
+    fcl <- suppressWarnings(glm(reformulate(cn, "yb"), data = db, family = binomial()))
+    fco <- suppressWarnings(glm(reformulate(c(cn, "comp"), "yb"), data = db, family = binomial()))
+    po <- as.numeric(predict(fcl, type = "response")); pn <- as.numeric(predict(fco, type = "response"))
+    e <- ybb == 1
+    idi_bs[b] <- (mean(pn[e]) - mean(po[e])) + (mean(po[!e]) - mean(pn[!e]))
+    d <- pn - po
+    nri_bs[b] <- (mean(d[e] > 0) - mean(d[e] < 0)) + (mean(d[!e] < 0) - mean(d[!e] > 0))
+  }
+  qci <- function(v) as.numeric(quantile(v, c(.025, .975), na.rm = TRUE))
+
+  # ── Harrell optimism of the combined-model AUC ──────────────────────────────
+  # Self-contained (fit_predict() binds the global original-order yb, so it must
+  # not be used on a bootstrap resample): fit on the resample, then evaluate that
+  # same model apparent-on-resample vs on the original cohort.
+  cn_opt  <- make.names(cl_names, unique = TRUE)
+  opt_auc <- numeric(n_boot)
+  for (b in seq_len(n_boot)) {
+    idx <- sample(n, n, replace = TRUE)
+    Ci_boot <- impute_median(Cmat[idx, , drop = FALSE], seq_len(n))
+    db <- data.frame(yb = yb[idx], Ci_boot, comp = comp[idx]); colnames(db)[2:(1 + length(cn_opt))] <- cn_opt
+    fb <- suppressWarnings(glm(reformulate(c(cn_opt, "comp"), "yb"), data = db, family = binomial()))
+    a_boot <- tryCatch(auc_pos(as.numeric(predict(fb, type = "response")),
+                               factor(grp[idx], levels = c(neg_label, resp_label))),
+                       error = function(e) NA_real_)
+    Cf <- impute_median(Cmat, idx); df0 <- data.frame(Cf, comp = comp); colnames(df0)[1:length(cn_opt)] <- cn_opt
+    a_orig <- tryCatch(auc_pos(as.numeric(predict(fb, newdata = df0, type = "response"))),
+                       error = function(e) NA_real_)
+    opt_auc[b] <- a_boot - a_orig
+  }
+  opt_m    <- mean(opt_auc, na.rm = TRUE)
+  auc_corr <- auc$combined[["apparent"]] - opt_m
+
+  # ── Calibration + decision curve (combined vs clinical, on LOO probs) ────────
+  cp_comb <- calib_params(yb, pl_comb)
+  prev <- mean(yb); pt_grid <- seq(0.01, 0.60, by = 0.01)
+  nb <- function(p) sapply(pt_grid, function(pt) {
+    pos <- p >= pt; w <- pt / (1 - pt)
+    sum(pos & yb == 1) / n - sum(pos & yb == 0) / n * w })
+  dc <- data.frame(threshold = pt_grid,
+                   clinical   = nb(pl_clin), combined = nb(pl_comb),
+                   treat_all  = prev - (1 - prev) * (pt_grid / (1 - pt_grid)),
+                   treat_none = 0)
+
+  # ── Survival secondary (OS/PFS): Cox clinical vs clinical+immune ─────────────
+  survival <- NULL
+  if (requireNamespace("survival", quietly = TRUE) &&
+      all(surv_cols %in% names(raw))) {
+    os  <- suppressWarnings(as.numeric(raw[[surv_cols[["os"]]]][ridx]))[keep]
+    pfs <- suppressWarnings(as.numeric(raw[[surv_cols[["pfs"]]]][ridx]))[keep]
+    dth <- suppressWarnings(as.integer(raw[[surv_cols[["death"]]]][ridx]))[keep]
+    ev_os  <- dth
+    ev_pfs <- as.integer(dth == 1 | (dth == 0 & pfs < os))
+    Cimp <- impute_median(Cmat, all_rows); cn <- make.names(cl_names, unique = TRUE)
+    cox_block <- function(time, event) {
+      ok <- is.finite(time) & time > 0 & !is.na(event)
+      if (sum(ok) < 20 || length(unique(event[ok])) < 2) return(NULL)
+      d <- data.frame(time = time[ok], event = event[ok], Cimp[ok, , drop = FALSE], comp = comp[ok])
+      colnames(d)[3:(2 + length(cn))] <- cn
+      fc <- tryCatch(survival::coxph(reformulate(cn, "survival::Surv(time, event)"), data = d), error = function(e) NULL)
+      fk <- tryCatch(survival::coxph(reformulate(c(cn, "comp"), "survival::Surv(time, event)"), data = d), error = function(e) NULL)
+      if (is.null(fc) || is.null(fk)) return(NULL)
+      lrt <- tryCatch(anova(fc, fk, test = "Chisq")[["Pr(>|Chi|)"]][2], error = function(e) NA_real_)
+      list(n = sum(ok), events = sum(event[ok]),
+           c_clinical = summary(fc)$concordance[["C"]],
+           c_combined = summary(fk)$concordance[["C"]],
+           lrt_p = lrt)
+    }
+    survival <- list(OS = cox_block(os, ev_os), PFS = cox_block(pfs, ev_pfs))
+  }
+
+  provenance_note <- if (gate_provenance == "lmm-prespecified")
+    paste("Immune composite pre-specified from the Step-04 LMM gate (disjoint from this T0",
+          "model). Clinical baseline pre-specified from NSCLC-ICI literature; not data-selected.")
+  else
+    paste("Immune composite selected on these T0 data (univariate/screen) — added value is",
+          "EXPLORATORY / conditional-on-selection; treat IDI and DeLong p as a lower bound.")
+
+  message(sprintf("[ML][AV] AUC clinical LOO=%.3f -> combined LOO=%.3f (DeLong p=%.4f) | IDI=%+.3f [%.3f,%.3f] | optimism=%.3f corr=%.3f",
+                  auc$clinical[["loo"]], auc$combined[["loo"]], delong_p,
+                  idi_app, qci(idi_bs)[1], qci(idi_bs)[2], opt_m, auc_corr))
+
+  list(
+    clinical_vars   = as.list(clinical_vars),
+    composite_markers = avail,
+    gate_provenance = gate_provenance, provenance_note = provenance_note,
+    n = n, n_complete_case = n_cc, n_pos = sum(yb), n_neg = sum(1 - yb),
+    prevalence = prev, positive_label = resp_label, negative_label = neg_label,
+    auc = auc,
+    increment = list(
+      delta_auc_loo = unname(auc$combined[["loo"]] - auc$clinical[["loo"]]),
+      delong_p_loo  = delong_p,
+      idi = idi_app, idi_ci = qci(idi_bs),
+      cnri = nri_app, cnri_ci = qci(nri_bs)),
+    combined_optimism = list(auc_optimism = opt_m, auc_corrected = auc_corr,
+                             calib_slope_loo = cp_comb[["slope"]],
+                             calib_citl_loo = cp_comb[["intercept"]],
+                             brier_loo = brier(yb, pl_comb)),
+    decision_curve = list(prevalence = prev, curve = dc),
+    survival = survival,
+    per_patient = data.frame(
+      Patient_ID = pid, True_Group = as.character(grp),
+      Composite = round(comp, 4),
+      Prob_Clinical = round(pl_clin, 4), Prob_Combined = round(pl_comb, 4),
+      stringsAsFactors = FALSE)
+  )
+}
+
+#' JSON-serializable view of an added-value result (drops per-patient + curve).
+clinical_immune_json <- function(av) {
+  if (is.null(av)) return(NULL)
+  av$per_patient <- NULL
+  av$decision_curve$curve <- NULL
+  av
+}
+
+#' Flat Metric/Value summary of an added-value result, for the Excel report.
+write_clinical_immune_summary <- function(av) {
+  if (is.null(av)) return(data.frame(Metric = character(), Value = character()))
+  inc <- av$increment; sv <- av$survival
+  surv_str <- function(s) if (is.null(s)) "n/a"
+    else sprintf("C %.3f->%.3f (LRT p=%.3f)", s$c_clinical, s$c_combined, s$lrt_p)
+  data.frame(
+    Metric = c("Clinical baseline", "Immune composite", "Gate provenance",
+               "N (complete-case)", "N pos/neg", "Prevalence",
+               "AUC clinical (LOO)", "AUC immune (LOO)", "AUC combined (LOO)",
+               "Delta AUC (combined-clinical, LOO)", "DeLong p (LOO)",
+               "IDI [95% CI]", "cNRI [95% CI]",
+               "Combined AUC optimism", "Combined AUC corrected",
+               "Combined calib slope (LOO)", "Combined Brier (LOO)",
+               "Survival OS (secondary)", "Survival PFS (secondary)",
+               "Provenance note"),
+    Value = c(
+      paste(names(av$clinical_vars), collapse = "+"),
+      paste(av$composite_markers, collapse = "+"), av$gate_provenance,
+      sprintf("%d (%d)", av$n, av$n_complete_case),
+      sprintf("%d/%d", av$n_pos, av$n_neg), sprintf("%.3f", av$prevalence),
+      sprintf("%.3f", av$auc$clinical[["loo"]]), sprintf("%.3f", av$auc$immune[["loo"]]),
+      sprintf("%.3f", av$auc$combined[["loo"]]),
+      sprintf("%+.3f", inc$delta_auc_loo), sprintf("%.4f", inc$delong_p_loo),
+      sprintf("%+.3f [%.3f, %.3f]", inc$idi, inc$idi_ci[1], inc$idi_ci[2]),
+      sprintf("%+.3f [%.3f, %.3f]", inc$cnri, inc$cnri_ci[1], inc$cnri_ci[2]),
+      sprintf("%.4f", av$combined_optimism$auc_optimism),
+      sprintf("%.3f", av$combined_optimism$auc_corrected),
+      sprintf("%.3f", av$combined_optimism$calib_slope_loo),
+      sprintf("%.3f", av$combined_optimism$brier_loo),
+      surv_str(sv$OS), surv_str(sv$PFS), av$provenance_note),
+    stringsAsFactors = FALSE)
+}
+

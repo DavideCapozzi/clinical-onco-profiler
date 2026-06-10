@@ -1257,3 +1257,63 @@ viz_plot_clinical_utility <- function(clin_util, colors, title_prefix = "") {
       theme = theme(plot.title = element_text(face = "bold", hjust = 0.5),
                     plot.subtitle = element_text(hjust = 0.5, colour = "gray40")))
 }
+
+#' @title Plot clinical + cytometric added-value (decision curve + LOO AUC)
+#' @description Two panels: (A) decision curve comparing the standard-of-care
+#'   clinical model vs clinical+immune (vs treat-all / treat-none), and (B) a bar
+#'   of leakage-free LOO AUCs (clinical / immune / combined). Subtitle carries the
+#'   increment (ΔAUC, DeLong p, IDI with 95% CI).
+#' @param av Result of run_clinical_immune_added_value().
+viz_plot_added_value <- function(av, colors, title_prefix = "") {
+  if (is.null(av)) return(NULL)
+  pos     <- av$positive_label
+  col_comb <- if (!is.null(colors[[pos]])) colors[[pos]] else "#2166AC"
+  cur <- av$decision_curve$curve; inc <- av$increment
+
+  # ── Panel A: decision curve (clinical vs combined) ──────────────────────────
+  nb_long <- rbind(
+    data.frame(threshold = cur$threshold, net_benefit = cur$clinical,   strategy = "Clinical only"),
+    data.frame(threshold = cur$threshold, net_benefit = cur$combined,   strategy = "Clinical + immune"),
+    data.frame(threshold = cur$threshold, net_benefit = cur$treat_all,  strategy = "Treat all"),
+    data.frame(threshold = cur$threshold, net_benefit = cur$treat_none, strategy = "Treat none")
+  )
+  pA <- ggplot(nb_long, aes(threshold, net_benefit, colour = strategy, linetype = strategy)) +
+    geom_line(linewidth = 0.9) +
+    scale_colour_manual(values = c("Clinical only" = "#E08214", "Clinical + immune" = col_comb,
+                                   "Treat all" = "#B2182B", "Treat none" = "grey45")) +
+    scale_linetype_manual(values = c("Clinical only" = 2, "Clinical + immune" = 1,
+                                     "Treat all" = 3, "Treat none" = 3)) +
+    coord_cartesian(ylim = c(min(-0.02, min(cur$treat_all)),
+                             max(c(cur$clinical, cur$combined)) + 0.02)) +
+    labs(title = "Decision curve", x = "Threshold probability", y = "Net benefit",
+         colour = NULL, linetype = NULL,
+         subtitle = sprintf("prevalence=%.2f", av$decision_curve$prevalence)) +
+    theme_coda()
+
+  # ── Panel B: LOO AUC bars ───────────────────────────────────────────────────
+  auc_df <- data.frame(
+    model = factor(c("Clinical", "Immune", "Clinical+immune"),
+                   levels = c("Clinical", "Immune", "Clinical+immune")),
+    auc   = c(av$auc$clinical[["loo"]], av$auc$immune[["loo"]], av$auc$combined[["loo"]]))
+  pB <- ggplot(auc_df, aes(model, auc, fill = model)) +
+    geom_col(width = 0.6) +
+    geom_hline(yintercept = 0.5, linetype = 3, colour = "grey50") +
+    geom_text(aes(label = sprintf("%.3f", auc)), vjust = -0.4, size = 3.4) +
+    scale_fill_manual(values = c("Clinical" = "#E08214", "Immune" = "#80CDC1",
+                                 "Clinical+immune" = col_comb), guide = "none") +
+    coord_cartesian(ylim = c(0, 1)) +
+    labs(title = "Discrimination (leakage-free LOO AUC)", x = NULL, y = "AUC") +
+    theme_coda()
+
+  ttl <- paste0(if (nzchar(title_prefix)) paste0(title_prefix, " - ") else "",
+                "Added value of immune profiling over clinical (",
+                paste(names(av$clinical_vars), collapse = "+"), ")")
+  sub <- sprintf("ΔAUC(LOO)=%+.3f  DeLong p=%.3f  IDI=%+.3f [%.3f, %.3f]  | %s",
+                 inc$delta_auc_loo, inc$delong_p_loo, inc$idi,
+                 inc$idi_ci[1], inc$idi_ci[2], av$gate_provenance)
+
+  patchwork::wrap_plots(pA, pB, nrow = 1) +
+    patchwork::plot_annotation(title = ttl, subtitle = sub, tag_levels = "A",
+      theme = theme(plot.title = element_text(face = "bold", hjust = 0.5),
+                    plot.subtitle = element_text(hjust = 0.5, colour = "gray40")))
+}
