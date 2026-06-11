@@ -7,6 +7,8 @@ results_results-hnscc/
 .claude
 CLAUDE.md
 next_steps.md
+claude-workflow-notes.md
+tmp_*.md
 *output*
 NSCLC_validation_split_findings.md
 
