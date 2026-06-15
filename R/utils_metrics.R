@@ -4,12 +4,11 @@
 #
 # JSON paths and field locations are defined here ONCE so that every consumer
 # reads them the same way:
-#   - the golden regression tests (tests/golden/*)        [Fase 1]
-#   - compare_runs() / publishability_verdict()           [Fase 3]
-#   - the /post-change skill (via a thin R runner)        [Fase 3]
+#   - compare_runs() / publishability_verdict()
+#   - the /post-change skill (via a thin R runner)
 #
-# Fase 1 scope = extract_run_metrics() only (minimal: just the headline numbers
-# the golden tests assert on). Fase 3 adds compare_runs() + publishability_verdict().
+# Core: extract_run_metrics() (the headline numbers), compare_runs() +
+# publishability_verdict() (run-to-run delta + perm p / nested-LOO / FDR gate).
 # ==============================================================================
 
 # Internal: first non-empty (non-NULL, non-zero-length) of a, else b.
@@ -68,6 +67,26 @@ extract_run_metrics <- function(exp_root, experiment = basename(exp_root)) {
       nested_loo_auc = nested_loo,
       gate           = gate
     )
+
+    # Clinical+immune added-value increment (NSCLC lmm path). When present this is
+    # THE publishable angle — the verdict gates on the LRT (correct nested test) +
+    # IDI here, not on the exploratory standalone classifier. NULL when not run.
+    av <- ml$clinical_immune_added_value
+    if (!is.null(av)) {
+      inc <- av$increment
+      ci_lo <- if (!is.null(inc$idi_ci)) inc$idi_ci[[1]] else NA_real_
+      ci_hi <- if (!is.null(inc$idi_ci)) inc$idi_ci[[2]] else NA_real_
+      out$ml$added_value <- list(
+        lrt_p        = .or_else(inc$lrt_p,       NA_real_),
+        lrt_perm_p   = .or_else(inc$lrt_perm_p,  NA_real_),
+        lrt_firth_p  = .or_else(inc$lrt_firth_p, NA_real_),
+        idi          = .or_else(inc$idi,         NA_real_),
+        idi_ci_lo    = .or_else(ci_lo, NA_real_),
+        idi_ci_hi    = .or_else(ci_hi, NA_real_),
+        auc_clinical = .or_else(av$auc$clinical[["loo"]], NA_real_),
+        auc_combined = .or_else(av$auc$combined[["loo"]], NA_real_)
+      )
+    }
   }
 
   # --- Step 04: longitudinal LMM (FDR count) -------------------------------
@@ -86,9 +105,8 @@ extract_run_metrics <- function(exp_root, experiment = basename(exp_root)) {
 }
 
 # Flatten an extract_run_metrics() result ($ml + $lmm) into one named list, so the
-# headline fields can be addressed uniformly by assertions, comparisons and the
-# publishability verdict. Single source of truth for that flattening (the golden
-# assertion helper delegates here).
+# headline fields can be addressed uniformly by comparisons and the publishability
+# verdict. Single source of truth for that flattening.
 flatten_run_metrics <- function(m) {
   out <- if (!is.null(m$ml)) m$ml else list()
   if (!is.null(m$lmm)) out$n_sig_fdr <- m$lmm$n_sig_fdr
@@ -106,21 +124,27 @@ list_run_experiments <- function(run_root) {
 
 # ==============================================================================
 # PUBLISHABILITY VERDICT
-# Encodes the pre-specified go/no-go thresholds (CLAUDE.md / the /post-change
-# skill) in ONE place so every consumer reads the same rule:
-#   - permutation p < 0.05 on the PRIMARY method (SVM-RBF unless EN was promoted)
-#   - nested-LOO AUC > 0.6
-#   - (LMM-gated path only) FDR-significant feature count > 0
+# Encodes the pre-specified go/no-go thresholds in ONE place so every consumer
+# reads the same rule. The publishable angle is experiment-dependent:
+#   - WITH a clinical+immune added-value layer (NSCLC): the incremental value of
+#     the immune gate over the clinical model IS the result → gate on the LRT
+#     (correct nested test) permutation p < 0.05 AND the IDI 95% CI excluding 0,
+#     plus FDR-significant features > 0. The standalone classifier (SVM perm p /
+#     nested-LOO) is exploratory and does NOT gate here.
+#   - WITHOUT it (cross-sectional / univariate path, e.g. HNSCC): fall back to the
+#     standalone classifier — perm p < 0.05 on the PRIMARY method + nested-LOO
+#     AUC > 0.6 (+ FDR count for the LMM-gated path).
 # ==============================================================================
 
 #' @param m Output of \code{extract_run_metrics()} for one experiment.
-#' @param thresholds Named list overriding the defaults (perm_p, nested_loo_auc,
-#'   n_sig_fdr).
+#' @param thresholds Named list overriding the defaults (lrt_p, perm_p,
+#'   nested_loo_auc, n_sig_fdr).
 #' @return A list with \code{experiment}, \code{primary_method},
 #'   \code{publishable} (logical, NA when ML did not run) and a \code{criteria}
 #'   list (each: metric, value, op, threshold, pass).
 publishability_verdict <- function(m,
-                                   thresholds = list(perm_p = 0.05,
+                                   thresholds = list(lrt_p = 0.05,
+                                                     perm_p = 0.05,
                                                      nested_loo_auc = 0.6,
                                                      n_sig_fdr = 0)) {
   if (is.null(m$ml))
@@ -128,29 +152,44 @@ publishability_verdict <- function(m,
                 publishable = NA, reason = "no Step 06 metrics (ML did not run)",
                 criteria = list()))
 
-  ml      <- m$ml
-  primary <- .or_else(ml$primary_method, "SVM-RBF")
-  is_svm  <- grepl("svm", primary, ignore.case = TRUE)
-  perm_p  <- if (is_svm) ml$svm_perm_p else ml$en_perm_p
-
+  ml <- m$ml
   mk <- function(metric, value, op, thr, pass)
     list(metric = metric, value = value, op = op, threshold = thr, pass = isTRUE(pass))
 
-  criteria <- list(
+  fdr_criterion <- function() {  # meaningful only for the LMM-gated path
+    if (identical(.or_else(ml$gate_method, "lmm"), "lmm") && !is.null(m$lmm))
+      list(n_sig_fdr = mk("FDR-significant features", m$lmm$n_sig_fdr, ">",
+                          thresholds$n_sig_fdr, isTRUE(m$lmm$n_sig_fdr > thresholds$n_sig_fdr)))
+    else list()
+  }
+
+  # --- Added-value angle (NSCLC): gate on the immune increment, not the classifier
+  if (!is.null(ml$added_value)) {
+    av <- ml$added_value
+    criteria <- c(list(
+      lrt_perm_p = mk("LRT perm p (immune increment)", av$lrt_perm_p, "<",
+                      thresholds$lrt_p, isTRUE(av$lrt_perm_p < thresholds$lrt_p)),
+      idi_ci_lo  = mk("IDI 95% CI lower bound", av$idi_ci_lo, ">", 0,
+                      isTRUE(av$idi_ci_lo > 0))
+    ), fdr_criterion())
+    return(list(
+      experiment     = m$experiment,
+      primary_method = "clinical+immune added-value",
+      publishable    = all(vapply(criteria, function(c) isTRUE(c$pass), logical(1))),
+      criteria       = criteria))
+  }
+
+  # --- Fallback: standalone classifier (cross-sectional / univariate path)
+  primary <- .or_else(ml$primary_method, "SVM-RBF")
+  is_svm  <- grepl("svm", primary, ignore.case = TRUE)
+  perm_p  <- if (is_svm) ml$svm_perm_p else ml$en_perm_p
+  criteria <- c(list(
     perm_p         = mk(sprintf("perm p (%s)", primary), perm_p, "<",
                         thresholds$perm_p, isTRUE(perm_p < thresholds$perm_p)),
     nested_loo_auc = mk("nested-LOO AUC", ml$nested_loo_auc, ">",
                         thresholds$nested_loo_auc,
                         isTRUE(ml$nested_loo_auc > thresholds$nested_loo_auc))
-  )
-
-  # FDR criterion is meaningful only for the LMM-gated (longitudinal) path; the
-  # univariate cross-sectional path has no Step 04 and reports n_sig_fdr = NA.
-  if (identical(.or_else(ml$gate_method, "lmm"), "lmm") && !is.null(m$lmm)) {
-    criteria$n_sig_fdr <- mk("FDR-significant features", m$lmm$n_sig_fdr, ">",
-                             thresholds$n_sig_fdr,
-                             isTRUE(m$lmm$n_sig_fdr > thresholds$n_sig_fdr))
-  }
+  ), fdr_criterion())
 
   list(
     experiment     = m$experiment,
@@ -163,15 +202,13 @@ publishability_verdict <- function(m,
 # ==============================================================================
 # RUN-TO-RUN COMPARISON
 # Delta of headline metrics between two runs, for refactor regression checks and
-# the /post-change workflow. Reads both runs through extract_run_metrics(), so the
-# compared numbers are exactly those the golden tests assert on.
+# the /post-change workflow. Reads both runs through extract_run_metrics().
 # ==============================================================================
 
 #' @param run_base,run_new Run roots (dirs holding the per-experiment subdirs).
 #' @param experiments Optional character vector; default = experiments present in
 #'   BOTH runs.
-#' @param tol Numeric tolerance for flagging a change (default 5e-4, matching the
-#'   golden AUC tolerance).
+#' @param tol Numeric tolerance for flagging a change (default 5e-4).
 #' @return A data.frame: experiment, metric, base, new, delta, changed.
 compare_runs <- function(run_base, run_new, experiments = NULL, tol = 5e-4) {
   exps <- .or_else(experiments,

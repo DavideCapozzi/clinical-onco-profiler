@@ -11,6 +11,8 @@ claude-workflow-notes.md
 tmp_*.md
 *output*
 NSCLC_validation_split_findings.md
+summerschool_feasibility.md
+PUBLICATION_PLAN.md
 
 # Regenerable artifacts
 *.rds
