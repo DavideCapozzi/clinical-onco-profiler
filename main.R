@@ -39,7 +39,7 @@ if (!is.null(base_config$experiments) && length(base_config$experiments) > 0) {
 }
 
 # Optional experiment filter: EXPERIMENTS="A,B" restricts this run to the named
-# experiments (e.g. for the golden snapshot test). Unset -> run all (default).
+# experiments. Unset -> run all (default).
 exp_filter <- Sys.getenv("EXPERIMENTS", unset = "")
 if (nzchar(exp_filter)) {
   wanted <- trimws(strsplit(exp_filter, ",")[[1]])

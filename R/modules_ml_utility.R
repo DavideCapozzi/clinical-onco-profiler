@@ -785,8 +785,10 @@ write_clinical_utility_summary <- function(cu) {
 # gate/X/classifiers. Compares three nested logistic models (clinical-only,
 # immune-only, clinical+immune) with leakage-free LOO + in-fold imputation,
 # Harrell optimism on the combined model, IDI/cNRI (apparent + bootstrap CI),
-# DeLong on LOO probabilities, calibration and a decision curve (clinical vs
-# combined), and an OS/PFS Cox secondary (C + likelihood-ratio test).
+# DeLong on LOO probabilities, a likelihood-ratio test of the immune increment
+# (asymptotic + exact permutation + Firth penalized — the correct nested-model
+# test, since DeLong on AUC is insensitive for nested models), calibration and a
+# decision curve (clinical vs combined), and an OS/PFS Cox secondary (C + LRT).
 #
 # `clinical_vars` is a named character vector: names = model-safe labels,
 # values = exact column names in `input_file` (e.g. c(NLR="neutrophils/lymphocytes")).
@@ -883,9 +885,17 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
   brier <- function(yvb, p) mean((p - yvb)^2)
   all_rows <- seq_len(n)
 
+  # ── Apparent clinical & combined fits (reused for predictions + LRT/Firth) ──
+  Ci_app  <- impute_median(Cmat, all_rows)
+  cn_app  <- make.names(cl_names, unique = TRUE)
+  dat_app <- data.frame(yb = yb, Ci_app, comp = comp, check.names = TRUE)
+  colnames(dat_app)[2:(1 + length(cn_app))] <- cn_app
+  fc_app  <- suppressWarnings(glm(reformulate(cn_app, "yb"), data = dat_app, family = binomial()))
+  fk_app  <- suppressWarnings(glm(reformulate(c(cn_app, "comp"), "yb"), data = dat_app, family = binomial()))
+
   # ── Apparent + leakage-free LOO probabilities ───────────────────────────────
-  pa_clin <- fit_predict(Cmat, comp, all_rows, all_rows, FALSE)
-  pa_comb <- fit_predict(Cmat, comp, all_rows, all_rows, TRUE)
+  pa_clin <- as.numeric(predict(fc_app, type = "response"))
+  pa_comb <- as.numeric(predict(fk_app, type = "response"))
   pa_imm  <- { dat <- data.frame(yb = yb, comp = comp)
                f <- suppressWarnings(glm(yb ~ comp, data = dat, family = binomial()))
                as.numeric(predict(f, type = "response")) }
@@ -929,6 +939,31 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
     nri_bs[b] <- (mean(d[e] > 0) - mean(d[e] < 0)) + (mean(d[!e] < 0) - mean(d[!e] > 0))
   }
   qci <- function(v) as.numeric(quantile(v, c(.025, .975), na.rm = TRUE))
+
+  # ── Likelihood-ratio test of the immune increment (asymptotic + permutation + Firth) ──
+  # The correct nested-model test for the pre-specified composite's added value: DeLong on
+  # AUC is insensitive for nested models, so it can be ns while the increment is real. The
+  # permutation null is exact (no chi-square reliance at low events-per-variable); the Firth
+  # penalized profile-likelihood test is separation-robust. All on the apparent models.
+  lrt_aov  <- tryCatch(anova(fc_app, fk_app, test = "Chisq"), error = function(e) NULL)
+  p_col    <- if (!is.null(lrt_aov)) grep("^Pr\\(", colnames(lrt_aov), value = TRUE) else character(0)
+  lrt_stat <- if (!is.null(lrt_aov)) lrt_aov$Deviance[2]                 else NA_real_
+  lrt_p    <- if (length(p_col))    lrt_aov[[p_col[1]]][2]               else NA_real_
+  lrt_perm_p <- NA_real_
+  if (is.finite(lrt_stat) && n_perm > 0) {
+    ln <- numeric(n_perm)
+    for (b in seq_len(n_perm)) {
+      dp <- dat_app; dp$yb <- sample(yb)
+      fcp <- suppressWarnings(glm(reformulate(cn_app, "yb"),         data = dp, family = binomial()))
+      fkp <- suppressWarnings(glm(reformulate(c(cn_app, "comp"), "yb"), data = dp, family = binomial()))
+      ln[b] <- deviance(fcp) - deviance(fkp)
+    }
+    lrt_perm_p <- (1 + sum(ln >= lrt_stat)) / (n_perm + 1)
+  }
+  lrt_firth_p <- if (requireNamespace("logistf", quietly = TRUE))
+    tryCatch({ ff <- logistf::logistf(reformulate(c(cn_app, "comp"), "yb"), data = dat_app)
+               unname(ff$prob[match("comp", names(coef(ff)))]) }, error = function(e) NA_real_)
+    else NA_real_
 
   # ── Harrell optimism of the combined-model AUC ──────────────────────────────
   # Self-contained (fit_predict() binds the global original-order yb, so it must
@@ -997,8 +1032,8 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
     paste("Immune composite selected on these T0 data (univariate/screen) — added value is",
           "EXPLORATORY / conditional-on-selection; treat IDI and DeLong p as a lower bound.")
 
-  message(sprintf("[ML][AV] AUC clinical LOO=%.3f -> combined LOO=%.3f (DeLong p=%.4f) | IDI=%+.3f [%.3f,%.3f] | optimism=%.3f corr=%.3f",
-                  auc$clinical[["loo"]], auc$combined[["loo"]], delong_p,
+  message(sprintf("[ML][AV] AUC clinical LOO=%.3f -> combined LOO=%.3f (DeLong p=%.4f; LRT p=%.4f, perm=%.4f) | IDI=%+.3f [%.3f,%.3f] | optimism=%.3f corr=%.3f",
+                  auc$clinical[["loo"]], auc$combined[["loo"]], delong_p, lrt_p, lrt_perm_p,
                   idi_app, qci(idi_bs)[1], qci(idi_bs)[2], opt_m, auc_corr))
 
   list(
@@ -1011,6 +1046,7 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
     increment = list(
       delta_auc_loo = unname(auc$combined[["loo"]] - auc$clinical[["loo"]]),
       delong_p_loo  = delong_p,
+      lrt_p = lrt_p, lrt_perm_p = lrt_perm_p, lrt_firth_p = lrt_firth_p,
       idi = idi_app, idi_ci = qci(idi_bs),
       cnri = nri_app, cnri_ci = qci(nri_bs)),
     combined_optimism = list(auc_optimism = opt_m, auc_corrected = auc_corr,
@@ -1041,11 +1077,13 @@ write_clinical_immune_summary <- function(av) {
   inc <- av$increment; sv <- av$survival
   surv_str <- function(s) if (is.null(s)) "n/a"
     else sprintf("C %.3f->%.3f (LRT p=%.3f)", s$c_clinical, s$c_combined, s$lrt_p)
+  fmt_p <- function(p) if (is.null(p) || is.na(p)) "n/a" else sprintf("%.4f", p)
   data.frame(
     Metric = c("Clinical baseline", "Immune composite", "Gate provenance",
                "N (complete-case)", "N pos/neg", "Prevalence",
                "AUC clinical (LOO)", "AUC immune (LOO)", "AUC combined (LOO)",
                "Delta AUC (combined-clinical, LOO)", "DeLong p (LOO)",
+               "LRT p (asymptotic)", "LRT p (permutation)", "LRT p (Firth penalized)",
                "IDI [95% CI]", "cNRI [95% CI]",
                "Combined AUC optimism", "Combined AUC corrected",
                "Combined calib slope (LOO)", "Combined Brier (LOO)",
@@ -1059,6 +1097,7 @@ write_clinical_immune_summary <- function(av) {
       sprintf("%.3f", av$auc$clinical[["loo"]]), sprintf("%.3f", av$auc$immune[["loo"]]),
       sprintf("%.3f", av$auc$combined[["loo"]]),
       sprintf("%+.3f", inc$delta_auc_loo), sprintf("%.4f", inc$delong_p_loo),
+      fmt_p(inc$lrt_p), fmt_p(inc$lrt_perm_p), fmt_p(inc$lrt_firth_p),
       sprintf("%+.3f [%.3f, %.3f]", inc$idi, inc$idi_ci[1], inc$idi_ci[2]),
       sprintf("%+.3f [%.3f, %.3f]", inc$cnri, inc$cnri_ci[1], inc$cnri_ci[2]),
       sprintf("%.4f", av$combined_optimism$auc_optimism),

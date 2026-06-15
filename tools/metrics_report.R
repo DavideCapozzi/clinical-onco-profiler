@@ -5,9 +5,9 @@
 #   - a publishability VERDICT for each experiment in a run, and
 #   - an optional DELTA table versus a baseline run.
 #
-# All numbers and thresholds come from R/utils_metrics.R — the same single source
-# of truth the golden tests assert on — so this script does no JSON path or
-# threshold logic of its own (it only parses args, calls the helpers, and prints).
+# All numbers and thresholds come from R/utils_metrics.R — the single source of
+# truth — so this script does no JSON path or threshold logic of its own (it only
+# parses args, calls the helpers, and prints).
 #
 # Usage:
 #   Rscript tools/metrics_report.R [--new <run>] [--base <run>] [--exp A,B]
@@ -17,7 +17,7 @@
 #   --exp   comma-separated experiments  (default: all in the run[s])
 #
 # Run roots may be absolute or relative to results/. Exit code 0 always (this is a
-# report, not a gate — use tests/golden/* for pass/fail gating).
+# report, not a gate).
 # ==============================================================================
 
 suppressPackageStartupMessages({ library(here); library(jsonlite) })
