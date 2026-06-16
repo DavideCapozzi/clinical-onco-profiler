@@ -1032,12 +1032,46 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
     paste("Immune composite selected on these T0 data (univariate/screen) — added value is",
           "EXPLORATORY / conditional-on-selection; treat IDI and DeLong p as a lower bound.")
 
+  # ── Locked model: a frozen, pre-specified scorer for prospective/temporal validation ──
+  # Bundles everything needed to score NEW patients WITHOUT refitting: the apparent
+  # combined-model coefficients (developed on this full cohort) PLUS the development-cohort
+  # preprocessing constants, so a new patient's RAW markers map to a probability through the
+  # exact same transform. The immune side reverses Step 01's pipeline: logit/log2 (frozen
+  # epsilon, attached by the caller) -> z with FROZEN per-marker center/scale (recovered from
+  # `hybrid_data_raw`, the pre-z transformed matrix) -> median-impute on the z scale. The
+  # clinical side stores per-variable medians (raw scale). See diagnostics/run_validation.R.
+  raw_df   <- as.data.frame(DATA_T0$hybrid_data_raw)
+  z_center <- sapply(avail, function(m) mean(suppressWarnings(as.numeric(raw_df[[m]])),     na.rm = TRUE))
+  z_scale  <- sapply(avail, function(m) stats::sd(suppressWarnings(as.numeric(raw_df[[m]])), na.rm = TRUE))
+  z_imp    <- sapply(avail, function(m) median(suppressWarnings(as.numeric(z[[m]])),         na.rm = TRUE))
+  clin_med <- apply(Cmat, 2, median, na.rm = TRUE); clin_med[!is.finite(clin_med)] <- 0
+  locked_model <- list(
+    schema_version    = 1L,
+    positive_label    = resp_label, negative_label = neg_label,
+    prevalence        = prev, threshold_default = round(prev, 4),
+    gate_provenance   = gate_provenance, provenance_note = provenance_note,
+    immune = list(
+      markers  = avail,
+      z_center = as.list(z_center), z_scale = as.list(z_scale), z_impute = as.list(z_imp)),
+    clinical = list(
+      vars          = as.list(clinical_vars),              # label -> Excel column
+      coef_names    = as.list(setNames(cn_app, cl_names)), # label -> coefficient name (make.names)
+      impute_median = as.list(clin_med)),                  # label -> median (raw clinical scale)
+    coefficients = list(
+      combined      = as.list(coef(fk_app)),               # (Intercept) + clinical make.names + comp
+      clinical_only = as.list(coef(fc_app))),
+    calibration_loo  = list(citl = unname(cp_comb[["intercept"]]), slope = unname(cp_comb[["slope"]])),
+    development_auc  = list(clinical_loo      = auc$clinical[["loo"]],
+                           combined_loo      = auc$combined[["loo"]],
+                           combined_apparent = auc$combined[["apparent"]]))
+
   message(sprintf("[ML][AV] AUC clinical LOO=%.3f -> combined LOO=%.3f (DeLong p=%.4f; LRT p=%.4f, perm=%.4f) | IDI=%+.3f [%.3f,%.3f] | optimism=%.3f corr=%.3f",
                   auc$clinical[["loo"]], auc$combined[["loo"]], delong_p, lrt_p, lrt_perm_p,
                   idi_app, qci(idi_bs)[1], qci(idi_bs)[2], opt_m, auc_corr))
 
   list(
     clinical_vars   = as.list(clinical_vars),
+    locked_model    = locked_model,
     composite_markers = avail,
     gate_provenance = gate_provenance, provenance_note = provenance_note,
     n = n, n_complete_case = n_cc, n_pos = sum(yb), n_neg = sum(1 - yb),
@@ -1068,7 +1102,24 @@ clinical_immune_json <- function(av) {
   if (is.null(av)) return(NULL)
   av$per_patient <- NULL
   av$decision_curve$curve <- NULL
+  av$locked_model <- NULL          # serialized separately via write_locked_model()
   av
+}
+
+#' Serialize a locked added-value model (RDS + JSON) for prospective/temporal validation.
+#'
+#' The locked model is the pre-specified scorer built by run_clinical_immune_added_value();
+#' `extra` is merged at the top level by the caller (the transform recipe from `config` plus
+#' development-run metadata) so the on-disk artifact is fully self-describing. RDS is the
+#' source of truth (full numeric precision); JSON is a human-readable mirror.
+write_locked_model <- function(lm, rds_path, json_path = NULL, extra = list()) {
+  if (is.null(lm)) return(invisible(NULL))
+  lm <- modifyList(lm, extra)
+  saveRDS(lm, rds_path)
+  if (!is.null(json_path) && requireNamespace("jsonlite", quietly = TRUE))
+    jsonlite::write_json(lm, json_path, auto_unbox = TRUE, pretty = TRUE,
+                         digits = 12, null = "null")
+  invisible(lm)
 }
 
 #' Flat Metric/Value summary of an added-value result, for the Excel report.

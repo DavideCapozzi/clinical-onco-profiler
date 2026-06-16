@@ -110,6 +110,10 @@ experiments:
           NLR:   "neutrophils/lymphocytes"
           PS:    "PS_prima_immuno"
         impute: "median"
+        # Freeze the pre-specified clinical+immune scorer (coefficients + preprocessing
+        # constants) to locked_model_<exp>.{rds,json} for prospective/temporal validation
+        # on incoming patients (apply without refitting). Set false to skip the export.
+        export_locked_model: true
         survival:
           os:    "OS"
           pfs:   "PFS"

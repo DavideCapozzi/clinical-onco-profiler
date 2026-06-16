@@ -453,6 +453,38 @@ if (lmm_robust$n_robust == 0) {
     )
   }
 
+  # 12c. Locked-model export — freeze the pre-specified scorer NOW so incoming patients can be
+  # scored WITHOUT refitting (prospective/temporal validation, TRIPOD 2b/3 — the only tier-
+  # lifter). The model object carries development-cohort coefficients + preprocessing constants;
+  # here we attach the transform recipe (from config) and run provenance. See diagnostics/run_validation.R.
+  if (!is.null(clin_addval) && !is.null(clin_addval$locked_model) &&
+      !isFALSE(ml_cfg$clinical_model$export_locked_model)) {
+    tr       <- config$transformation
+    git_sha  <- tryCatch(system2("git", c("rev-parse", "HEAD"), stdout = TRUE, stderr = FALSE),
+                         error = function(e) character(0))
+    run_root <- dirname(dirname(out_dir))   # <run>/<experiment>/06_machine_learning -> <run>
+    extra <- list(
+      transform = list(
+        facs_method    = if (!is.null(tr$facs_method))    tr$facs_method    else "logit",
+        facs_format    = if (!is.null(tr$facs_format))    tr$facs_format    else "percentage",
+        soluble_method = if (!is.null(tr$soluble_method)) tr$soluble_method else "log2",
+        epsilon        = if (!is.null(tr$epsilon))        tr$epsilon        else 1e-6),
+      development = list(
+        experiment    = config$project_name,
+        run_id        = basename(run_root),
+        git_sha       = if (length(git_sha)) git_sha[1] else NA_character_,
+        seed          = if (!is.null(config$stats$seed)) as.integer(config$stats$seed) else NA_integer_,
+        created       = format(Sys.time(), "%Y-%m-%d %H:%M:%S %Z"),
+        input_file_t0 = config$input_file_t0,
+        n = clin_addval$n, n_pos = clin_addval$n_pos, n_neg = clin_addval$n_neg))
+    write_locked_model(
+      clin_addval$locked_model,
+      file.path(out_dir, sprintf("locked_model_%s.rds",  config$project_name)),
+      file.path(out_dir, sprintf("locked_model_%s.json", config$project_name)),
+      extra = extra)
+    message(sprintf("[ML][AV] Locked model exported -> locked_model_%s.{rds,json}", config$project_name))
+  }
+
   # 13. Export Machine-Readable JSON
   # ------------------------------------------------------------------------------
   machine_output <- list(
@@ -935,7 +967,7 @@ if (lmm_robust$n_robust == 0) {
           values = c("T0" = "#1f78b4", "T1" = "#33a02c", "Delta (T1-T0)" = "#e31a1c")
         ) +
         ggplot2::labs(
-          title    = sprintf("Gate signal decomposition: T0 / T1 / Delta — %s", config$project_name),
+          title    = sprintf("Gate signal decomposition: T0 / T1 / Delta - %s", config$project_name),
           subtitle = sprintf("n_paired=%d | %s", gate_decomp$n_paired, gate_decomp$scenario),
           y        = "Univariate AUC (DeLong 95% CI)",
           x        = NULL

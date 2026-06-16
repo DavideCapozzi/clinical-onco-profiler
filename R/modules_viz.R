@@ -1308,8 +1308,14 @@ viz_plot_added_value <- function(av, colors, title_prefix = "") {
   ttl <- paste0(if (nzchar(title_prefix)) paste0(title_prefix, " - ") else "",
                 "Added value of immune profiling over clinical (",
                 paste(names(av$clinical_vars), collapse = "+"), ")")
-  sub <- sprintf("ΔAUC(LOO)=%+.3f  DeLong p=%.3f  IDI=%+.3f [%.3f, %.3f]  | %s",
-                 inc$delta_auc_loo, inc$delong_p_loo, inc$idi,
+  # LRT of the increment = the correct primary test for nested models (DeLong on
+  # ΔAUC is expected to be ns); lead with it, guard if absent (older runs / no logistf).
+  lrt_txt <- if (!is.null(inc$lrt_p)) {
+    pp <- if (!is.null(inc$lrt_perm_p)) sprintf(" (perm %.3f)", inc$lrt_perm_p) else ""
+    sprintf("LRT p=%.4f%s   ", inc$lrt_p, pp)
+  } else ""
+  sub <- sprintf("%sDelta-AUC(LOO)=%+.3f  DeLong p=%.3f  IDI=%+.3f [%.3f, %.3f]  | %s",
+                 lrt_txt, inc$delta_auc_loo, inc$delong_p_loo, inc$idi,
                  inc$idi_ci[1], inc$idi_ci[2], av$gate_provenance)
 
   patchwork::wrap_plots(pA, pB, nrow = 1) +
