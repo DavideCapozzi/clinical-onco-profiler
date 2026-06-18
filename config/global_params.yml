@@ -110,6 +110,18 @@ experiments:
           NLR:   "neutrophils/lymphocytes"
           PS:    "PS_prima_immuno"
         impute: "median"
+        # ── Defensibility sensitivities (additive; unpenalized SoC model stays PRIMARY) ──
+        # 1b — ridge (L2) combined model as a CALIBRATION sensitivity: recalibrates the
+        #      over-fit combined model (slope ~0.66 -> ~0.9) without losing discrimination.
+        calibration_ridge: true
+        # 1c — enriched-baseline specification sensitivity: re-test the SAME immune composite
+        #      over progressively stronger clinical baselines (label -> extra Excel columns).
+        baseline_sensitivity:
+          "+smoking": ["Fumatori_0_no;_1_ex;2_si"]
+          "+burden":  ["n_mets_sites"]
+        # 1d — specificity null: gate vs N random k-marker composites over the fixed SoC.
+        specificity_null:
+          n_random: 1000
         # Freeze the pre-specified clinical+immune scorer (coefficients + preprocessing
         # constants) to locked_model_<exp>.{rds,json} for prospective/temporal validation
         # on incoming patients (apply without refitting). Set false to skip the export.

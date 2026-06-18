@@ -799,6 +799,9 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
                                             surv_cols = c(os = "OS", pfs = "PFS",
                                                           death = "Alive_0/Dead_1"),
                                             n_boot = 2000L, n_perm = 2000L,
+                                            ridge = TRUE,
+                                            baseline_sensitivity_cols = NULL,
+                                            n_random_null = 0L,
                                             min_n = 30L, seed = 2026L) {
   if (!requireNamespace("readxl", quietly = TRUE) ||
       !requireNamespace("pROC",   quietly = TRUE) ||
@@ -1025,6 +1028,151 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
     survival <- list(OS = cox_block(os, ev_os), PFS = cox_block(pfs, ev_pfs))
   }
 
+  # ── Sensitivity layers (additive; placed AFTER all pre-existing RNG consumers so the
+  #    primary numbers — optimism etc. — reproduce byte-for-byte). Shared helpers: ───────
+  idi_y <- function(po, pn, yv) { e <- yv == 1
+    (mean(pn[e]) - mean(po[e])) + (mean(po[!e]) - mean(pn[!e])) }
+  # anova.glm names the p column "Pr(>Chi)" (coxph uses "Pr(>|Chi|)") — match robustly.
+  lrt_chisq_p <- function(a) {
+    if (is.null(a)) return(NA_real_)
+    pc <- grep("^Pr\\(", colnames(a), value = TRUE)
+    if (!length(pc)) return(NA_real_)
+    v <- a[[pc[1]]][2]; if (length(v) != 1) NA_real_ else v
+  }
+
+  # ── C1: leakage-free LOO IDI ────────────────────────────────────────────────
+  # idi_app is in-sample (apparent, Pencina 2008 setup) and optimistic; the honest
+  # reclassification metric is the IDI on the cross-validated LOO probs (matches diag_23).
+  idi_loo <- idi_y(pl_clin, pl_comb, yb)
+  idi_loo_bs <- numeric(n_boot)
+  for (b in seq_len(n_boot)) { ix <- sample(n, n, replace = TRUE)
+    idi_loo_bs[b] <- idi_y(pl_clin[ix], pl_comb[ix], yb[ix]) }
+  idi_loo_ci <- qci(idi_loo_bs)
+
+  # ── 1b: ridge-penalized combined model (calibration sensitivity), LOO leakage-free ──
+  # The unpenalized combined model over-fits at EPV~9 (calib slope ~0.66, predictions too
+  # extreme). A ridge (L2, inner-CV lambda, leakage-free LOO) recalibrates (slope -> ~0.9)
+  # WITHOUT losing discrimination — disarms "the IDI is inflated by mis-calibration". The
+  # unpenalized model stays PRIMARY (it carries the LRT); this is a sensitivity. See diag_23.
+  combined_ridge <- NULL
+  if (isTRUE(ridge) && requireNamespace("glmnet", quietly = TRUE)) {
+    pr <- rep(NA_real_, n)
+    for (i in all_rows) {
+      tr  <- all_rows[-i]
+      Cit <- impute_median(Cmat, tr)
+      Xtr <- as.matrix(cbind(Cit[tr, , drop = FALSE], comp = comp[tr]))
+      Xte <- as.matrix(cbind(Cit[i,  , drop = FALSE], comp = comp[i]))
+      cvf <- tryCatch(glmnet::cv.glmnet(Xtr, yb[tr], family = "binomial", alpha = 0, nfolds = 10),
+                      error = function(e) NULL)
+      if (!is.null(cvf)) pr[i] <- as.numeric(predict(cvf, newx = Xte, s = "lambda.min", type = "response"))
+    }
+    ok <- is.finite(pr)
+    if (sum(ok) >= min_n) {
+      cpr <- calib_params(yb[ok], pr[ok]); wok <- which(ok)
+      ir  <- idi_y(pl_clin[ok], pr[ok], yb[ok])
+      irb <- numeric(n_boot)
+      for (b in seq_len(n_boot)) { ix <- sample(wok, length(wok), replace = TRUE)
+        irb[b] <- idi_y(pl_clin[ix], pr[ix], yb[ix]) }
+      combined_ridge <- list(
+        method           = "ridge L2 (alpha=0); inner 10-fold cv.glmnet lambda.min; LOO outer",
+        n_used           = sum(ok),
+        auc_clinical_loo = auc_pos(pl_clin[ok], y[ok]),
+        auc_combined_loo = auc_pos(pr[ok], y[ok]),
+        delta_auc_loo    = unname(auc_pos(pr[ok], y[ok]) - auc_pos(pl_clin[ok], y[ok])),
+        calib_slope_loo  = unname(cpr[["slope"]]), calib_citl_loo = unname(cpr[["intercept"]]),
+        brier_loo        = brier(yb[ok], pr[ok]),
+        idi_loo          = ir, idi_loo_ci = qci(irb))
+    }
+  }
+
+  # ── 1c: increment vs progressively enriched clinical baselines (immune held fixed) ──
+  # Pre-empts "your SoC baseline is weak / a proper clinical model would absorb the immune
+  # signal". Each enriched baseline re-tests the SAME composite (LRT df=1, leakage-free LOO
+  # AUCs, apparent IDI). See diag_24 (trap: improving DeLong/dAUC = baseline degradation).
+  baseline_sensitivity <- NULL
+  if (length(baseline_sensitivity_cols)) {
+    inc_for <- function(Cm2) {
+      cl2 <- colnames(Cm2); cn2 <- make.names(cl2, unique = TRUE)
+      plc <- plk <- numeric(n)
+      for (i in all_rows) {
+        tr  <- all_rows[-i]; Cit <- impute_median(Cm2, tr)
+        d <- data.frame(yb = yb, Cit, comp = comp, check.names = TRUE)
+        colnames(d)[2:(1 + length(cn2))] <- cn2
+        fcl <- suppressWarnings(glm(reformulate(cn2, "yb"),            data = d[tr, ], family = binomial()))
+        fco <- suppressWarnings(glm(reformulate(c(cn2, "comp"), "yb"), data = d[tr, ], family = binomial()))
+        plc[i] <- as.numeric(predict(fcl, newdata = d[i, ], type = "response"))
+        plk[i] <- as.numeric(predict(fco, newdata = d[i, ], type = "response"))
+      }
+      Cia <- impute_median(Cm2, all_rows)
+      da  <- data.frame(yb = yb, Cia, comp = comp, check.names = TRUE)
+      colnames(da)[2:(1 + length(cn2))] <- cn2
+      fca <- suppressWarnings(glm(reformulate(cn2, "yb"),            data = da, family = binomial()))
+      fka <- suppressWarnings(glm(reformulate(c(cn2, "comp"), "yb"), data = da, family = binomial()))
+      lp  <- lrt_chisq_p(tryCatch(anova(fca, fka, test = "Chisq"), error = function(e) NULL))
+      fp  <- if (requireNamespace("logistf", quietly = TRUE))
+        tryCatch({ ff <- logistf::logistf(reformulate(c(cn2, "comp"), "yb"), data = da)
+                   unname(ff$prob[match("comp", names(coef(ff)))]) }, error = function(e) NA_real_) else NA_real_
+      ia  <- idi_fun(as.numeric(predict(fca, type = "response")), as.numeric(predict(fka, type = "response")))
+      list(k_clinical = length(cl2),
+           clinical_loo_auc = auc_pos(plc), combined_loo_auc = auc_pos(plk),
+           delta_auc_loo = unname(auc_pos(plk) - auc_pos(plc)),
+           lrt_p = lp, lrt_firth_p = fp, idi = ia)
+    }
+    baseline_sensitivity <- list()
+    for (lab in names(baseline_sensitivity_cols)) {
+      extra <- intersect(baseline_sensitivity_cols[[lab]], names(raw))
+      if (!length(extra)) { message(sprintf("[ML][AV] baseline '%s': extra columns absent — skipped.", lab)); next }
+      ec  <- sapply(extra, function(col) suppressWarnings(as.numeric(raw[[col]][ridx])))
+      ec  <- matrix(ec, nrow = length(meta_ids), dimnames = list(NULL, extra))[keep, , drop = FALSE]
+      Cm2 <- cbind(Cmat, ec)
+      baseline_sensitivity[[lab]] <- tryCatch(inc_for(Cm2), error = function(e) {
+        message(sprintf("[ML][AV] baseline '%s' failed: %s", lab, e$message)); NULL })
+    }
+    if (!length(baseline_sensitivity)) baseline_sensitivity <- NULL
+  }
+
+  # ── 1d: specificity null — gate vs random k-marker immune composites over the FIXED SoC ──
+  # "With 39 markers, isn't a composite that beats a weak baseline easy to find by chance?"
+  # Random triplets scored for the SAME apparent increment; specificity p = how extreme the
+  # gate is vs the null. Claim rests on PROVENANCE (LMM + published biology), not rarity (diag_25).
+  specificity_null <- NULL
+  if (n_random_null > 0L) {
+    zk <- as.matrix(z[keep, , drop = FALSE])
+    zk <- apply(zk, 2, function(x) suppressWarnings(as.numeric(x)))
+    keep_col <- apply(zk, 2, function(x) sum(is.finite(x)) > 0 &&
+                        stats::sd(x, na.rm = TRUE) > 0)
+    zk <- zk[, keep_col, drop = FALSE]
+    for (j in seq_len(ncol(zk))) { col <- zk[, j]; col[is.na(col)] <- median(col, na.rm = TRUE); zk[, j] <- col }
+    k_gate <- length(avail)
+    if (ncol(zk) >= k_gate) {
+      Ci_all <- impute_median(Cmat, all_rows); cnf <- make.names(cl_names, unique = TRUE)
+      base_df <- data.frame(yb = yb, Ci_all); colnames(base_df)[2:(1 + length(cnf))] <- cnf
+      fc0 <- suppressWarnings(glm(reformulate(cnf, "yb"), data = base_df, family = binomial()))
+      pc0 <- as.numeric(predict(fc0, type = "response")); auc_c_app <- auc_pos(pc0)
+      gate_dauc_app <- unname(auc$combined[["apparent"]] - auc$clinical[["apparent"]])
+      rl <- ri <- rd <- rep(NA_real_, n_random_null)
+      for (b in seq_len(n_random_null)) {
+        mk <- sample(ncol(zk), k_gate)
+        d2 <- base_df; d2$comp <- rowMeans(zk[, mk, drop = FALSE])
+        fk <- suppressWarnings(glm(reformulate(c(cnf, "comp"), "yb"), data = d2, family = binomial()))
+        rl[b] <- lrt_chisq_p(tryCatch(anova(fc0, fk, test = "Chisq"), error = function(e) NULL))
+        pk <- as.numeric(predict(fk, type = "response"))
+        ri[b] <- idi_fun(pc0, pk); rd[b] <- auc_pos(pk) - auc_c_app
+      }
+      fin <- is.finite(rl)
+      specificity_null <- list(
+        n_random = n_random_null, k_markers = k_gate, n_pool = ncol(zk),
+        gate_lrt_p = lrt_p, gate_idi = idi_app, gate_delta_auc_apparent = gate_dauc_app,
+        spec_p_lrt  = (1 + sum(rl[fin] <= lrt_p))           / (sum(fin) + 1),
+        spec_p_idi  = (1 + sum(ri[fin] >= idi_app))         / (sum(fin) + 1),
+        spec_p_dauc = (1 + sum(rd[fin] >= gate_dauc_app))   / (sum(fin) + 1),
+        frac_sig_lrt = mean(rl[fin] < 0.05),
+        null_dauc_q  = as.list(round(quantile(rd[fin], c(.5, .9, .95, .99), na.rm = TRUE), 4)),
+        note = paste("Apparent LRT/IDI/dAUC vs random k-marker composites; specificity rests on",
+                     "provenance (Step-04 LMM + published Ki67 biology), not numerical rarity (diag_25)."))
+    }
+  }
+
   provenance_note <- if (gate_provenance == "lmm-prespecified")
     paste("Immune composite pre-specified from the Step-04 LMM gate (disjoint from this T0",
           "model). Clinical baseline pre-specified from NSCLC-ICI literature; not data-selected.")
@@ -1065,9 +1213,18 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
                            combined_loo      = auc$combined[["loo"]],
                            combined_apparent = auc$combined[["apparent"]]))
 
-  message(sprintf("[ML][AV] AUC clinical LOO=%.3f -> combined LOO=%.3f (DeLong p=%.4f; LRT p=%.4f, perm=%.4f) | IDI=%+.3f [%.3f,%.3f] | optimism=%.3f corr=%.3f",
+  message(sprintf("[ML][AV] AUC clinical LOO=%.3f -> combined LOO=%.3f (DeLong p=%.4f; LRT p=%.4f, perm=%.4f) | IDI app=%+.3f [%.3f,%.3f] LOO=%+.3f [%.3f,%.3f] | optimism=%.3f corr=%.3f",
                   auc$clinical[["loo"]], auc$combined[["loo"]], delong_p, lrt_p, lrt_perm_p,
-                  idi_app, qci(idi_bs)[1], qci(idi_bs)[2], opt_m, auc_corr))
+                  idi_app, qci(idi_bs)[1], qci(idi_bs)[2],
+                  idi_loo, idi_loo_ci[1], idi_loo_ci[2], opt_m, auc_corr))
+  if (!is.null(combined_ridge))
+    message(sprintf("[ML][AV] ridge sensitivity: combined LOO AUC=%.3f, calib slope %.3f->%.3f, IDI-LOO=%+.3f [%.3f,%.3f]",
+                    combined_ridge$auc_combined_loo, cp_comb[["slope"]], combined_ridge$calib_slope_loo,
+                    combined_ridge$idi_loo, combined_ridge$idi_loo_ci[1], combined_ridge$idi_loo_ci[2]))
+  if (!is.null(specificity_null))
+    message(sprintf("[ML][AV] specificity null (N=%d): spec-p LRT=%.3f IDI=%.3f dAUC=%.3f | frac LRT<.05=%.3f",
+                    specificity_null$n_random, specificity_null$spec_p_lrt, specificity_null$spec_p_idi,
+                    specificity_null$spec_p_dauc, specificity_null$frac_sig_lrt))
 
   list(
     clinical_vars   = as.list(clinical_vars),
@@ -1082,11 +1239,15 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
       delong_p_loo  = delong_p,
       lrt_p = lrt_p, lrt_perm_p = lrt_perm_p, lrt_firth_p = lrt_firth_p,
       idi = idi_app, idi_ci = qci(idi_bs),
+      idi_loo = idi_loo, idi_loo_ci = idi_loo_ci,
       cnri = nri_app, cnri_ci = qci(nri_bs)),
     combined_optimism = list(auc_optimism = opt_m, auc_corrected = auc_corr,
                              calib_slope_loo = cp_comb[["slope"]],
                              calib_citl_loo = cp_comb[["intercept"]],
                              brier_loo = brier(yb, pl_comb)),
+    combined_ridge       = combined_ridge,
+    baseline_sensitivity = baseline_sensitivity,
+    specificity_null     = specificity_null,
     decision_curve = list(prevalence = prev, curve = dc),
     survival = survival,
     per_patient = data.frame(
@@ -1129,18 +1290,18 @@ write_clinical_immune_summary <- function(av) {
   surv_str <- function(s) if (is.null(s)) "n/a"
     else sprintf("C %.3f->%.3f (LRT p=%.3f)", s$c_clinical, s$c_combined, s$lrt_p)
   fmt_p <- function(p) if (is.null(p) || is.na(p)) "n/a" else sprintf("%.4f", p)
-  data.frame(
-    Metric = c("Clinical baseline", "Immune composite", "Gate provenance",
+  rg <- av$combined_ridge; sn <- av$specificity_null
+  base_metric <- c("Clinical baseline", "Immune composite", "Gate provenance",
                "N (complete-case)", "N pos/neg", "Prevalence",
                "AUC clinical (LOO)", "AUC immune (LOO)", "AUC combined (LOO)",
                "Delta AUC (combined-clinical, LOO)", "DeLong p (LOO)",
                "LRT p (asymptotic)", "LRT p (permutation)", "LRT p (Firth penalized)",
-               "IDI [95% CI]", "cNRI [95% CI]",
+               "IDI apparent [95% CI]", "IDI LOO leakage-free [95% CI]", "cNRI [95% CI]",
                "Combined AUC optimism", "Combined AUC corrected",
                "Combined calib slope (LOO)", "Combined Brier (LOO)",
                "Survival OS (secondary)", "Survival PFS (secondary)",
-               "Provenance note"),
-    Value = c(
+               "Provenance note")
+  base_value <- c(
       paste(names(av$clinical_vars), collapse = "+"),
       paste(av$composite_markers, collapse = "+"), av$gate_provenance,
       sprintf("%d (%d)", av$n, av$n_complete_case),
@@ -1150,12 +1311,44 @@ write_clinical_immune_summary <- function(av) {
       sprintf("%+.3f", inc$delta_auc_loo), sprintf("%.4f", inc$delong_p_loo),
       fmt_p(inc$lrt_p), fmt_p(inc$lrt_perm_p), fmt_p(inc$lrt_firth_p),
       sprintf("%+.3f [%.3f, %.3f]", inc$idi, inc$idi_ci[1], inc$idi_ci[2]),
+      if (!is.null(inc$idi_loo)) sprintf("%+.3f [%.3f, %.3f]", inc$idi_loo, inc$idi_loo_ci[1], inc$idi_loo_ci[2]) else "n/a",
       sprintf("%+.3f [%.3f, %.3f]", inc$cnri, inc$cnri_ci[1], inc$cnri_ci[2]),
       sprintf("%.4f", av$combined_optimism$auc_optimism),
       sprintf("%.3f", av$combined_optimism$auc_corrected),
       sprintf("%.3f", av$combined_optimism$calib_slope_loo),
       sprintf("%.3f", av$combined_optimism$brier_loo),
-      surv_str(sv$OS), surv_str(sv$PFS), av$provenance_note),
-    stringsAsFactors = FALSE)
+      surv_str(sv$OS), surv_str(sv$PFS), av$provenance_note)
+
+  # ── Ridge calibration sensitivity (1b) ──────────────────────────────────────
+  if (!is.null(rg)) {
+    base_metric <- c(base_metric,
+      "[Ridge] Combined AUC (LOO)", "[Ridge] Delta AUC (LOO)",
+      "[Ridge] calib slope (LOO)", "[Ridge] IDI LOO [95% CI]")
+    base_value <- c(base_value,
+      sprintf("%.3f", rg$auc_combined_loo), sprintf("%+.3f", rg$delta_auc_loo),
+      sprintf("%.3f", rg$calib_slope_loo),
+      sprintf("%+.3f [%.3f, %.3f]", rg$idi_loo, rg$idi_loo_ci[1], rg$idi_loo_ci[2]))
+  }
+  # ── Baseline-specification sensitivity (1c) ─────────────────────────────────
+  if (!is.null(av$baseline_sensitivity)) {
+    for (lab in names(av$baseline_sensitivity)) {
+      bs <- av$baseline_sensitivity[[lab]]; if (is.null(bs)) next
+      base_metric <- c(base_metric, sprintf("[Baseline %s] clin/comb LOO AUC; LRT; IDI", lab))
+      base_value  <- c(base_value, sprintf("%.3f -> %.3f (dAUC %+.3f); LRT %s (Firth %s); IDI %+.3f",
+        bs$clinical_loo_auc, bs$combined_loo_auc, bs$delta_auc_loo,
+        fmt_p(bs$lrt_p), fmt_p(bs$lrt_firth_p), bs$idi))
+    }
+  }
+  # ── Specificity null (1d) ───────────────────────────────────────────────────
+  if (!is.null(sn)) {
+    base_metric <- c(base_metric,
+      "[SpecNull] N random / pool", "[SpecNull] spec-p (LRT / IDI / dAUC)",
+      "[SpecNull] frac random LRT<0.05")
+    base_value <- c(base_value,
+      sprintf("%d / %d", sn$n_random, sn$n_pool),
+      sprintf("%.3f / %.3f / %.3f", sn$spec_p_lrt, sn$spec_p_idi, sn$spec_p_dauc),
+      sprintf("%.3f", sn$frac_sig_lrt))
+  }
+  data.frame(Metric = base_metric, Value = base_value, stringsAsFactors = FALSE)
 }
 
