@@ -445,7 +445,13 @@ if (lmm_robust$n_robust == 0) {
         gate_provenance = "lmm-prespecified",
         surv_cols       = if (!is.null(cm$survival)) unlist(cm$survival)
                           else c(os = "OS", pfs = "PFS", death = "Alive_0/Dead_1"),
-        n_boot          = if (!is.null(cu_cfg$n_boot)) as.integer(cu_cfg$n_boot) else 2000L
+        n_boot          = if (!is.null(cu_cfg$n_boot)) as.integer(cu_cfg$n_boot) else 2000L,
+        ridge           = !isFALSE(cm$calibration_ridge),
+        baseline_sensitivity_cols = if (!is.null(cm$baseline_sensitivity))
+                                      lapply(cm$baseline_sensitivity, function(x) unlist(x, use.names = FALSE))
+                                    else NULL,
+        n_random_null   = if (!is.null(cm$specificity_null$n_random))
+                            as.integer(cm$specificity_null$n_random) else 0L
       ),
       error = function(e) {
         warning(sprintf("[ML] Added-value layer failed (non-fatal): %s", e$message)); NULL
