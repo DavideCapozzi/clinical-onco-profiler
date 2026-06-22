@@ -12,6 +12,8 @@
 source("R/utils_io.R")
 source("R/modules_ml.R")
 source("R/modules_viz.R")
+source("R/modules_pub_style.R")
+source("R/modules_pub_figures.R")
 
 message("\n=== PIPELINE STEP 6: MACHINE LEARNING CLASSIFICATION ===")
 
@@ -983,6 +985,31 @@ if (lmm_robust$n_robust == 0) {
       print(p_gd)
     }, error = function(e) warning(paste("GateSignal plot failed:", e$message)))
     dev.off()
+  }
+
+  # 11b. Publication figure set (additive; driven by the live result objects so
+  #      it always reflects the current analysis). Frontiers-styled, captions
+  #      external. Legacy QC figures above are left untouched.
+  if (isTRUE(config$run_publication_figures)) {
+    pub_dir <- file.path(out_dir, "publication")
+    dir.create(pub_dir, showWarnings = FALSE)
+    tryCatch({
+      # Bundle the live objects the figures need; persist them so figure
+      # sizes/styling can be re-rendered fast WITHOUT re-running the analysis
+      # (manuscript/figures/make_manuscript_figures.R), all via pub_render_all().
+      pub_objs <- list(
+        clin_addval       = clin_addval,
+        gate_decomp       = gate_decomp,
+        stratified_result = stratified_result,
+        lmm_boot          = pub_read_lmm_bootstrap(config),
+        consort           = if (!is.null(clin_addval)) pub_consort_counts(config, clin_addval, gate_decomp) else NULL,
+        df_preds          = df_preds,
+        positive_label    = res_glmnet$positive_label,
+        perm              = list(en = perm_glmnet$p_value, svm = perm_svm$p_value))
+      saveRDS(pub_objs, file.path(pub_dir, sprintf("publication_data_%s.rds", config$project_name)))
+      pub_render_all(pub_objs, pub_dir, config$project_name)
+      message(sprintf("   [Output] Publication figure set -> %s/", basename(pub_dir)))
+    }, error = function(e) warning(paste("Publication figure set failed:", e$message)))
   }
 
   bench_line <- if (!is.null(benchmark_result)) {
