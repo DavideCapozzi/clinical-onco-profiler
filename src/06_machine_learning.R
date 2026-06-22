@@ -1223,6 +1223,14 @@ if (lmm_robust$n_robust == 0) {
 
     message(sprintf("\n[ML] Benchmark-stratified subgroup analysis: '%s'...", bench_label))
     primary_res_strat <- if (primary_method == "SVM-RBF") res_svm else res_glmnet
+
+    # Benchmark stratification cutoffs are config-driven (machine_learning.benchmark_strata)
+    # so a new cohort/benchmark can re-bin without code edits. Defaults reproduce the
+    # NSCLC PD-L1 / HNSCC CPS cutoffs used historically: neg(<1), low(1-19), high(>=20).
+    strata_cfg <- config$machine_learning$benchmark_strata
+    strat_breaks <- if (!is.null(strata_cfg$breaks)) unlist(strata_cfg$breaks) else c(0.5, 19.5)
+    strat_labels <- if (!is.null(strata_cfg$labels)) unlist(strata_cfg$labels) else c("neg(<1)", "low(1-19)", "high(>=20)")
+    strat_high   <- if (!is.null(strata_cfg$high_threshold)) strata_cfg$high_threshold else 20
     stratified_result <- tryCatch(
       run_pdl1_stratified(
         DATA            = DATA,
@@ -1232,9 +1240,9 @@ if (lmm_robust$n_robust == 0) {
         input_file      = config$input_file_t0,
         benchmark_col   = bench_col,
         benchmark_label = bench_label,
-        bin_breaks      = c(0.5, 19.5),
-        bin_labels      = c("neg(<1)", "low(1-19)", "high(>=20)"),
-        high_threshold  = 20,
+        bin_breaks      = strat_breaks,
+        bin_labels      = strat_labels,
+        high_threshold  = strat_high,
         C_grid          = C_grid,
         gamma_grid      = gamma_grid,
         inner_folds     = inner_k_sv,

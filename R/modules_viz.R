@@ -16,6 +16,17 @@ library(ComplexHeatmap)
 library(circlize)
 library(patchwork)
 
+# ---- Shared viz colour constants --------------------------------------------
+# Single definition of recurring hex literals (RdBu diverging ramp + semantic
+# accent colours), referenced across viz functions in place of copy-pasted hex.
+# These are the internal-QC palette; manuscript figures use pub_palette
+# (Okabe-Ito) in modules_pub_style.R.
+VIZ_BLUE      <- "#2166AC"  # blue: positive-class default / structural connector
+VIZ_GREY_MID  <- "#F7F7F7"  # neutral midpoint of the diverging ramp
+VIZ_RED       <- "#B2182B"  # firebrick: negative class / treat-all / master regulator
+VIZ_RED_LT    <- "#D6604D"  # light red: solo driver
+VIZ_DIVERGING <- c(VIZ_BLUE, VIZ_GREY_MID, VIZ_RED)  # RdBu ramp for z-score heatmaps
+
 #' @title Standard Project Theme
 #' @description A consistent ggplot2 theme for publication-quality figures.
 #' @return A ggplot theme object.
@@ -506,7 +517,7 @@ plot_stratification_heatmap <- function(mat_z, metadata, annotation_colors_list,
   )
   
   # 3. Define Color Map for Z-Scores
-  col_fun <- colorRamp2(c(-2, 0, 2), c("#2166AC", "#F7F7F7", "#B2182B"))
+  col_fun <- colorRamp2(c(-2, 0, 2), VIZ_DIVERGING)
   
   # 4. Draw Heatmap
   hm <- Heatmap(
@@ -680,7 +691,7 @@ viz_plot_splsda_heatmap <- function(mat_z, metadata, group_col, colors, title = 
   )
   
   # Standardized Z-Score color mapping
-  col_fun <- circlize::colorRamp2(c(-3, 0, 3), c("#2166AC", "#F7F7F7", "#B2182B"))
+  col_fun <- circlize::colorRamp2(c(-3, 0, 3), VIZ_DIVERGING)
   
   hm <- ComplexHeatmap::Heatmap(
     mat_z, 
@@ -946,7 +957,7 @@ get_clinical_colors <- function(config) {
   if (!is.null(config$colors$groups[[nresp_lbl]])) {
     colors_viz[nresp_lbl] <- config$colors$groups[[nresp_lbl]]
   } else {
-    colors_viz[nresp_lbl] <- "#B2182B" # Default Firebrick
+    colors_viz[nresp_lbl] <- VIZ_RED # Default Firebrick
     warning(sprintf("[Viz] Missing color configuration for '%s'. Applying default red.", nresp_lbl))
   }
 
@@ -1096,9 +1107,9 @@ plot_hub_driver_quadrant <- function(hub_driver_df, y_label = "Degree", title_su
     ggplot2::geom_point(size = 4, shape = 21, alpha = 0.8) +
     ggrepel::geom_text_repel(ggplot2::aes(label = Marker), size = 3.5, max.overlaps = 20) +
     ggplot2::scale_fill_manual(values = c(
-      "Master_Regulator"    = "#B2182B",
-      "Solo_Driver"         = "#D6604D",
-      "Structural_Connector" = "#2166AC",
+      "Master_Regulator"    = VIZ_RED,
+      "Solo_Driver"         = VIZ_RED_LT,
+      "Structural_Connector" = VIZ_BLUE,
       "Background"          = "gray80"
     )) +
     ggplot2::scale_y_continuous(breaks = scales::pretty_breaks()) +
@@ -1188,7 +1199,7 @@ viz_plot_differential_overlap <- function(edge_list, fill_colors = NULL, title =
 viz_plot_clinical_utility <- function(clin_util, colors, title_prefix = "") {
   if (is.null(clin_util)) return(NULL)
   pos    <- clin_util$positive_label
-  col_mod <- if (!is.null(colors[[pos]])) colors[[pos]] else "#2166AC"
+  col_mod <- if (!is.null(colors[[pos]])) colors[[pos]] else VIZ_BLUE
   pp     <- clin_util$per_patient
   yb     <- as.integer(pp$True_Group == pos)
   cl     <- clin_util$calibration; dc <- clin_util$decision_curve
@@ -1234,7 +1245,7 @@ viz_plot_clinical_utility <- function(clin_util, colors, title_prefix = "") {
                         ymin = -Inf, ymax = Inf, alpha = 0.08, fill = col_mod)
   pB <- pB +
     geom_line(linewidth = 0.9) +
-    scale_colour_manual(values = c("Model" = col_mod, "Treat all" = "#B2182B",
+    scale_colour_manual(values = c("Model" = col_mod, "Treat all" = VIZ_RED,
                                    "Treat none" = "grey45")) +
     coord_cartesian(ylim = c(min(-0.02, min(cur$treat_all)), max(cur$model) + 0.02)) +
     labs(title = "Decision curve",
@@ -1267,7 +1278,7 @@ viz_plot_clinical_utility <- function(clin_util, colors, title_prefix = "") {
 viz_plot_added_value <- function(av, colors, title_prefix = "") {
   if (is.null(av)) return(NULL)
   pos     <- av$positive_label
-  col_comb <- if (!is.null(colors[[pos]])) colors[[pos]] else "#2166AC"
+  col_comb <- if (!is.null(colors[[pos]])) colors[[pos]] else VIZ_BLUE
   cur <- av$decision_curve$curve; inc <- av$increment
 
   # ── Panel A: decision curve (clinical vs combined) ──────────────────────────
@@ -1280,7 +1291,7 @@ viz_plot_added_value <- function(av, colors, title_prefix = "") {
   pA <- ggplot(nb_long, aes(threshold, net_benefit, colour = strategy, linetype = strategy)) +
     geom_line(linewidth = 0.9) +
     scale_colour_manual(values = c("Clinical only" = "#E08214", "Clinical + immune" = col_comb,
-                                   "Treat all" = "#B2182B", "Treat none" = "grey45")) +
+                                   "Treat all" = VIZ_RED, "Treat none" = "grey45")) +
     scale_linetype_manual(values = c("Clinical only" = 2, "Clinical + immune" = 1,
                                      "Treat all" = 3, "Treat none" = 3)) +
     coord_cartesian(ylim = c(min(-0.02, min(cur$treat_all)),

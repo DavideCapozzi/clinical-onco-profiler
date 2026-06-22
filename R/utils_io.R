@@ -588,13 +588,72 @@ validate_config <- function(cfg) {
   if (!is.null(cfg$experiments) && length(cfg$experiments) > 0) {
     for (nm in names(cfg$experiments)) {
       exp <- cfg$experiments[[nm]]
+      # Disabled experiments (enabled: false) are skipped by main.R; their
+      # columns need not exist, so don't validate them.
+      if (!is.null(exp$enabled) && !isTRUE(exp$enabled)) next
       if (is.null(exp$clinical$target_column))
         stop(sprintf("[CONFIG] Experiment '%s' missing clinical.target_column", nm))
+      validate_experiment_columns(cfg, exp, nm)
     }
   } else {
     if (is.null(cfg$clinical$target_column))
       stop("[CONFIG] Flat config missing clinical.target_column")
   }
+
+  invisible(TRUE)
+}
+
+#' @title Read only the column names of an Excel file
+#' @description Header-only read used by pre-flight config validation. Returns an
+#'   empty character vector (never errors) when the file is absent or unreadable,
+#'   so validation degrades to a no-op rather than crashing.
+#' @param path Excel file path (resolved relative to the project root via here()).
+#' @return Character vector of column names, or character(0) on any failure.
+read_excel_header <- function(path) {
+  if (is.null(path)) return(character(0))
+  abs <- if (file.exists(path)) path else here::here(path)
+  if (!file.exists(abs)) return(character(0))
+  tryCatch(names(readxl::read_excel(abs, n_max = 0)),
+           error = function(e) character(0))
+}
+
+#' @title Validate that an experiment's referenced columns exist in its input
+#' @description Pre-flight, per-experiment column check against the T0 input
+#'   header. Stops on a missing \code{clinical.target_column} or any missing
+#'   \code{machine_learning.clinical_model.vars} column (the standard-of-care
+#'   predictors); warns on missing feature markers (the pipeline already
+#'   tolerates these with an in-step warning). Skipped silently when the input
+#'   file is absent/unreadable (file existence is enforced later, per pass).
+#' @param cfg The full config (for global fallbacks).
+#' @param exp The per-experiment block.
+#' @param nm Experiment name (for messages).
+#' @return Invisibly TRUE.
+validate_experiment_columns <- function(cfg, exp, nm) {
+  t0 <- if (!is.null(exp$input_file_t0)) exp$input_file_t0 else cfg$input_file_t0
+  hdr <- read_excel_header(t0)
+  if (length(hdr) == 0) return(invisible(TRUE))  # can't read header → skip
+
+  tc <- exp$clinical$target_column
+  if (!is.null(tc) && !(tc %in% hdr))
+    stop(sprintf("[CONFIG] Experiment '%s': clinical.target_column '%s' not found in %s",
+                 nm, tc, t0))
+
+  cm_vars <- exp$machine_learning$clinical_model$vars
+  if (!is.null(cm_vars)) {
+    cols <- unlist(cm_vars, use.names = FALSE)
+    miss <- setdiff(cols, hdr)
+    if (length(miss) > 0)
+      stop(sprintf("[CONFIG] Experiment '%s': clinical_model.vars column(s) not found in %s: %s",
+                   nm, t0, paste(miss, collapse = ", ")))
+  }
+
+  facs <- if (!is.null(exp$features$facs)) exp$features$facs else cfg$features$facs
+  sol  <- if (!is.null(exp$features$soluble)) exp$features$soluble else cfg$features$soluble
+  markers <- unique(c(unlist(facs, use.names = FALSE), unlist(sol, use.names = FALSE)))
+  miss_mk <- setdiff(markers, hdr)
+  if (length(miss_mk) > 0)
+    warning(sprintf("[CONFIG] Experiment '%s': %d feature marker(s) not in %s: %s",
+                    nm, length(miss_mk), t0, paste(head(miss_mk, 10), collapse = ", ")))
 
   invisible(TRUE)
 }
