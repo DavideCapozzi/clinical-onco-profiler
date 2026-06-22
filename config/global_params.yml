@@ -133,6 +133,7 @@ experiments:
           death: "Alive_0/Dead_1"
 
   Comorbidity_1v0:
+    enabled: false   # closed NO-GO (diag_22), negative control — retained for record
     is_longitudinal: true
     run_network: false
     clinical:
@@ -144,6 +145,7 @@ experiments:
         Comorb_No:  [0]
 
   Toxicity_1v0:
+    enabled: false   # closed NO-GO (diag_22), null outcome — retained for record
     is_longitudinal: true
     run_network: false
     clinical:
@@ -170,6 +172,13 @@ experiments:
       univariate_fdr_threshold: 0.20
       univariate_fallback_k:    3
       n_perm:                   999
+      # CPS stratification cutoffs for the HNSCC anti-PD-1 benchmark (config-driven;
+      # a new cohort/benchmark re-bins here without code edits). These reproduce the
+      # historical hard-coded defaults: neg(<1), low(1-19), high(>=20).
+      benchmark_strata:
+        breaks:         [0.5, 19.5]
+        labels:         ["neg(<1)", "low(1-19)", "high(>=20)"]
+        high_threshold: 20
     features:
       facs:
         - "M_MDSC"

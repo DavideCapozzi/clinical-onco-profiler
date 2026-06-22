@@ -1,7 +1,7 @@
 # Figure captions — NSCLC clinical+immune added-value manuscript
 
 **Target:** Frontiers in Immunology (Cancer Immunity & Immunotherapy). Exploratory /
-hypothesis-generating. All numbers from frozen run `20260618_addval_sensitivity`
+hypothesis-generating. All numbers from canonical run `20260622_121316_canonical`
 (BestResponse_2v3_4; n=79, 34 RP / 45 SD-PD; n_paired=50; n complete-case for the
 clinical model = 55). Figures rendered by `manuscript/figures/make_manuscript_figures.R`
 (cairo_pdf, fonts embedded; Okabe–Ito colour-blind-safe palette; panel labels A/B).

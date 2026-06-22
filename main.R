@@ -19,8 +19,11 @@ suppressPackageStartupMessages({
 
 options(crayon.enabled = FALSE)
 
-# Load BASE Configuration 
-base_config_path <- here("config/global_params.yml")
+# Load BASE Configuration
+# CONFIG_PATH env var overrides the default config (used by the integration
+# smoke-test and to run an alternate cohort config without editing the repo).
+.config_override <- Sys.getenv("CONFIG_PATH")
+base_config_path <- if (nzchar(.config_override)) .config_override else here("config/global_params.yml")
 if (!file.exists(base_config_path)) stop("[FATAL] Base Config file not found at expected path.")
 base_config <- yaml::read_yaml(base_config_path)
 
@@ -71,6 +74,14 @@ run_passes <- list()  # experiment -> passes executed (for the run manifest)
 for (exp_name in names(experiments_list)) {
 
   exp_cfg <- experiments_list[[exp_name]]
+
+  # Skip experiments explicitly disabled in config (e.g. closed NO-GO endpoints
+  # retained for record). Absence of the key means enabled, so untouched blocks
+  # (BestResponse_2v3_4, HNSCC_Response) run as before. Mirrors validation_split.enabled.
+  if (!is.null(exp_cfg$enabled) && !isTRUE(exp_cfg$enabled)) {
+    message(sprintf("[System] Skipping disabled experiment: %s", exp_name))
+    next
+  }
 
   # Inherit boolean flags with safety fallbacks
   run_standard        <- if (!is.null(exp_cfg$run_standard))         as.logical(exp_cfg$run_standard)         else TRUE
