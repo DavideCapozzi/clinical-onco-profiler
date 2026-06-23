@@ -453,7 +453,10 @@ if (lmm_robust$n_robust == 0) {
                                       lapply(cm$baseline_sensitivity, function(x) unlist(x, use.names = FALSE))
                                     else NULL,
         n_random_null   = if (!is.null(cm$specificity_null$n_random))
-                            as.integer(cm$specificity_null$n_random) else 0L
+                            as.integer(cm$specificity_null$n_random) else 0L,
+        lmm_interaction = if (!isFALSE(cm$dynamics_coupling) &&
+                              is.data.frame(lmm_robust$full_results) &&
+                              nrow(lmm_robust$full_results) > 0) lmm_robust$full_results else NULL
       ),
       error = function(e) {
         warning(sprintf("[ML] Added-value layer failed (non-fatal): %s", e$message)); NULL
