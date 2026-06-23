@@ -23,7 +23,8 @@ library(tidyr)
 load_lmm_robust_features <- function(lmm_json_path,
                                      fdr_threshold = 0.05,
                                      loo_threshold = 0.05) {
-  empty <- list(markers = character(0), n_robust = 0L, df_robust = data.frame())
+  empty <- list(markers = character(0), n_robust = 0L, df_robust = data.frame(),
+                full_results = data.frame())
 
   if (!file.exists(lmm_json_path)) {
     message(sprintf("   [ML] LMM JSON not found: %s. Skipping ML analysis.", lmm_json_path))
@@ -71,7 +72,11 @@ load_lmm_robust_features <- function(lmm_json_path,
                     df_robust$Max_P_Value_LOO[i]))
   }
 
-  list(markers = df_robust$Marker, n_robust = nrow(df_robust), df_robust = df_robust)
+  # full_results = the whole per-marker interaction table (all panel markers), used by
+  # the added-value layer's dynamics<->baseline coupling analysis (Blocco G). Carried
+  # alongside df_robust (the gate) so the JSON is parsed once.
+  list(markers = df_robust$Marker, n_robust = nrow(df_robust), df_robust = df_robust,
+       full_results = df)
 }
 
 #' @title LMM Gate Selection for a Single LOO Fold

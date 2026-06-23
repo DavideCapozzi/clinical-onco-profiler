@@ -32,7 +32,11 @@ micromamba env create -f env/environment.yml
 micromamba activate clinical-onco-profiler
 ```
 
-The environment pins R 4.3.x with Bioconductor packages (`mixOmics`, `pcaMethods`, `speckle`, `ALDEx2`) and key CRAN packages (`lmerTest`, `lme4`, `glmnet`, `e1071`, `pROC`, `igraph`).
+The environment pins R 4.x with Bioconductor packages (`mixOmics`, `pcaMethods`, `speckle`, `ALDEx2`) and key CRAN packages (`lmerTest`, `lme4`, `glmnet`, `e1071`, `pROC`, `igraph`). `env/environment.yml` is the human-editable spec; for an exactly reproducible build use the fully-resolved lock:
+
+```bash
+micromamba create -f env/environment.lock.yml   # exact versions + build strings
+```
 
 ---
 
@@ -42,11 +46,21 @@ The environment pins R 4.3.x with Bioconductor packages (`mixOmics`, `pcaMethods
 # Full pipeline (reads config/global_params.yml)
 Rscript main.R
 
-# With a custom config
-Rscript main.R config/global_params_hnscc.yml
+# With a custom config (e.g. a new cohort) — no repo edits
+CONFIG_PATH=config/global_params_hnscc.yml Rscript main.R
+
+# Restrict a run to named experiments
+EXPERIMENTS=BestResponse_2v3_4 Rscript main.R
 ```
 
-The pipeline auto-detects whether the config is **nested multi-experiment** (has an `experiments:` key) or **flat single-cohort**, then runs each experiment through two independent passes (standard cross-sectional + longitudinal), followed by an optional ML pass.
+The pipeline auto-detects whether the config is **nested multi-experiment** (has an `experiments:` key) or **flat single-cohort**, then runs each experiment through two independent passes (standard cross-sectional + longitudinal), followed by an optional ML pass. At startup `validate_config()` checks that each enabled experiment's outcome and clinical-model columns exist in its input Excel, so a misconfigured cohort fails fast. Set `enabled: false` on an experiment block to skip it without deleting it.
+
+### Tests
+
+```bash
+Rscript tests/integration_smoke.R         # end-to-end smoke test on a synthetic cohort (01→04→06)
+Rscript data/test_parse_range_midpoint.R  # unit test: CPS range parsing
+```
 
 ---
 
@@ -67,7 +81,8 @@ diagnostics/               Supplementary stand-alone analyses
   diag_05_threeway_lmm.R   Three-group LMM: RP vs SD vs PD
 
 env/
-  environment.yml          Conda environment specification
+  environment.yml          Conda environment specification (human-editable)
+  environment.lock.yml     Fully-resolved lock (exact versions + builds)
 
 R/                         Reusable module library (sourced by main.R at startup)
   modules_qc.R             PCA outlier detection, QC pipeline
@@ -86,6 +101,9 @@ src/                       Pipeline step scripts (sourced in order by main.R)
   04_longitudinal_lmm.R
   05_network_analysis.R
   06_machine_learning.R
+
+tests/                     Test scripts
+  integration_smoke.R      End-to-end smoke test on a synthetic cohort
 
 results/                   All pipeline outputs (not tracked in git)
   <experiment_name>/

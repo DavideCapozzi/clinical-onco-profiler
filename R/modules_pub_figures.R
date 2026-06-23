@@ -277,6 +277,37 @@ pub_fig_standalone <- function(preds_df, positive_label, perm = NULL, auc = NULL
     theme_publication() + theme(legend.direction = "vertical")
 }
 
+# ── SUPP S7 — Dynamics<->baseline coupling (gate rationale; Blocco G) ─────────
+#' Across the marker panel: LMM Timepoint×Group interaction strength (|t|) vs each
+#' marker's standalone baseline (T0) AUC. Positive correlation = convergent validity
+#' (why a dynamically-selected gate predicts at baseline). Gate markers highlighted;
+#' the top T0-AUC markers are labelled to show the gate is NOT the baseline-max set.
+pub_fig_coupling <- function(av) {
+  cpl <- av$dynamics_baseline_coupling
+  if (is.null(cpl) || is.null(cpl$per_marker) || !nrow(cpl$per_marker)) return(NULL)
+  d <- cpl$per_marker
+  d$grp <- ifelse(d$is_gate, "Immune gate", "Other panel marker")
+  lab_top <- d$Marker[order(d$rank_T0)][1:min(2L, nrow(d))]   # top non-/gate T0 markers
+  d$lab <- ifelse(d$is_gate | d$Marker %in% lab_top, d$Marker, "")
+  yr <- range(d$T0_AUC); xr <- range(d$absT)
+  ggplot(d, aes(absT, T0_AUC)) +
+    geom_hline(yintercept = 0.5, linetype = "dotted", colour = pub_palette[["ref"]]) +
+    geom_smooth(method = "lm", formula = y ~ x, se = TRUE,
+                colour = "grey55", fill = "grey85", linewidth = 0.6) +
+    geom_point(aes(colour = grp, size = grp)) +
+    geom_text(aes(label = lab), vjust = -0.8, hjust = 0.5, size = 2.4, colour = "grey20") +
+    annotate("text", x = xr[1], y = yr[2], hjust = 0, vjust = 1, size = 2.7, colour = "grey20",
+             label = sprintf("Pearson r=%+.2f [%.2f, %.2f], p=%.3f\nexcl. gate r=%+.2f; Spearman rho=%+.2f",
+                             cpl$pearson_r, cpl$pearson_ci[1], cpl$pearson_ci[2], cpl$pearson_p,
+                             cpl$pearson_r_excl_gate, cpl$spearman_rho)) +
+    scale_colour_manual(values = c("Immune gate" = pub_palette[["combined"]],
+                                   "Other panel marker" = "grey60"), name = NULL) +
+    scale_size_manual(values = c("Immune gate" = 2.6, "Other panel marker" = 1.7), guide = "none") +
+    labs(x = "LMM Timepoint × Group interaction strength  |t|",
+         y = "Standalone baseline (T0) AUC") +
+    theme_publication()
+}
+
 # ── MAIN Fig 4 — Robustness / evidence-stability of the increment ─────────────
 #' Defensibility centrepiece: (A) the LRT anchor stays significant across every
 #' specification we tested; (B) the IDI estimator gradient is honestly fragile.
@@ -350,6 +381,8 @@ pub_render_all <- function(objs, out_dir, project_name) {
       save_pub_figure(pub_fig_consort(objs$consort), pf("FigureS1_CONSORT"),        PUB_W2, 120)
     save_pub_figure(pub_fig_baseline_invariance(av), pf("FigureS4_BaselineInvariance"), PUB_W2, 82)
     save_pub_figure(pub_fig_specificity_null(av),    pf("FigureS5_SpecificityNull"),    PUB_W1, 95)
+    if (!is.null(av$dynamics_baseline_coupling))
+      save_pub_figure(pub_fig_coupling(av),          pf("FigureS7_Coupling"),           PUB_W1, 95)
   }
   if (!is.null(objs$stratified_result))
     save_pub_figure(pub_fig_pdl1_context(objs$stratified_result), pf("FigureS2_PDL1_context"), PUB_W2, 115)

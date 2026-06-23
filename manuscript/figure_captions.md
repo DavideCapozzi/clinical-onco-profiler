@@ -1,7 +1,7 @@
 # Figure captions — NSCLC clinical+immune added-value manuscript
 
 **Target:** Frontiers in Immunology (Cancer Immunity & Immunotherapy). Exploratory /
-hypothesis-generating. All numbers from canonical run `20260622_121316_canonical`
+hypothesis-generating. All numbers from canonical run `20260623_114344_canonical`
 (BestResponse_2v3_4; n=79, 34 RP / 45 SD-PD; n_paired=50; n complete-case for the
 clinical model = 55). Figures rendered by `manuscript/figures/make_manuscript_figures.R`
 (cairo_pdf, fonts embedded; Okabe–Ito colour-blind-safe palette; panel labels A/B).
@@ -111,6 +111,21 @@ ROC for the standalone classifiers on the gate features: SVM-RBF (AUC 0.611, per
 p ≈ 0.05) and Elastic Net (AUC 0.415). The standalone classifier is weak on the full v2
 cohort and motivated the pivot to the incremental-value framework; it is retained as the
 honest backstory only and is **cut from the main text**.
+
+**Figure S7. Dynamics↔baseline coupling (gate rationale).** Across the 39-marker
+panel, each marker's Step-04 LMM Timepoint×Group interaction strength (|t|) vs its
+standalone baseline (T0) AUC. Immune-gate markers (blue) vs other panel markers
+(grey); dotted line = AUC 0.5; grey line = linear fit (95% CI). Interaction strength
+correlates with baseline discrimination (Pearson r = +0.65 [95% CI 0.42, 0.80],
+p < 0.001; Spearman ρ = +0.53; holds excluding the gate, r = +0.50, p = 0.002) —
+i.e. selecting markers on longitudinal dynamics enriches for baseline-discriminating
+markers (regression-to-the-mean: responders start higher and contract more),
+explaining why the dynamically-selected gate also predicts at baseline. The gate
+ranks 1–3 on interaction strength but only 3–5 on baseline AUC, and the two
+highest-T0-AUC markers (PD1KI67, KI67CM) are **not** in the gate — so the gate is
+**not** a baseline-AUC-maximizing selection. This convergent validity is the gate's
+rationale and bounds (does not eliminate) the residual selection optimism disclosed
+in Limitations; it is **not** evidence of gate optimality. Single column.
 
 ---
 

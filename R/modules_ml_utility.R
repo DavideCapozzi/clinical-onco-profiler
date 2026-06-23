@@ -802,6 +802,7 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
                                             ridge = TRUE,
                                             baseline_sensitivity_cols = NULL,
                                             n_random_null = 0L,
+                                            lmm_interaction = NULL,
                                             min_n = 30L, seed = 2026L) {
   if (!requireNamespace("readxl", quietly = TRUE) ||
       !requireNamespace("pROC",   quietly = TRUE) ||
@@ -1173,6 +1174,64 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
     }
   }
 
+  # ── Dynamics <-> baseline coupling (Blocco G; gate rationale / Limitations) ──
+  # WHY the dynamically-selected gate predicts at baseline: across the marker panel,
+  # is LMM Timepoint x Group interaction strength correlated with each marker's
+  # standalone baseline (T0) discrimination? A positive correlation = convergent
+  # validity (regression-to-the-mean: responders start higher AND contract more) and
+  # also bounds the residual selection optimism we disclose. Fully DETERMINISTIC
+  # (univariate AUC + analytic correlation; no sampling) -> consumes no RNG, so the
+  # primary numbers reproduce byte-for-byte regardless of where this block sits.
+  dynamics_baseline_coupling <- NULL
+  if (!is.null(lmm_interaction) && is.data.frame(lmm_interaction) &&
+      all(c("Marker", "T_Value_Interaction") %in% names(lmm_interaction))) {
+    zp <- as.matrix(z[keep, , drop = FALSE])
+    zp <- apply(zp, 2, function(x) suppressWarnings(as.numeric(x)))
+    okc <- apply(zp, 2, function(x) sum(is.finite(x)) > 0 && stats::sd(x, na.rm = TRUE) > 0)
+    zp <- zp[, okc, drop = FALSE]
+    for (j in seq_len(ncol(zp))) { col <- zp[, j]; col[is.na(col)] <- median(col, na.rm = TRUE); zp[, j] <- col }
+    # standalone T0 discrimination per panel marker (oriented univariate AUC, deterministic)
+    t0_auc <- vapply(seq_len(ncol(zp)), function(j) auc_pos(zp[, j]), numeric(1))
+    pm <- data.frame(Marker = colnames(zp), T0_AUC = t0_auc, stringsAsFactors = FALSE)
+    li_cols <- intersect(c("Marker", "Estimate_Interaction", "T_Value_Interaction",
+                           "P_Value_Interaction", "FDR_Interaction"), names(lmm_interaction))
+    cp <- merge(pm, lmm_interaction[, li_cols, drop = FALSE], by = "Marker")
+    cp$absT    <- abs(cp$T_Value_Interaction)
+    cp$is_gate <- cp$Marker %in% avail
+    cp <- cp[is.finite(cp$absT) & is.finite(cp$T0_AUC), , drop = FALSE]
+    if (nrow(cp) >= 8L) {
+      pe   <- suppressWarnings(stats::cor.test(cp$absT, cp$T0_AUC, method = "pearson"))
+      sp   <- suppressWarnings(stats::cor.test(cp$absT, cp$T0_AUC, method = "spearman"))
+      ng   <- cp[!cp$is_gate, , drop = FALSE]
+      peng <- if (nrow(ng) >= 8L) suppressWarnings(stats::cor.test(ng$absT, ng$T0_AUC, method = "pearson")) else NULL
+      spng <- if (nrow(ng) >= 8L) suppressWarnings(stats::cor.test(ng$absT, ng$T0_AUC, method = "spearman")) else NULL
+      cp$rank_T0  <- rank(-cp$T0_AUC, ties.method = "min")
+      cp$rank_int <- rank(-cp$absT,  ties.method = "min")
+      top_t0 <- cp$Marker[order(cp$rank_T0)][1:min(3L, nrow(cp))]
+      dynamics_baseline_coupling <- list(
+        metric   = "abs_interaction_t_vs_univariate_T0_AUC",
+        n_panel  = nrow(cp), n_gate = sum(cp$is_gate),
+        pearson_r  = unname(pe$estimate), pearson_ci = unname(pe$conf.int), pearson_p = pe$p.value,
+        spearman_rho = unname(sp$estimate), spearman_p = sp$p.value,
+        pearson_r_excl_gate  = if (!is.null(peng)) unname(peng$estimate) else NA_real_,
+        pearson_p_excl_gate  = if (!is.null(peng)) peng$p.value else NA_real_,
+        spearman_rho_excl_gate = if (!is.null(spng)) unname(spng$estimate) else NA_real_,
+        gate_rank_t0  = sort(cp$rank_T0[cp$is_gate]),
+        gate_rank_int = sort(cp$rank_int[cp$is_gate]),
+        top_t0_markers = top_t0,
+        gate_is_top_t0_marker = isTRUE(cp$is_gate[order(cp$rank_T0)][1]),
+        per_marker = cp[order(cp$rank_int),
+                        c("Marker", "is_gate", "Estimate_Interaction", "P_Value_Interaction",
+                          "FDR_Interaction", "absT", "T0_AUC", "rank_int", "rank_T0")],
+        note = paste("Panel-level convergent validity: LMM Timepoint x Group interaction strength",
+                     "vs standalone baseline (T0) AUC. A positive correlation explains why the",
+                     "dynamically-selected gate also predicts at baseline (regression-to-the-mean)",
+                     "and bounds the residual selection optimism. The gate is NOT the top-T0 set,",
+                     "so selection is dynamics-driven, not a baseline scan. Mechanism /",
+                     "Limitations only; NOT proof of gate optimality (Blocco G)."))
+    }
+  }
+
   provenance_note <- if (gate_provenance == "lmm-prespecified")
     paste("Immune composite pre-specified from the Step-04 LMM gate (disjoint from this T0",
           "model). Clinical baseline pre-specified from NSCLC-ICI literature; not data-selected.")
@@ -1225,6 +1284,13 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
     message(sprintf("[ML][AV] specificity null (N=%d): spec-p LRT=%.3f IDI=%.3f dAUC=%.3f | frac LRT<.05=%.3f",
                     specificity_null$n_random, specificity_null$spec_p_lrt, specificity_null$spec_p_idi,
                     specificity_null$spec_p_dauc, specificity_null$frac_sig_lrt))
+  if (!is.null(dynamics_baseline_coupling)) {
+    dbc <- dynamics_baseline_coupling
+    message(sprintf("[ML][AV] dynamics<->baseline coupling (n=%d panel): Pearson r=%+.3f [%.3f,%.3f] p=%.4f (Spearman rho=%+.3f) | excl-gate r=%+.3f | gate T0-AUC rank %s/%d | gate-is-topT0=%s",
+                    dbc$n_panel, dbc$pearson_r, dbc$pearson_ci[1], dbc$pearson_ci[2], dbc$pearson_p,
+                    dbc$spearman_rho, dbc$pearson_r_excl_gate,
+                    paste(dbc$gate_rank_t0, collapse = ","), dbc$n_panel, dbc$gate_is_top_t0_marker))
+  }
 
   list(
     clinical_vars   = as.list(clinical_vars),
@@ -1248,6 +1314,7 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
     combined_ridge       = combined_ridge,
     baseline_sensitivity = baseline_sensitivity,
     specificity_null     = specificity_null,
+    dynamics_baseline_coupling = dynamics_baseline_coupling,
     decision_curve = list(prevalence = prev, curve = dc),
     survival = survival,
     per_patient = data.frame(
@@ -1348,6 +1415,24 @@ write_clinical_immune_summary <- function(av) {
       sprintf("%d / %d", sn$n_random, sn$n_pool),
       sprintf("%.3f / %.3f / %.3f", sn$spec_p_lrt, sn$spec_p_idi, sn$spec_p_dauc),
       sprintf("%.3f", sn$frac_sig_lrt))
+  }
+  # ── Dynamics<->baseline coupling (Blocco G) ─────────────────────────────────
+  cpl <- av$dynamics_baseline_coupling
+  if (!is.null(cpl)) {
+    base_metric <- c(base_metric,
+      "[Coupling] panel n / gate n",
+      "[Coupling] Pearson r [95% CI] (p)",
+      "[Coupling] Spearman rho (p)",
+      "[Coupling] Pearson r excl. gate (p)",
+      "[Coupling] gate T0-AUC ranks / interaction ranks",
+      "[Coupling] gate is top-T0 marker")
+    base_value <- c(base_value,
+      sprintf("%d / %d", cpl$n_panel, cpl$n_gate),
+      sprintf("%+.3f [%.3f, %.3f] (%s)", cpl$pearson_r, cpl$pearson_ci[1], cpl$pearson_ci[2], fmt_p(cpl$pearson_p)),
+      sprintf("%+.3f (%s)", cpl$spearman_rho, fmt_p(cpl$spearman_p)),
+      sprintf("%+.3f (%s)", cpl$pearson_r_excl_gate, fmt_p(cpl$pearson_p_excl_gate)),
+      sprintf("%s / %s", paste(cpl$gate_rank_t0, collapse = ","), paste(cpl$gate_rank_int, collapse = ",")),
+      as.character(cpl$gate_is_top_t0_marker))
   }
   data.frame(Metric = base_metric, Value = base_value, stringsAsFactors = FALSE)
 }
