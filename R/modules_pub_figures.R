@@ -7,10 +7,12 @@
 # object styled via R/modules_pub_style.R. No frozen-file reads, no recompute:
 # when the analysis changes, re-running the pipeline regenerates these figures.
 #
-# Narrative (locked 2026-06-22): MAIN Fig1 LMM-Ki67 forest / Fig2 added-value
-# (LRT-led) / Fig3 calibration unpenalized-vs-ridge + IDI fragility.
-# SUPP S1 CONSORT / S2 PD-L1 / S3 gate-signal / S4 baseline-invariance /
-# S5 specificity-null / S6 standalone classifier.
+# Narrative (rebalanced 2026-06-24 toward immunology): MAIN Fig1 biology
+# (gate-marker cell frequencies T0/T1×group + LMM forest) / Fig2 added-value
+# (LRT-led) / Fig3 calibration unpenalized-vs-ridge + IDI fragility / Fig4
+# gate-signal decomposition (T0/T1/Δ, a results figure). SUPP S1 CONSORT /
+# S2 PD-L1 / S4 baseline-invariance / S5 specificity-null / S6 standalone /
+# S7 coupling / S8 robustness (demoted from main).
 # ==============================================================================
 
 suppressMessages({ library(ggplot2); library(patchwork) })
@@ -18,24 +20,64 @@ suppressMessages({ library(ggplot2); library(patchwork) })
 # ── MAIN Fig 1 — LMM Ki67 forest (pre-specified gate) ─────────────────────────
 #' @param boot_df data.frame: Marker, Median_Beta_Boot, CI_Lower_2.5, CI_Upper_97.5, Pct_FDR_Significant
 #' @param obs_df  data.frame: Marker, Estimate_Interaction
-pub_fig_lmm_forest <- function(boot_df, obs_df = NULL) {
+pub_fig_lmm_forest <- function(boot_df, obs_df = NULL, markers = NULL) {
   if (is.null(boot_df) || !nrow(boot_df)) return(NULL)
   d <- boot_df
+  if (!is.null(markers)) d <- d[d$Marker %in% markers, , drop = FALSE]
+  if (!nrow(d)) return(NULL)
   if (!is.null(obs_df) && all(c("Marker", "Estimate_Interaction") %in% names(obs_df))) {
     d <- merge(d, obs_df[, c("Marker", "Estimate_Interaction")], by = "Marker", all.x = TRUE)
   } else d$Estimate_Interaction <- d$Median_Beta_Boot
   d$Marker <- factor(d$Marker, levels = d$Marker[order(d$Estimate_Interaction)])
+  # Single point estimate (observed β) + bootstrap 95% CI — standard forest layout.
+  # The bootstrap median overlaps the observed β whenever bias ≈ 0 (the normal case),
+  # so it is omitted; bootstrap robustness is conveyed by the % FDR label instead.
   ggplot(d, aes(y = Marker)) +
     geom_vline(xintercept = 0, linetype = "dashed", colour = pub_palette[["ref"]]) +
     geom_errorbarh(aes(xmin = CI_Lower_2.5, xmax = CI_Upper_97.5),
                    height = 0.22, colour = "grey35") +
-    geom_point(aes(x = Median_Beta_Boot), shape = 4, size = 1.8, colour = "grey45") +
     geom_point(aes(x = Estimate_Interaction), shape = 19, size = 2.6, colour = pub_palette[["combined"]]) +
-    geom_text(aes(x = CI_Upper_97.5, label = sprintf("  %.0f%%", Pct_FDR_Significant)),
+    geom_text(aes(x = CI_Upper_97.5, label = sprintf("  %.0f%% FDR<0.05", Pct_FDR_Significant)),
               hjust = 0, size = 2.6, colour = "grey30") +
     labs(x = "Time x Group interaction (β)", y = NULL) +
     coord_cartesian(clip = "off") +
-    theme_publication() + theme(plot.margin = margin(6, 22, 6, 6))
+    theme_publication() + theme(plot.margin = margin(6, 26, 6, 6))
+}
+
+# ── MAIN Fig 1 (biology) — gate-marker cell frequencies (T0/T1 × group) + forest ─
+#' Panel A: per-patient raw cell frequencies of the immune-gate markers at baseline
+#' (T0) vs on-treatment (T1), split by response group, with within-patient spaghetti
+#' lines (responders start higher and contract more). Panel B: the LMM Time×Group
+#' interaction forest restricted to the same gate markers. Falls back to forest-only
+#' when per-patient values are unavailable.
+#' @param gate_decomp result of run_gate_signal_decomposition() (uses $per_patient_values)
+#' @param boot_df,obs_df LMM bootstrap-CI and observed-interaction frames (forest)
+pub_fig_biology <- function(gate_decomp, boot_df, obs_df = NULL, resp_label = NULL) {
+  ppv <- if (!is.null(gate_decomp)) gate_decomp$per_patient_values else NULL
+  forest <- pub_fig_lmm_forest(boot_df, obs_df,
+                               markers = if (!is.null(ppv)) unique(ppv$Marker) else NULL)
+  yvar <- if (!is.null(ppv) && "Value_pct" %in% names(ppv)) "Value_pct" else "Value_raw"
+  if (is.null(ppv) || !nrow(ppv) || all(is.na(ppv[[yvar]]))) return(forest)
+
+  # Responder = primary blue (consistent with the positive/combined class elsewhere),
+  # non-responder = vermillion; responder column first. Fall back to alpha order.
+  grps <- unique(as.character(ppv$Group))
+  if (!is.null(resp_label) && resp_label %in% grps) {
+    ord <- c(resp_label, setdiff(grps, resp_label))
+    ppv$Group <- factor(ppv$Group, levels = ord)
+  } else ord <- sort(grps)
+  grp_cols <- setNames(c(pub_palette[["combined"]], pub_palette[["unpen"]])[seq_along(ord)], ord)
+  pA <- ggplot(ppv, aes(Timepoint, .data[[yvar]])) +
+    geom_line(aes(group = Patient_ID), colour = "grey75", linewidth = 0.3, alpha = 0.5) +
+    geom_boxplot(aes(colour = Group), fill = NA, width = 0.5,
+                 outlier.shape = NA, linewidth = 0.5) +
+    geom_point(aes(colour = Group), size = 0.7, alpha = 0.45) +
+    facet_grid(Marker ~ Group, scales = "free_y") +
+    scale_colour_manual(values = grp_cols, guide = "none") +
+    labs(x = NULL, y = "Cell frequency (%)") +
+    theme_publication()
+  if (is.null(forest)) return(pub_tag(pA))
+  pub_tag((pA | forest) + patchwork::plot_layout(widths = c(2.2, 1)))
 }
 
 # ── MAIN Fig 2 — Added value (LRT-led): ROC + decision curve ──────────────────
@@ -368,15 +410,19 @@ pub_render_all <- function(objs, out_dir, project_name) {
   dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
   pf <- function(n) file.path(out_dir, sprintf("%s_%s.pdf", n, project_name))
   av <- objs$clin_addval
-  # MAIN
-  if (!is.null(objs$lmm_boot))
-    save_pub_figure(pub_fig_lmm_forest(objs$lmm_boot$boot, objs$lmm_boot$obs),
-                    pf("Figure1_LMM_forest"), PUB_W1, max(75, 30 + 16 * nrow(objs$lmm_boot$boot)))
+  # MAIN — Fig 1 biology (cells + forest) / Fig 2 added-value / Fig 3 calibration /
+  #        Fig 4 gate-signal decomposition (results). Robustness demoted to Supp.
+  if (!is.null(objs$lmm_boot) || !is.null(objs$gate_decomp))
+    save_pub_figure(pub_fig_biology(objs$gate_decomp, objs$lmm_boot$boot, objs$lmm_boot$obs,
+                                    resp_label = objs$positive_label),
+                    pf("Figure1_Biology"), PUB_W2, 120)
+  if (!is.null(objs$gate_decomp))
+    save_pub_figure(pub_fig_gate_signal(objs$gate_decomp),        pf("Figure4_GateSignal"),    PUB_W2, 110)
   if (!is.null(av)) {
     save_pub_figure(pub_fig_added_value(av),         pf("Figure2_AddedValue"),      PUB_W2, 120)
     save_pub_figure(pub_fig_calibration_idi(av),     pf("Figure3_Calibration_IDI"), PUB_W2, 120)
-    save_pub_figure(pub_fig_robustness(av),          pf("Figure4_Robustness"),      PUB_W2, 95)
     # SUPP
+    save_pub_figure(pub_fig_robustness(av),          pf("FigureS8_Robustness"),     PUB_W2, 95)
     if (!is.null(objs$consort))
       save_pub_figure(pub_fig_consort(objs$consort), pf("FigureS1_CONSORT"),        PUB_W2, 120)
     save_pub_figure(pub_fig_baseline_invariance(av), pf("FigureS4_BaselineInvariance"), PUB_W2, 82)
@@ -386,8 +432,6 @@ pub_render_all <- function(objs, out_dir, project_name) {
   }
   if (!is.null(objs$stratified_result))
     save_pub_figure(pub_fig_pdl1_context(objs$stratified_result), pf("FigureS2_PDL1_context"), PUB_W2, 115)
-  if (!is.null(objs$gate_decomp))
-    save_pub_figure(pub_fig_gate_signal(objs$gate_decomp),        pf("FigureS3_GateSignal"),   PUB_W2, 110)
   if (!is.null(objs$df_preds))
     save_pub_figure(pub_fig_standalone(objs$df_preds, objs$positive_label, perm = objs$perm),
                     pf("FigureS6_StandaloneClassifier"), PUB_W1, 120)
