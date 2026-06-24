@@ -250,6 +250,16 @@ run_gate_signal_decomposition <- function(DATA_T0, DATA_LONG,
   z_t1p <- z_t1[z_t1$Patient_ID %in% paired_ids, ]
   z_t1p <- z_t1p[order(z_t1p$Patient_ID), ]
 
+  # Raw (untransformed) paired frames — biologically-interpretable cell frequencies
+  # for the per-patient figure layer (z-scores drive the AUC/decomp below).
+  raw_long <- as.data.frame(DATA_LONG$hybrid_data_raw)
+  raw_long$Patient_ID <- DATA_LONG$metadata$Patient_ID
+  raw_long$Timepoint  <- DATA_LONG$metadata$Timepoint
+  raw_t0p <- raw_long[raw_long$Timepoint == "T0" & raw_long$Patient_ID %in% paired_ids, ]
+  raw_t0p <- raw_t0p[order(raw_t0p$Patient_ID), ]
+  raw_t1p <- raw_long[raw_long$Timepoint == "T1" & raw_long$Patient_ID %in% paired_ids, ]
+  raw_t1p <- raw_t1p[order(raw_t1p$Patient_ID), ]
+
   avail <- intersect(gate_markers, colnames(z_t0p))
   if (length(avail) == 0) return(NULL)
 
@@ -358,8 +368,35 @@ run_gate_signal_decomposition <- function(DATA_T0, DATA_LONG,
 
   message(sprintf("   [ML][GSD] n_paired=%d | Scenario: %s", n_paired, scenario))
 
+  # ── Per-patient long frame for the biology figure (additive; not used above) ──
+  # Per gate marker at T0/T1, labelled by response group. Value_raw is the logit-
+  # transformed FACS value (the modelling scale); Value_pct = inverse-logit ×100
+  # back to an interpretable cell frequency (%) for display (gate markers are FACS
+  # percentage-input logit-transformed); Value_z is the z-score used in the decomp.
+  ppv_one <- function(zf, rawf, tp_label) {
+    do.call(rbind, lapply(avail, function(m) {
+      vraw <- if (m %in% colnames(rawf)) rawf[[m]] else NA_real_
+      data.frame(
+        Patient_ID = zf$Patient_ID,
+        Marker     = m,
+        Timepoint  = tp_label,
+        Group      = zf$Group,
+        Value_raw  = vraw,
+        Value_pct  = stats::plogis(vraw) * 100,
+        Value_z    = zf[[m]],
+        stringsAsFactors = FALSE)
+    }))
+  }
+  per_patient_values <- rbind(
+    ppv_one(z_t0p, raw_t0p, "T0"),
+    ppv_one(z_t1p, raw_t1p, "T1"))
+  per_patient_values$Timepoint <- factor(per_patient_values$Timepoint,
+                                         levels = c("T0", "T1"))
+  rownames(per_patient_values) <- NULL
+
   list(
     marker_decomp      = marker_decomp,
+    per_patient_values = per_patient_values,
     delong_comparisons = delong_comp,
     gate_t0_scan_rank  = gate_rank_df,
     n_paired           = n_paired,
