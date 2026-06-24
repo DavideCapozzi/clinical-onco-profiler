@@ -8,6 +8,7 @@ project_name: "base_run"
 run_machine_learning: true
 run_nested_loocv_validation: true
 run_clinical_utility: true       # Step 06: calibration + decision curve + bootstrap optimism on the pre-specified composite (TRIPOD/REMARK layer)
+run_nested_validation: true      # Step 06: re-select the LMM gate inside each outer LOO fold (anti-circularity / selection-optimism test); NSCLC only (needs clinical_model + longitudinal); ~1 min, additive
 run_publication_figures: true    # Step 06: Frontiers-styled manuscript figure set (publication/ subdir; cairo_pdf, no titles, Okabe-Ito) — additive, driven by live objects
 input_file: "data/Dati_NSCLC_standardizzati_anonimi_T0.xlsx"
 input_file_t0: "data/Dati_NSCLC_standardizzati_anonimi_T0.xlsx"

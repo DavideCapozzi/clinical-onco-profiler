@@ -1437,3 +1437,113 @@ write_clinical_immune_summary <- function(av) {
   data.frame(Metric = base_metric, Value = base_value, stringsAsFactors = FALSE)
 }
 
+# ── Nested gate-selection validation (anti-circularity / selection-optimism) ──
+#' Re-runs the LMM Time×Group gate selection INSIDE each outer LOO fold and
+#' recomputes the clinical vs clinical+immune out-of-fold predictions, so the
+#' gate-choice variability is priced in (the pre-specified-gate added-value layer
+#' is honest only CONDITIONAL on the fixed gate). Answers the #1 reviewer attack
+#' ("gate selected + evaluated in one cohort") with a direct test. Promoted from
+#' diagnostics/diag_30. Selection = FDR<0.05 on the interaction, NO collinearity
+#' filter (matches the composite, which averages the FDR+LOO markers; VIF≈1).
+#' Additive / RNG-free → never alters primary numbers. Returns NULL on failure.
+#' @return list(selection_rule, n_folds, n_markers, auc=list(prespec,nested),
+#'   delta=c(prespec,nested), delong_nested_p, gate_freq (named over all markers),
+#'   prespec_markers, prespec_recovery, extra_markers, median_k, k_range)
+run_nested_gate_validation <- function(DATA_T0, DATA_LONG, input_file,
+                                       clinical_vars, prespec_gate, resp_label,
+                                       fdr_thr = 0.05, seed = 2026) {
+  if (!all(vapply(c("lmerTest", "lme4", "pROC", "readxl"), requireNamespace,
+                  logical(1), quietly = TRUE))) {
+    warning("[ML][Nested] lmerTest/lme4/pROC/readxl unavailable — skipped."); return(NULL)
+  }
+  set.seed(seed)
+  META <- c("Patient_ID", "Sample_ID", "Timepoint", "Group")
+  z_t0 <- as.data.frame(DATA_T0$hybrid_data_z)
+  pid  <- DATA_T0$metadata$Patient_ID
+  y    <- as.integer(DATA_T0$metadata$Group == resp_label)
+  df_long <- as.data.frame(DATA_LONG$hybrid_data_z)
+  markers <- intersect(setdiff(colnames(z_t0), META), setdiff(colnames(df_long), META))
+  prespec <- intersect(prespec_gate, markers)
+  if (length(prespec) == 0 || !"Timepoint" %in% colnames(df_long)) return(NULL)
+
+  clin_raw <- tryCatch(as.data.frame(readxl::read_excel(input_file)), error = function(e) NULL)
+  if (is.null(clin_raw) || !all(c("Patient_ID", clinical_vars) %in% colnames(clin_raw))) {
+    warning("[ML][Nested] clinical columns not found — skipped."); return(NULL)
+  }
+  clin <- clin_raw[match(pid, clin_raw$Patient_ID), clinical_vars, drop = FALSE]
+  colnames(clin) <- names(clinical_vars)
+  clin[] <- lapply(clin, function(v) suppressWarnings(as.numeric(v)))
+
+  # FDR<0.05 Time×Group selection on a training subset (no collinearity filter)
+  select_gate <- function(df_sub) {
+    p <- vapply(markers, function(m) {
+      v <- as.numeric(df_sub[[m]]); s <- sd(v, na.rm = TRUE); if (!is.finite(s) || s == 0) s <- 1
+      d <- data.frame(V = v / s, Ti = factor(df_sub$Timepoint), G = factor(df_sub$Group),
+                      ID = factor(df_sub$Patient_ID)); d <- d[complete.cases(d), ]
+      if (nrow(d) < 10 || length(unique(d$G)) < 2) return(NA_real_)
+      tryCatch({
+        mod <- suppressMessages(suppressWarnings(lmerTest::lmer(
+          V ~ Ti * G + (1 | ID), data = d, REML = TRUE,
+          control = lme4::lmerControl(calc.derivs = FALSE))))
+        ct <- summary(mod)$coefficients; i <- grep("Ti.*:G", rownames(ct))
+        if (length(i) != 1) NA_real_ else ct[i, grep("Pr\\(>\\|t\\|\\)", colnames(ct))]
+      }, error = function(e) NA_real_)
+    }, numeric(1))
+    fdr <- p.adjust(p, method = "BH")
+    markers[!is.na(fdr) & fdr < fdr_thr]
+  }
+  fold_predict <- function(i, gate) {
+    tr <- setdiff(seq_along(pid), i)
+    cl <- clin
+    for (cc in names(cl)) cl[is.na(cl[, cc]), cc] <- median(cl[tr, cc], na.rm = TRUE)
+    dC <- data.frame(y = y, cl)
+    fitC <- suppressWarnings(glm(y ~ ., data = dC, family = binomial(), subset = tr))
+    pC <- as.numeric(predict(fitC, dC[i, , drop = FALSE], type = "response"))
+    if (length(gate) == 0) return(c(clin = pC, comb = pC, k = 0))
+    dK <- data.frame(y = y, cl, composite = rowMeans(z_t0[, gate, drop = FALSE]))
+    fitK <- suppressWarnings(glm(y ~ ., data = dK, family = binomial(), subset = tr))
+    c(clin = pC, comb = as.numeric(predict(fitK, dK[i, , drop = FALSE], type = "response")),
+      k = length(gate))
+  }
+  auc1 <- function(p) as.numeric(pROC::auc(pROC::roc(y, p, quiet = TRUE, direction = "<")))
+
+  pre <- t(vapply(seq_along(pid), function(i) fold_predict(i, prespec), numeric(3)))
+  message(sprintf("[ML][Nested] re-selecting gate inside %d LOO folds...", length(pid)))
+  sel_count <- setNames(integer(length(markers)), markers); kvec <- integer(length(pid))
+  nes <- matrix(NA_real_, length(pid), 2, dimnames = list(NULL, c("clin", "comb")))
+  recov <- 0L
+  for (i in seq_along(pid)) {
+    gate <- select_gate(df_long[df_long$Patient_ID %in% pid[setdiff(seq_along(pid), i)], ])
+    sel_count[gate] <- sel_count[gate] + 1L
+    if (all(prespec %in% gate)) recov <- recov + 1L
+    pr <- fold_predict(i, gate); nes[i, ] <- pr[c("clin", "comb")]; kvec[i] <- pr["k"]
+  }
+  dl <- tryCatch(pROC::roc.test(pROC::roc(y, nes[, "comb"], quiet = TRUE, direction = "<"),
+                                pROC::roc(y, nes[, "clin"], quiet = TRUE, direction = "<"),
+                                method = "delong")$p.value, error = function(e) NA_real_)
+  extra <- setdiff(names(sel_count)[sel_count == length(pid)], prespec)
+  list(
+    selection_rule  = "FDR<0.05 Time×Group interaction, re-selected per outer LOO fold; no collinearity filter (matches the averaging composite)",
+    n_folds = length(pid), n_markers = length(markers),
+    auc = list(prespec = c(clinical = auc1(pre[, "clin"]), combined = auc1(pre[, "comb"])),
+               nested  = c(clinical = auc1(nes[, "clin"]), combined = auc1(nes[, "comb"]))),
+    delta = c(prespec = auc1(pre[, "comb"]) - auc1(pre[, "clin"]),
+              nested  = auc1(nes[, "comb"]) - auc1(nes[, "clin"])),
+    delong_nested_p = dl,
+    gate_freq = sel_count,
+    prespec_markers = prespec,
+    prespec_recovery = recov / length(pid),
+    extra_markers = extra,
+    median_k = stats::median(kvec), k_range = range(kvec))
+}
+
+# Compact JSON node for the nested-validation result.
+nested_validation_json <- function(nv) {
+  if (is.null(nv)) return(NULL)
+  list(selection_rule = nv$selection_rule, n_folds = nv$n_folds, n_markers = nv$n_markers,
+       auc = nv$auc, delta = as.list(nv$delta), delong_nested_p = nv$delong_nested_p,
+       prespec_markers = nv$prespec_markers, prespec_recovery = nv$prespec_recovery,
+       extra_markers = nv$extra_markers, median_k = nv$median_k, k_range = nv$k_range,
+       gate_freq = as.list(round(nv$gate_freq / nv$n_folds, 3)))
+}
+

@@ -496,6 +496,35 @@ if (lmm_robust$n_robust == 0) {
     message(sprintf("[ML][AV] Locked model exported -> locked_model_%s.{rds,json}", config$project_name))
   }
 
+  # 12d. Nested gate-selection validation (anti-circularity / selection optimism)
+  # Re-selects the LMM Time×Group gate INSIDE each outer LOO fold and recomputes
+  # the clinical vs clinical+immune out-of-fold predictions — prices in the gate-
+  # choice variability that the pre-specified-gate added-value layer holds fixed.
+  # Config-gated (run_nested_validation, default true), NSCLC only (needs
+  # clinical_model + longitudinal data). Additive; primary numbers unaffected.
+  # ------------------------------------------------------------------------------
+  nested_val <- NULL
+  if (!isFALSE(config$run_nested_validation) && !is.null(ml_cfg$clinical_model) &&
+      !is.null(config$input_file_t0) && exists("DATA_LONG_decomp") && !is.null(DATA_LONG_decomp)) {
+    nested_val <- tryCatch(
+      run_nested_gate_validation(
+        DATA_T0       = DATA,
+        DATA_LONG     = DATA_LONG_decomp,
+        input_file    = config$input_file_t0,
+        clinical_vars = unlist(ml_cfg$clinical_model$vars),
+        prespec_gate  = lmm_robust$markers,
+        resp_label    = config$clinical$responder_label,
+        seed          = if (!is.null(config$stats$seed)) as.integer(config$stats$seed) else 2026L),
+      error = function(e) {
+        warning(sprintf("[ML] Nested gate-selection validation failed (non-fatal): %s", e$message)); NULL
+      })
+    if (!is.null(nested_val))
+      message(sprintf("[ML][Nested] clinical->combined: pre-spec %.3f->%.3f | nested %.3f->%.3f | gate recovered %.0f%% of folds",
+        nested_val$auc$prespec["clinical"], nested_val$auc$prespec["combined"],
+        nested_val$auc$nested["clinical"],  nested_val$auc$nested["combined"],
+        100 * nested_val$prespec_recovery))
+  }
+
   # 13. Export Machine-Readable JSON
   # ------------------------------------------------------------------------------
   machine_output <- list(
@@ -605,7 +634,8 @@ if (lmm_robust$n_robust == 0) {
       )
     } else NULL,
     clinical_utility = clinical_utility_json(clin_util),
-    clinical_immune_added_value = clinical_immune_json(clin_addval)
+    clinical_immune_added_value = clinical_immune_json(clin_addval),
+    nested_gate_validation = nested_validation_json(nested_val)
   )
 
   json_path <- file.path(out_dir, sprintf("Machine_Metrics_ML_%s.json", config$project_name))
@@ -1003,6 +1033,7 @@ if (lmm_robust$n_robust == 0) {
       pub_objs <- list(
         clin_addval       = clin_addval,
         gate_decomp       = gate_decomp,
+        nested_val        = nested_val,
         stratified_result = stratified_result,
         lmm_boot          = pub_read_lmm_bootstrap(config),
         consort           = if (!is.null(clin_addval)) pub_consort_counts(config, clin_addval, gate_decomp) else NULL,

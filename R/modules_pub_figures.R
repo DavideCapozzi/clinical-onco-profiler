@@ -7,13 +7,14 @@
 # object styled via R/modules_pub_style.R. No frozen-file reads, no recompute:
 # when the analysis changes, re-running the pipeline regenerates these figures.
 #
-# Narrative (rebalanced 2026-06-24 toward immunology): MAIN Fig1 biology
+# Narrative (rebalanced 2026-06-24 toward immunology, 3 main): MAIN Fig1 biology
 # (gate-marker cell frequencies T0/T1×group, log-y + LMM forest) / Fig2 added-value
-# (LRT-led) / Fig3 PD-L1 context (promoted) / Fig4 gate-signal decomposition
-# (T0/T1/Δ, a results figure). SUPP S1 CONSORT / S4 baseline-invariance /
-# S5 specificity-null / S6 standalone / S7 coupling / S8 robustness / S9 calibration
-# (calibration + robustness demoted from main). Supp renumbering (gaps S2/S3) is
-# deferred to the caption doc pass.
+# (LRT-led) / Fig3 PD-L1 context. The gate-signal decomposition and the new
+# nested-selection validation are DEFENSE figures (statistical / invariance ⇒ weak
+# main-figure payoff) → SUPP. SUPP S1 CONSORT / S2 baseline-invariance / S3
+# specificity-null / S4 standalone / S5 coupling / S6 robustness / S7 calibration /
+# S8 gate-signal decomposition / S9 nested-selection validation (pub_fig_nested_robustness:
+# increment invariant to per-fold gate re-selection + Ki67 module recovered ~100% of folds).
 # ==============================================================================
 
 suppressMessages({ library(ggplot2); library(patchwork) })
@@ -256,7 +257,49 @@ pub_fig_pdl1_context <- function(sr) {
   pub_tag(pA | pB)
 }
 
-# ── SUPP S3 — Gate-signal decomposition (T0 / T1 / Delta) ─────────────────────
+# ── SUPP — Nested gate-selection validation (anti-circularity test) ───────────
+#' Panel A: the increment is invariant to gate selection — clinical→combined LOO
+#' AUC for the pre-specified gate vs the gate re-selected inside every LOO fold.
+#' Panel B: a stable Ki67 module is re-selected every fold (selection frequency of
+#' the markers that are ever chosen; pre-specified markers highlighted).
+pub_fig_nested_robustness <- function(nv) {
+  if (is.null(nv) || is.null(nv$auc)) return(NULL)
+  ap <- nv$auc$prespec; an <- nv$auc$nested
+  dd <- data.frame(
+    set  = factor(c("Pre-specified\ngate", "Gate re-selected\nper fold"),
+                  levels = c("Gate re-selected\nper fold", "Pre-specified\ngate")),
+    clin = c(ap["clinical"], an["clinical"]),
+    comb = c(ap["combined"], an["combined"]))
+  pA <- ggplot(dd, aes(y = set)) +
+    geom_segment(aes(x = clin, xend = comb, yend = set), colour = "grey60", linewidth = 0.8) +
+    geom_point(aes(x = clin), size = 2.8, colour = pub_palette[["clinical"]]) +
+    geom_point(aes(x = comb), size = 2.8, colour = pub_palette[["combined"]]) +
+    geom_text(aes(x = comb, label = sprintf("%.3f (%+.3f)", comb, comb - clin)),
+              vjust = -1.1, size = 2.5, colour = "grey20") +
+    annotate("text", x = dd$clin[1], y = 0.45, vjust = 1, size = 2.4, colour = "grey30",
+             label = sprintf("clinical %.3f", dd$clin[1])) +
+    coord_cartesian(xlim = c(0.5, 0.8), ylim = c(0.5, 2.5), clip = "off") +
+    labs(x = "Clinical → +immune LOO AUC", y = NULL) +
+    theme_publication() + theme(plot.margin = margin(10, 16, 6, 6))
+
+  gf <- nv$gate_freq / nv$n_folds
+  sel <- sort(gf[gf > 0], decreasing = TRUE)
+  db <- data.frame(Marker = names(sel), Freq = 100 * as.numeric(sel))
+  db$grp <- ifelse(db$Marker %in% nv$prespec_markers, "Pre-specified", "Also selected")
+  db$Marker <- factor(db$Marker, levels = rev(db$Marker))
+  n_never <- nv$n_markers - nrow(db)
+  pB <- ggplot(db, aes(Freq, Marker, colour = grp)) +
+    geom_segment(aes(x = 0, xend = Freq, yend = Marker), linewidth = 0.5) +
+    geom_point(size = 2.6) +
+    scale_colour_manual(values = c("Pre-specified" = pub_palette[["combined"]],
+                                   "Also selected" = "grey55"), name = NULL) +
+    scale_x_continuous(limits = c(0, 108), breaks = c(0, 50, 100)) +
+    labs(x = "% of LOO folds selected", y = NULL) +
+    theme_publication()
+  pub_tag(pA | pB)
+}
+
+# ── SUPP — Gate-signal decomposition (T0 / T1 / Delta) ────────────────────────
 pub_fig_gate_signal <- function(gd) {
   if (is.null(gd) || is.null(gd$marker_decomp)) return(NULL)
   d <- gd$marker_decomp; d <- d[!is.na(d$AUC), ]
@@ -425,31 +468,36 @@ pub_render_all <- function(objs, out_dir, project_name) {
   dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
   pf <- function(n) file.path(out_dir, sprintf("%s_%s.pdf", n, project_name))
   av <- objs$clin_addval
-  # MAIN — Fig 1 biology (cells + forest) / Fig 2 added-value / Fig 3 calibration /
-  #        Fig 4 gate-signal decomposition (results). Robustness demoted to Supp.
+  # MAIN (3) — Fig1 biology (cells + forest) / Fig2 added-value / Fig3 PD-L1 context.
+  # SUPP (S1–S9) — S1 CONSORT, S2 baseline-inv, S3 specificity, S4 standalone,
+  #        S5 coupling, S6 robustness, S7 calibration, S8 gate-signal decomposition,
+  #        S9 nested-selection validation. Defense figures kept out of main.
   if (!is.null(objs$lmm_boot) || !is.null(objs$gate_decomp))
     save_pub_figure(pub_fig_biology(objs$gate_decomp, objs$lmm_boot$boot, objs$lmm_boot$obs,
                                     resp_label = objs$positive_label),
                     pf("Figure1_Biology"), PUB_W2, 120)
-  if (!is.null(objs$gate_decomp))
-    save_pub_figure(pub_fig_gate_signal(objs$gate_decomp),        pf("Figure4_GateSignal"),    PUB_W2, 110)
   if (!is.null(av)) {
     save_pub_figure(pub_fig_added_value(av),         pf("Figure2_AddedValue"),      PUB_W2, 120)
-    # SUPP
-    save_pub_figure(pub_fig_calibration_idi(av),     pf("FigureS9_Calibration_IDI"), PUB_W2, 120)
-    save_pub_figure(pub_fig_robustness(av),          pf("FigureS8_Robustness"),     PUB_W2, 95)
+    # SUPP (S1–S9)
     if (!is.null(objs$consort))
-      save_pub_figure(pub_fig_consort(objs$consort), pf("FigureS1_CONSORT"),        PUB_W2, 120)
-    save_pub_figure(pub_fig_baseline_invariance(av), pf("FigureS4_BaselineInvariance"), PUB_W2, 82)
-    save_pub_figure(pub_fig_specificity_null(av),    pf("FigureS5_SpecificityNull"),    PUB_W1, 95)
+      save_pub_figure(pub_fig_consort(objs$consort), pf("FigureS1_CONSORT"),            PUB_W2, 120)
+    save_pub_figure(pub_fig_baseline_invariance(av), pf("FigureS2_BaselineInvariance"), PUB_W2, 82)
+    save_pub_figure(pub_fig_specificity_null(av),    pf("FigureS3_SpecificityNull"),    PUB_W1, 95)
     if (!is.null(av$dynamics_baseline_coupling))
-      save_pub_figure(pub_fig_coupling(av),          pf("FigureS7_Coupling"),           PUB_W1, 95)
+      save_pub_figure(pub_fig_coupling(av),          pf("FigureS5_Coupling"),           PUB_W1, 95)
+    save_pub_figure(pub_fig_robustness(av),          pf("FigureS6_Robustness"),         PUB_W2, 95)
+    save_pub_figure(pub_fig_calibration_idi(av),     pf("FigureS7_Calibration_IDI"),    PUB_W2, 120)
   }
   if (!is.null(objs$stratified_result))
     save_pub_figure(pub_fig_pdl1_context(objs$stratified_result), pf("Figure3_PDL1_context"), PUB_W2, 115)
   if (!is.null(objs$df_preds))
     save_pub_figure(pub_fig_standalone(objs$df_preds, objs$positive_label, perm = objs$perm),
-                    pf("FigureS6_StandaloneClassifier"), PUB_W1, 120)
+                    pf("FigureS4_StandaloneClassifier"), PUB_W1, 120)
+  # S8 gate-signal decomposition (demoted from main), S9 nested-selection validation
+  if (!is.null(objs$gate_decomp))
+    save_pub_figure(pub_fig_gate_signal(objs$gate_decomp),         pf("FigureS8_GateSignal"),     PUB_W2, 110)
+  if (!is.null(objs$nested_val))
+    save_pub_figure(pub_fig_nested_robustness(objs$nested_val),    pf("FigureS9_NestedValidation"), PUB_W2, 95)
   invisible(out_dir)
 }
 
