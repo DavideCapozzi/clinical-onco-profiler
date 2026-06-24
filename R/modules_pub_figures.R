@@ -8,11 +8,12 @@
 # when the analysis changes, re-running the pipeline regenerates these figures.
 #
 # Narrative (rebalanced 2026-06-24 toward immunology): MAIN Fig1 biology
-# (gate-marker cell frequencies T0/T1×group + LMM forest) / Fig2 added-value
-# (LRT-led) / Fig3 calibration unpenalized-vs-ridge + IDI fragility / Fig4
-# gate-signal decomposition (T0/T1/Δ, a results figure). SUPP S1 CONSORT /
-# S2 PD-L1 / S4 baseline-invariance / S5 specificity-null / S6 standalone /
-# S7 coupling / S8 robustness (demoted from main).
+# (gate-marker cell frequencies T0/T1×group, log-y + LMM forest) / Fig2 added-value
+# (LRT-led) / Fig3 PD-L1 context (promoted) / Fig4 gate-signal decomposition
+# (T0/T1/Δ, a results figure). SUPP S1 CONSORT / S4 baseline-invariance /
+# S5 specificity-null / S6 standalone / S7 coupling / S8 robustness / S9 calibration
+# (calibration + robustness demoted from main). Supp renumbering (gaps S2/S3) is
+# deferred to the caption doc pass.
 # ==============================================================================
 
 suppressMessages({ library(ggplot2); library(patchwork) })
@@ -37,11 +38,12 @@ pub_fig_lmm_forest <- function(boot_df, obs_df = NULL, markers = NULL) {
     geom_errorbarh(aes(xmin = CI_Lower_2.5, xmax = CI_Upper_97.5),
                    height = 0.22, colour = "grey35") +
     geom_point(aes(x = Estimate_Interaction), shape = 19, size = 2.6, colour = pub_palette[["combined"]]) +
-    geom_text(aes(x = CI_Upper_97.5, label = sprintf("  %.0f%% FDR<0.05", Pct_FDR_Significant)),
-              hjust = 0, size = 2.6, colour = "grey30") +
+    geom_text(aes(x = CI_Upper_97.5, label = sprintf(" %.0f%%", Pct_FDR_Significant)),
+              hjust = 0, size = 2.5, colour = "grey30") +
+    scale_x_continuous(expand = expansion(mult = c(0.05, 0.18))) +
     labs(x = "Time x Group interaction (β)", y = NULL) +
     coord_cartesian(clip = "off") +
-    theme_publication() + theme(plot.margin = margin(6, 26, 6, 6))
+    theme_publication() + theme(plot.margin = margin(6, 12, 6, 6))
 }
 
 # ── MAIN Fig 1 (biology) — gate-marker cell frequencies (T0/T1 × group) + forest ─
@@ -67,17 +69,21 @@ pub_fig_biology <- function(gate_decomp, boot_df, obs_df = NULL, resp_label = NU
     ppv$Group <- factor(ppv$Group, levels = ord)
   } else ord <- sort(grps)
   grp_cols <- setNames(c(pub_palette[["combined"]], pub_palette[["unpen"]])[seq_along(ord)], ord)
+  # log10 y (per-facet free) — flow-cytometry-standard; decompresses the bulk so the
+  # boxplots stay readable despite the heavy right-skew (rare high-proliferation
+  # non-responders), without hiding any data.
   pA <- ggplot(ppv, aes(Timepoint, .data[[yvar]])) +
     geom_line(aes(group = Patient_ID), colour = "grey75", linewidth = 0.3, alpha = 0.5) +
     geom_boxplot(aes(colour = Group), fill = NA, width = 0.5,
                  outlier.shape = NA, linewidth = 0.5) +
     geom_point(aes(colour = Group), size = 0.7, alpha = 0.45) +
     facet_grid(Marker ~ Group, scales = "free_y") +
+    scale_y_log10() +
     scale_colour_manual(values = grp_cols, guide = "none") +
-    labs(x = NULL, y = "Cell frequency (%)") +
-    theme_publication()
+    labs(x = NULL, y = "Cell frequency (%, log scale)") +
+    theme_publication() + theme(panel.grid = element_blank())
   if (is.null(forest)) return(pub_tag(pA))
-  pub_tag((pA | forest) + patchwork::plot_layout(widths = c(2.2, 1)))
+  pub_tag((pA | forest) + patchwork::plot_layout(widths = c(1.9, 1.1)))
 }
 
 # ── MAIN Fig 2 — Added value (LRT-led): ROC + decision curve ──────────────────
@@ -420,8 +426,8 @@ pub_render_all <- function(objs, out_dir, project_name) {
     save_pub_figure(pub_fig_gate_signal(objs$gate_decomp),        pf("Figure4_GateSignal"),    PUB_W2, 110)
   if (!is.null(av)) {
     save_pub_figure(pub_fig_added_value(av),         pf("Figure2_AddedValue"),      PUB_W2, 120)
-    save_pub_figure(pub_fig_calibration_idi(av),     pf("Figure3_Calibration_IDI"), PUB_W2, 120)
     # SUPP
+    save_pub_figure(pub_fig_calibration_idi(av),     pf("FigureS9_Calibration_IDI"), PUB_W2, 120)
     save_pub_figure(pub_fig_robustness(av),          pf("FigureS8_Robustness"),     PUB_W2, 95)
     if (!is.null(objs$consort))
       save_pub_figure(pub_fig_consort(objs$consort), pf("FigureS1_CONSORT"),        PUB_W2, 120)
@@ -431,7 +437,7 @@ pub_render_all <- function(objs, out_dir, project_name) {
       save_pub_figure(pub_fig_coupling(av),          pf("FigureS7_Coupling"),           PUB_W1, 95)
   }
   if (!is.null(objs$stratified_result))
-    save_pub_figure(pub_fig_pdl1_context(objs$stratified_result), pf("FigureS2_PDL1_context"), PUB_W2, 115)
+    save_pub_figure(pub_fig_pdl1_context(objs$stratified_result), pf("Figure3_PDL1_context"), PUB_W2, 115)
   if (!is.null(objs$df_preds))
     save_pub_figure(pub_fig_standalone(objs$df_preds, objs$positive_label, perm = objs$perm),
                     pf("FigureS6_StandaloneClassifier"), PUB_W1, 120)
