@@ -40,10 +40,10 @@ pub_fig_lmm_forest <- function(boot_df, obs_df = NULL, markers = NULL) {
     geom_point(aes(x = Estimate_Interaction), shape = 19, size = 2.6, colour = pub_palette[["combined"]]) +
     geom_text(aes(x = CI_Upper_97.5, label = sprintf(" %.0f%%", Pct_FDR_Significant)),
               hjust = 0, size = 2.5, colour = "grey30") +
-    scale_x_continuous(expand = expansion(mult = c(0.05, 0.18))) +
-    labs(x = "Time x Group interaction (β)", y = NULL) +
+    scale_x_continuous(expand = expansion(mult = c(0.05, 0.12))) +
+    labs(x = "Time×Group β", y = NULL) +
     coord_cartesian(clip = "off") +
-    theme_publication() + theme(plot.margin = margin(6, 12, 6, 6))
+    theme_publication() + theme(plot.margin = margin(6, 14, 6, 6))
 }
 
 # ── MAIN Fig 1 (biology) — gate-marker cell frequencies (T0/T1 × group) + forest ─
@@ -62,10 +62,13 @@ pub_fig_biology <- function(gate_decomp, boot_df, obs_df = NULL, resp_label = NU
   if (is.null(ppv) || !nrow(ppv) || all(is.na(ppv[[yvar]]))) return(forest)
 
   # Responder = primary blue (consistent with the positive/combined class elsewhere),
-  # non-responder = vermillion; responder column first. Fall back to alpha order.
+  # non-responder = vermillion; responder column first. Display-relabel group codes
+  # (RP→PR, SD_PD→SD/PD) before faceting so strips/keys read in RECIST English.
+  ppv$Group <- pub_relabel_group(ppv$Group)
+  resp_disp <- if (!is.null(resp_label)) pub_relabel_group(resp_label) else NULL
   grps <- unique(as.character(ppv$Group))
-  if (!is.null(resp_label) && resp_label %in% grps) {
-    ord <- c(resp_label, setdiff(grps, resp_label))
+  if (!is.null(resp_disp) && resp_disp %in% grps) {
+    ord <- c(resp_disp, setdiff(grps, resp_disp))
     ppv$Group <- factor(ppv$Group, levels = ord)
   } else ord <- sort(grps)
   grp_cols <- setNames(c(pub_palette[["combined"]], pub_palette[["unpen"]])[seq_along(ord)], ord)
@@ -80,7 +83,7 @@ pub_fig_biology <- function(gate_decomp, boot_df, obs_df = NULL, resp_label = NU
     facet_grid(Marker ~ Group, scales = "free_y") +
     scale_y_log10() +
     scale_colour_manual(values = grp_cols, guide = "none") +
-    labs(x = NULL, y = "Cell frequency (%, log scale)") +
+    labs(x = NULL, y = "Frequency (% of parent population)") +
     theme_publication() + theme(panel.grid = element_blank())
   if (is.null(forest)) return(pub_tag(pA))
   pub_tag((pA | forest) + patchwork::plot_layout(widths = c(1.9, 1.1)))
@@ -190,12 +193,12 @@ pub_fig_consort <- function(cc) {
     t = data.frame(x = x, y = y, lab = lab))
   seg <- function(x0, y0, x1, y1) data.frame(x = x0, y = y0, xe = x1, ye = y1)
   b1 <- box(3, 9, 4.6, 1.5, sprintf(
-    "NSCLC anti-PD1 cohort (baseline T0)\nn = %d  ·  %d RP / %d SD-PD", cc$raw_n, cc$raw_rp, cc$raw_sdpd))
+    "NSCLC anti-PD1 cohort (baseline T0)\nn = %d  ·  %d PR / %d SD-PD", cc$raw_n, cc$raw_rp, cc$raw_sdpd))
   bX <- box(6.4, 7.6, 3.4, 1.3, sprintf(
     "Excluded (n = %d)\n• High missingness (n = %d)\n• PCA outliers (n = %d)",
     cc$n_miss + cc$n_out, cc$n_miss, cc$n_out), fill = "grey95")
   b2 <- box(3, 6.2, 4.2, 1.3, sprintf(
-    "Analytic cohort, T0\nn = %d  ·  %d RP / %d SD-PD", cc$n, cc$n_pos, cc$n_neg), fill = "#DCEAF5")
+    "Analytic cohort, T0\nn = %d  ·  %d PR / %d SD-PD", cc$n, cc$n_pos, cc$n_neg), fill = "#DCEAF5")
   b3 <- box(1.3, 3.3, 2.5, 1.5, sprintf("Paired T0+T1\n(LMM gate)\nn = %d", cc$n_paired))
   b4 <- box(3.6, 3.3, 2.7, 1.5, sprintf("Complete-case\nclinical model\n(%s)\nn = %d", cc$clin_label, cc$n_cc), fill = "#DCEAF5")
   b5 <- box(6.2, 3.3, 2.7, 1.5, sprintf("Survival follow-up\nn = %d\n(OS %d / PFS %d events)",
@@ -227,6 +230,10 @@ pub_fig_pdl1_context <- function(sr) {
     geom_hline(yintercept = 50, linetype = "dashed", colour = pub_palette[["ref"]]) +
     scale_y_continuous(limits = c(0, max(bins$Response_Rate) + 20), expand = c(0, 0),
                        breaks = seq(0, 100, 25), labels = function(x) paste0(x, "%")) +
+    # wrap strata ticks onto two lines so neg/low/high don't collide horizontally;
+    # prettify ">=" → "≥" for display (data labels keep the ASCII form)
+    scale_x_discrete(labels = function(v)
+      sub("(", "\n(", gsub(">=", "≥", v, fixed = TRUE), fixed = TRUE)) +
     labs(x = sr$label, y = "Responder rate") + theme_publication()
   sl <- sr$subgroup_low; sh <- sr$subgroup_high
   fo <- data.frame(
@@ -240,10 +247,12 @@ pub_fig_pdl1_context <- function(sr) {
     geom_vline(xintercept = 0.5, linetype = "dashed", colour = pub_palette[["ref"]]) +
     geom_errorbarh(aes(xmin = lo, xmax = hi), height = 0.16, colour = "grey35") +
     geom_point(size = 2.8, colour = pub_palette[["combined"]]) +
-    geom_text(aes(label = sprintf("%.2f [%.2f, %.2f]", est, lo, hi)), vjust = -1.0, size = 2.5, colour = "grey20") +
+    geom_text(aes(label = sprintf("%.2f [%.2f, %.2f]", est, lo, hi)),
+              vjust = -1.5, size = 2.5, colour = "grey20") +
+    scale_y_discrete(expand = expansion(add = c(0.6, 1.0))) +
     coord_cartesian(xlim = c(0, 1), clip = "off") +
-    labs(x = "Gate-model AUC within PD-L1 subgroup", y = NULL) +
-    theme_publication() + theme(plot.margin = margin(6, 12, 6, 6))
+    labs(x = "AUC within PD-L1 subgroup", y = NULL) +
+    theme_publication() + theme(plot.margin = margin(6, 14, 6, 6))
   pub_tag(pA | pB)
 }
 

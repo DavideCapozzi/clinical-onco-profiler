@@ -73,6 +73,18 @@ save_pub_figure <- function(plot, path, width_mm, height_mm) {
 pub_invlogit <- function(x) 1 / (1 + exp(-x))
 pub_clamp01  <- function(p, e = 1e-4) pmin(pmax(p, e), 1 - e)
 
+# Display-only relabel of group codes for figures (config labels are unchanged).
+# Named-lookup with passthrough — NEVER blanket gsub("_","/") (would corrupt other
+# experiments, e.g. Tox_Yes). "RP" is the Italian "Risposta Parziale" → English RECIST
+# "PR"; "SD_PD" underscore is a code artefact → "SD/PD". Extend the map as needed.
+PUB_GROUP_LABELS <- c("RP" = "PR", "SD_PD" = "SD/PD")
+pub_relabel_group <- function(x) {
+  x  <- as.character(x)
+  hit <- x %in% names(PUB_GROUP_LABELS)
+  x[hit] <- PUB_GROUP_LABELS[x[hit]]
+  x
+}
+
 #' ROC data.frame + AUC from a probability vector and a 0/1 positive indicator.
 pub_roc_df <- function(prob, y_pos) {
   if (!requireNamespace("pROC", quietly = TRUE)) return(NULL)
