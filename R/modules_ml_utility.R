@@ -911,6 +911,17 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
     fi <- suppressWarnings(glm(yb ~ comp, data = data.frame(yb = yb, comp = comp)[tr, ], family = binomial()))
     pl_imm[i] <- as.numeric(predict(fi, newdata = data.frame(comp = comp[i]), type = "response"))
   }
+  # Benchmark (PD-L1 = 1st clinical var) ALONE — APPARENT complete-case univariate
+  # logistic. PD-L1 is a single, externally pre-fixed biomarker (no selection, 1 param)
+  # → apparent ≈ honest AUC; LOO of this near-null predictor is numerically pathological
+  # (flips the AUC), and median-imputing the ~20% missing also inverts it → complete
+  # cases only, NA elsewhere. Reported as the cross-sectional companion-biomarker AUC.
+  bench_raw <- as.numeric(Cmat[, 1]); cc <- which(is.finite(bench_raw))
+  pl_bench <- rep(NA_real_, n)
+  if (length(cc) >= 10) {
+    fb <- suppressWarnings(glm(yb ~ x, data = data.frame(yb = yb, x = bench_raw)[cc, , drop = FALSE], family = binomial()))
+    pl_bench[cc] <- as.numeric(predict(fb, newdata = data.frame(x = bench_raw[cc]), type = "response"))
+  }
   auc <- list(
     clinical = list(apparent = auc_pos(pa_clin), loo = auc_pos(pl_clin)),
     immune   = list(apparent = auc_pos(pa_imm),  loo = auc_pos(pl_imm)),
@@ -997,8 +1008,14 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
   nb <- function(p) sapply(pt_grid, function(pt) {
     pos <- p >= pt; w <- pt / (1 - pt)
     sum(pos & yb == 1) / n - sum(pos & yb == 0) / n * w })
+  # PD-L1 net benefit on its complete cases (own denominator; see Fig 2 caveat)
+  nb_cc <- function(p) { idx <- which(is.finite(p)); m <- length(idx)
+    if (m == 0) return(rep(NA_real_, length(pt_grid)))
+    sapply(pt_grid, function(pt) { pos <- p[idx] >= pt; w <- pt / (1 - pt)
+      sum(pos & yb[idx] == 1) / m - sum(pos & yb[idx] == 0) / m * w }) }
   dc <- data.frame(threshold = pt_grid,
                    clinical   = nb(pl_clin), combined = nb(pl_comb),
+                   pdl1       = nb_cc(pl_bench),
                    treat_all  = prev - (1 - prev) * (pt_grid / (1 - pt_grid)),
                    treat_none = 0)
 
@@ -1321,6 +1338,7 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
       Patient_ID = pid, True_Group = as.character(grp),
       Composite = round(comp, 4),
       Prob_Clinical = round(pl_clin, 4), Prob_Combined = round(pl_comb, 4),
+      Prob_PDL1 = round(pl_bench, 4), PD_L1 = round(as.numeric(Cmat[, 1]), 4),
       stringsAsFactors = FALSE)
   )
 }

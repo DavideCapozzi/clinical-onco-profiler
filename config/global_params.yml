@@ -19,9 +19,9 @@ experiments:
   BestResponse_2v3_4:
     is_longitudinal: true
     run_network: true
-    input_file:    "data/Dati_NSCLC_standardizzati_latest_anonimi_v2_T0.xlsx"
-    input_file_t0: "data/Dati_NSCLC_standardizzati_latest_anonimi_v2_T0.xlsx"
-    input_file_t1: "data/Dati_NSCLC_standardizzati_latest_anonimi_v2_T1.xlsx"
+    input_file:    "data/Dati_NSCLC_standardizzati_latest_anonimi_T0.xlsx"
+    input_file_t0: "data/Dati_NSCLC_standardizzati_latest_anonimi_T0.xlsx"
+    input_file_t1: "data/Dati_NSCLC_standardizzati_latest_anonimi_T1.xlsx"
     # Temporal discovery/validation split (Pass 0) — DISABLED 2026-06-11.
     # The added-value study develops on the FULL cohort with bootstrap-optimism
     # internal validation: with only ~36 events (minority class) an internal
