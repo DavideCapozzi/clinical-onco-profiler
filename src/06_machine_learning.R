@@ -433,11 +433,23 @@ if (lmm_robust$n_robust == 0) {
   # ------------------------------------------------------------------------------
   # Does the immune gate composite add over a standard-of-care clinical model?
   # Config-gated (ml_cfg$clinical_model present) → NSCLC only; skipped elsewhere.
+  # The immune composite is read at a configurable predictor timepoint:
+  #   composite_timepoint           — PRIMARY (default "T0"); drives the stable
+  #                                   clinical_immune_added_value node + locked model + figures.
+  #   composite_secondary_timepoints — optional extra timepoints (e.g. ["delta"]) emitted as
+  #                                   additive clinical_immune_added_value_<tp> nodes.
+  # T1/delta need paired longitudinal data (DATA_LONG_decomp) and skip gracefully otherwise.
   clin_addval <- NULL
+  clin_addval_secondary <- list()
   if (!is.null(ml_cfg$clinical_model) && !is.null(config$input_file_t0)) {
     cm  <- ml_cfg$clinical_model
     cu_cfg <- if (!is.null(ml_cfg$clinical_utility)) ml_cfg$clinical_utility else list()
-    clin_addval <- tryCatch(
+    DATA_LONG_av <- if (exists("DATA_LONG_decomp")) DATA_LONG_decomp else NULL
+    tp_primary   <- if (!is.null(cm$composite_timepoint)) as.character(cm$composite_timepoint) else "T0"
+    tp_secondary <- if (!is.null(cm$composite_secondary_timepoints))
+                      setdiff(unique(as.character(unlist(cm$composite_secondary_timepoints))), tp_primary)
+                    else character(0)
+    call_av <- function(tp) tryCatch(
       run_clinical_immune_added_value(
         DATA_T0         = DATA,
         gate_markers    = lmm_robust$markers,
@@ -456,12 +468,18 @@ if (lmm_robust$n_robust == 0) {
                             as.integer(cm$specificity_null$n_random) else 0L,
         lmm_interaction = if (!isFALSE(cm$dynamics_coupling) &&
                               is.data.frame(lmm_robust$full_results) &&
-                              nrow(lmm_robust$full_results) > 0) lmm_robust$full_results else NULL
+                              nrow(lmm_robust$full_results) > 0) lmm_robust$full_results else NULL,
+        composite_timepoint = tp, DATA_LONG = DATA_LONG_av
       ),
       error = function(e) {
-        warning(sprintf("[ML] Added-value layer failed (non-fatal): %s", e$message)); NULL
+        warning(sprintf("[ML] Added-value layer (timepoint=%s) failed (non-fatal): %s", tp, e$message)); NULL
       }
     )
+    clin_addval <- call_av(tp_primary)
+    if (length(tp_secondary)) {
+      clin_addval_secondary <- setNames(lapply(tp_secondary, call_av), tp_secondary)
+      clin_addval_secondary <- clin_addval_secondary[!vapply(clin_addval_secondary, is.null, logical(1))]
+    }
   }
 
   # 12c. Locked-model export — freeze the pre-specified scorer NOW so incoming patients can be
@@ -637,6 +655,11 @@ if (lmm_robust$n_robust == 0) {
     clinical_immune_added_value = clinical_immune_json(clin_addval),
     nested_gate_validation = nested_validation_json(nested_val)
   )
+
+  # Additive secondary-timepoint added-value nodes (e.g. delta) — primary node above unchanged.
+  for (tp in names(clin_addval_secondary))
+    machine_output[[paste0("clinical_immune_added_value_", tp)]] <-
+      clinical_immune_json(clin_addval_secondary[[tp]])
 
   json_path <- file.path(out_dir, sprintf("Machine_Metrics_ML_%s.json", config$project_name))
   if (requireNamespace("jsonlite", quietly = TRUE)) {
@@ -878,6 +901,15 @@ if (lmm_robust$n_robust == 0) {
     openxlsx::writeData(wb, "ClinImmune_Patients", clin_addval$per_patient)
   }
 
+  # Secondary-timepoint added-value sheets (e.g. T0 reference when delta is primary).
+  for (tp in names(clin_addval_secondary)) {
+    av_tp <- clin_addval_secondary[[tp]]; if (is.null(av_tp)) next
+    s_sum <- substr(sprintf("ClinImmune_AV_%s", tp), 1, 31)
+    s_pat <- substr(sprintf("ClinImmune_Pts_%s", tp), 1, 31)
+    openxlsx::addWorksheet(wb, s_sum); openxlsx::writeData(wb, s_sum, write_clinical_immune_summary(av_tp))
+    openxlsx::addWorksheet(wb, s_pat); openxlsx::writeData(wb, s_pat, av_tp$per_patient)
+  }
+
   excel_path <- file.path(out_dir, sprintf("ML_Classification_Report_%s.xlsx", config$project_name))
   openxlsx::saveWorkbook(wb, excel_path, overwrite = TRUE)
   message(sprintf("   [Output] Classification report saved: %s", basename(excel_path)))
@@ -1032,6 +1064,7 @@ if (lmm_robust$n_robust == 0) {
       # (manuscript/figures/make_manuscript_figures.R), all via pub_render_all().
       pub_objs <- list(
         clin_addval       = clin_addval,
+        clin_addval_secondary = clin_addval_secondary,   # per-timepoint added-value nodes (e.g. T0 reference)
         gate_decomp       = gate_decomp,
         nested_val        = nested_val,
         stratified_result = stratified_result,

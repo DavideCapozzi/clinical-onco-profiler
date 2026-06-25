@@ -778,6 +778,57 @@ write_clinical_utility_summary <- function(cu) {
 }
 
 # =============================================================================
+# Predictor-timepoint adapter for the added-value layer
+# -----------------------------------------------------------------------------
+#' Re-express a processed cohort at a chosen predictor timepoint.
+#'
+#' The immune composite (and the random-marker specificity pool) is normally
+#' evaluated on baseline T0 z-scores. For longitudinal cohorts the SAME gate can be
+#' read at the on-treatment value (`"T1"`) or the on-treatment change
+#' (`"delta"` = T1 − T0). This returns a `DATA_T0`-shaped object
+#' (`hybrid_data_z` + `metadata`) for the requested timepoint so the entire
+#' added-value machinery downstream is timepoint-agnostic and unchanged.
+#'
+#' `"T0"` returns `DATA_T0` untouched (canonical path, byte-for-byte). `"T1"`/`"delta"`
+#' are built from the paired (T0+T1) patients of `DATA_LONG` using the joint-z
+#' convention (matches run_gate_signal_decomposition: delta = z_t1 − z_t0). Returns
+#' NULL when paired data is unavailable so the caller skips gracefully; an unknown
+#' timepoint falls back to T0.
+build_timepoint_composite_data <- function(DATA_T0, DATA_LONG, timepoint = "T0") {
+  if (identical(timepoint, "T0")) return(DATA_T0)
+  if (!timepoint %in% c("T1", "delta")) {
+    message(sprintf("[ML][AV] unknown composite_timepoint '%s' — using T0.", timepoint))
+    return(DATA_T0)
+  }
+  if (is.null(DATA_LONG) || is.null(DATA_LONG$hybrid_data_z)) {
+    message(sprintf("[ML][AV] composite_timepoint='%s' needs longitudinal data — skipped.", timepoint))
+    return(NULL)
+  }
+  META    <- c("Patient_ID", "Sample_ID", "Timepoint", "Group")
+  markers <- setdiff(colnames(DATA_LONG$hybrid_data_z), META)
+  z <- as.data.frame(DATA_LONG$hybrid_data_z[, markers, drop = FALSE])
+  z$Patient_ID <- as.character(DATA_LONG$metadata$Patient_ID)
+  z$Timepoint  <- DATA_LONG$metadata$Timepoint
+  z$Group      <- DATA_LONG$metadata$Group
+  z0 <- z[z$Timepoint == "T0", , drop = FALSE]
+  z1 <- z[z$Timepoint == "T1", , drop = FALSE]
+  paired <- intersect(z0$Patient_ID, z1$Patient_ID)
+  if (length(paired) < 10) {
+    message(sprintf("[ML][AV] only %d paired patients — composite_timepoint='%s' skipped.",
+                    length(paired), timepoint))
+    return(NULL)
+  }
+  z0 <- z0[match(paired, z0$Patient_ID), , drop = FALSE]
+  z1 <- z1[match(paired, z1$Patient_ID), , drop = FALSE]
+  M  <- if (identical(timepoint, "T1")) z1[, markers, drop = FALSE]
+        else as.data.frame(as.matrix(z1[, markers]) - as.matrix(z0[, markers]))  # delta = z_t1 − z_t0
+  list(hybrid_data_z  = M,
+       metadata       = data.frame(Patient_ID = paired, Group = z0$Group,
+                                   stringsAsFactors = FALSE),
+       hybrid_markers = markers)
+}
+
+# =============================================================================
 # Clinical + cytometric ADDED-VALUE layer
 # -----------------------------------------------------------------------------
 # Pre-specified question: does the immune composite (gate markers) add predictive
@@ -803,12 +854,19 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
                                             baseline_sensitivity_cols = NULL,
                                             n_random_null = 0L,
                                             lmm_interaction = NULL,
+                                            composite_timepoint = "T0", DATA_LONG = NULL,
                                             min_n = 30L, seed = 2026L) {
   if (!requireNamespace("readxl", quietly = TRUE) ||
       !requireNamespace("pROC",   quietly = TRUE) ||
       !requireNamespace("dplyr",  quietly = TRUE)) return(NULL)
   if (is.null(input_file) || !file.exists(input_file)) {
     message("[ML][AV] input_file missing — added-value layer skipped."); return(NULL)
+  }
+  # Re-express the cohort at the requested predictor timepoint (T0 unchanged →
+  # canonical path byte-for-byte; T1/delta built from paired longitudinal data).
+  if (!identical(composite_timepoint, "T0")) {
+    DATA_T0 <- build_timepoint_composite_data(DATA_T0, DATA_LONG, composite_timepoint)
+    if (is.null(DATA_T0)) return(NULL)
   }
   clinical_vars <- unlist(clinical_vars)
   if (length(clinical_vars) == 0) return(NULL)
@@ -873,7 +931,9 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
   fit_predict <- function(Cm, cv, train_rows, test_rows, use_immune) {
     Ci <- impute_median(Cm, train_rows)
     dat <- data.frame(yb = yb, Ci, comp = cv, check.names = TRUE)
-    cn  <- make.names(cl_names, unique = TRUE); colnames(dat)[2:(1 + length(cn))] <- cn
+    # Derive names from Cm's own columns so any clinical column SUBSET works
+    # (identical to the full Cmat call, where colnames(Cm) == cl_names).
+    cn  <- make.names(colnames(Cm), unique = TRUE); colnames(dat)[2:(1 + length(cn))] <- cn
     rhs <- if (use_immune) c(cn, "comp") else cn
     fit <- suppressWarnings(glm(reformulate(rhs, "yb"), data = dat[train_rows, , drop = FALSE],
                                 family = binomial()))
@@ -911,6 +971,25 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
     fi <- suppressWarnings(glm(yb ~ comp, data = data.frame(yb = yb, comp = comp)[tr, ], family = binomial()))
     pl_imm[i] <- as.numeric(predict(fi, newdata = data.frame(comp = comp[i]), type = "response"))
   }
+  # ── Clinical sub-model probabilities for the exploratory Figure2CLONE (PD-L1 / PS /
+  #    PD-L1+PS vs clinical+immune). NB: leakage-free LOO of these weak / missing-heavy
+  #    single clinical predictors (PD-L1 ~20% missing) is numerically DEGENERATE — the
+  #    per-fold coefficient sign is unstable and the LOO ranking inverts (AUC→0), the same
+  #    pathology the PD-L1 benchmark below avoids with complete-case fits. For an honest
+  #    "which clinical spec discriminates, and does immune add over it" check the clone
+  #    therefore uses APPARENT (in-sample) discrimination (clearly labelled on the figure).
+  #    Deterministic (no RNG) and BEFORE the bootstrap loops → primary numbers reproduce.
+  #    Columns selected BY NAME for new-dataset versatility; absent column → all-NA (skipped).
+  app_submodel <- function(cols) {
+    if (!all(cols %in% cl_names)) return(rep(NA_real_, n))
+    Ci <- impute_median(Cmat[, cols, drop = FALSE], all_rows)
+    cn <- make.names(cols, unique = TRUE)
+    d  <- data.frame(yb = yb, Ci, check.names = TRUE); colnames(d)[2:(1 + length(cn))] <- cn
+    f  <- suppressWarnings(glm(reformulate(cn, "yb"), data = d, family = binomial()))
+    as.numeric(predict(f, type = "response"))
+  }
+  submodel_app <- list(PDL1 = app_submodel("PD_L1"), PS = app_submodel("PS"),
+                       PDL1PS = app_submodel(c("PD_L1", "PS")))
   # Benchmark (PD-L1 = 1st clinical var) ALONE — APPARENT complete-case univariate
   # logistic. PD-L1 is a single, externally pre-fixed biomarker (no selection, 1 param)
   # → apparent ≈ honest AUC; LOO of this near-null predictor is numerically pathological
@@ -1313,6 +1392,7 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
     clinical_vars   = as.list(clinical_vars),
     locked_model    = locked_model,
     composite_markers = avail,
+    composite_timepoint = composite_timepoint,
     gate_provenance = gate_provenance, provenance_note = provenance_note,
     n = n, n_complete_case = n_cc, n_pos = sum(yb), n_neg = sum(1 - yb),
     prevalence = prev, positive_label = resp_label, negative_label = neg_label,
@@ -1339,6 +1419,10 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
       Composite = round(comp, 4),
       Prob_Clinical = round(pl_clin, 4), Prob_Combined = round(pl_comb, 4),
       Prob_PDL1 = round(pl_bench, 4), PD_L1 = round(as.numeric(Cmat[, 1]), 4),
+      Prob_PDL1_APP = round(submodel_app$PDL1, 4),
+      Prob_PS_APP = round(submodel_app$PS, 4),
+      Prob_PDL1PS_APP = round(submodel_app$PDL1PS, 4),
+      Prob_Combined_APP = round(pa_comb, 4),
       stringsAsFactors = FALSE)
   )
 }
