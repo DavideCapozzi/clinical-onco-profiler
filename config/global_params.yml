@@ -112,6 +112,14 @@ experiments:
           NLR:   "neutrophils/lymphocytes"
           PS:    "PS_prima_immuno"
         impute: "median"
+        # ── Predictor timepoint for the immune composite (gate markers read at) ──
+        #   T0    = baseline, deployable at diagnosis (PRIMARY; canonical, full n)
+        #   T1    = on-treatment (~3wk)
+        #   delta = on-treatment change (T1-T0); needs paired longitudinal data
+        # Primary drives the stable clinical_immune_added_value node + locked model + figures.
+        # Secondaries are emitted additively as clinical_immune_added_value_<tp> (paired subset).
+        composite_timepoint: "delta"
+        composite_secondary_timepoints: ["T0"]
         # ── Defensibility sensitivities (additive; unpenalized SoC model stays PRIMARY) ──
         # 1b — ridge (L2) combined model as a CALIBRATION sensitivity: recalibrates the
         #      over-fit combined model (slope ~0.66 -> ~0.9) without losing discrimination.
