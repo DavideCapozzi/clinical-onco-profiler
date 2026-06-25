@@ -95,38 +95,54 @@ pub_fig_added_value <- function(av) {
   if (is.null(av) || is.null(av$per_patient)) return(NULL)
   pp  <- av$per_patient; pos <- av$positive_label
   y   <- as.integer(pp$True_Group == pos)
+  inc <- av$increment
+  PDL1_RED <- "#B2182B"
+  pdl1_ok  <- "Prob_PDL1" %in% names(pp) && any(is.finite(pp$Prob_PDL1))
   rc  <- pub_roc_df(pp$Prob_Clinical, y); ro <- pub_roc_df(pp$Prob_Combined, y)
   lc  <- sprintf("Clinical (AUC %.2f)", rc$auc)
   lk  <- sprintf("Clinical + immune (AUC %.2f)", ro$auc)
-  roc <- rbind(data.frame(rc$df, M = lc), data.frame(ro$df, M = lk))
-  roc$M <- factor(roc$M, levels = c(lc, lk))
-  inc <- av$increment
+  roc_l <- list(data.frame(rc$df, M = lc), data.frame(ro$df, M = lk))
+  lev   <- c(lc, lk); cols <- c(pub_palette[["clinical"]], pub_palette[["combined"]]); lts <- c(2, 1)
+  if (pdl1_ok) {
+    fin <- is.finite(pp$Prob_PDL1)              # complete-case only (PD-L1 missingness)
+    rp <- pub_roc_df(pp$Prob_PDL1[fin], y[fin])
+    lp <- sprintf("PD-L1 alone (AUC %.2f, n=%d)", rp$auc, sum(fin))
+    roc_l <- c(list(data.frame(rp$df, M = lp)), roc_l)
+    lev <- c(lp, lev); cols <- c(PDL1_RED, cols); lts <- c(4, lts)
+  }
+  roc <- do.call(rbind, roc_l); roc$M <- factor(roc$M, levels = lev)
   pA <- ggplot(roc, aes(FPR, TPR, colour = M, linetype = M)) +
     geom_abline(slope = 1, intercept = 0, linetype = "dotted", colour = pub_palette[["ref"]]) +
     geom_path(linewidth = 0.8) +
     annotate("text", x = 0.97, y = 0.06, hjust = 1, vjust = 0, size = 2.7,
              label = sprintf("LRT p = %.3f (perm %.3f)", inc$lrt_p,
                              if (!is.null(inc$lrt_perm_p)) inc$lrt_perm_p else NA)) +
-    scale_colour_manual(values = setNames(c(pub_palette[["clinical"]], pub_palette[["combined"]]), c(lc, lk))) +
-    scale_linetype_manual(values = setNames(c(2, 1), c(lc, lk))) +
+    scale_colour_manual(values = setNames(cols, lev)) +
+    scale_linetype_manual(values = setNames(lts, lev)) +
     coord_equal(xlim = c(0, 1), ylim = c(0, 1), expand = FALSE) +
     labs(x = "1 - Specificity", y = "Sensitivity") +
     theme_publication() + theme(legend.direction = "vertical")
 
   cur <- av$decision_curve$curve
-  nb <- rbind(
-    data.frame(t = cur$threshold, nb = cur$clinical,   s = "Clinical"),
-    data.frame(t = cur$threshold, nb = cur$combined,   s = "Clinical + immune"),
-    data.frame(t = cur$threshold, nb = cur$treat_all,  s = "Treat all"),
-    data.frame(t = cur$threshold, nb = cur$treat_none, s = "Treat none"))
-  nb$s <- factor(nb$s, levels = c("Clinical", "Clinical + immune", "Treat all", "Treat none"))
+  nb_l <- list(data.frame(t = cur$threshold, nb = cur$clinical, s = "Clinical"),
+               data.frame(t = cur$threshold, nb = cur$combined, s = "Clinical + immune"))
+  b_cols <- c("Clinical" = pub_palette[["clinical"]], "Clinical + immune" = pub_palette[["combined"]])
+  b_lts  <- c("Clinical" = 2, "Clinical + immune" = 1)
+  if (!is.null(cur$pdl1)) {
+    nb_l <- c(nb_l, list(data.frame(t = cur$threshold, nb = cur$pdl1, s = "PD-L1 alone")))
+    b_cols <- c(b_cols, "PD-L1 alone" = PDL1_RED); b_lts <- c(b_lts, "PD-L1 alone" = 4)
+  }
+  nb_l <- c(nb_l, list(data.frame(t = cur$threshold, nb = cur$treat_all,  s = "Treat all"),
+                       data.frame(t = cur$threshold, nb = cur$treat_none, s = "Treat none")))
+  b_cols <- c(b_cols, "Treat all" = pub_palette[["treat_all"]], "Treat none" = pub_palette[["treat_none"]])
+  b_lts  <- c(b_lts, "Treat all" = 1, "Treat none" = 3)
+  nb <- do.call(rbind, nb_l)
+  nb$s <- factor(nb$s, levels = c("Clinical", "Clinical + immune",
+                                  if (!is.null(cur$pdl1)) "PD-L1 alone", "Treat all", "Treat none"))
   pB <- ggplot(nb, aes(t, nb, colour = s, linetype = s)) +
     geom_line(linewidth = 0.8) +
-    scale_colour_manual(values = c("Clinical" = pub_palette[["clinical"]],
-      "Clinical + immune" = pub_palette[["combined"]], "Treat all" = pub_palette[["treat_all"]],
-      "Treat none" = pub_palette[["treat_none"]])) +
-    scale_linetype_manual(values = c("Clinical" = 2, "Clinical + immune" = 1,
-      "Treat all" = 1, "Treat none" = 3)) +
+    scale_colour_manual(values = b_cols) +
+    scale_linetype_manual(values = b_lts) +
     coord_cartesian(ylim = c(min(-0.02, min(cur$treat_all)), max(c(cur$clinical, cur$combined)) + 0.02)) +
     labs(x = "Threshold probability", y = "Net benefit") +
     theme_publication() + theme(legend.direction = "vertical")
