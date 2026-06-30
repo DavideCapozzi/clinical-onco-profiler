@@ -376,6 +376,135 @@ run_paired_only_sensitivity <- function(data_long, features,
 }
 
 
+#' @title Rank ANCOVA Confirmatory Robustness Test ("LMM selects -> rank ANCOVA confirms")
+#' @description
+#' Distribution-free, baseline-adjusted, transform-invariant confirmation of the
+#' FDR-significant LMM interaction findings. The LMM remains the gate SELECTOR
+#' (published-dynamics provenance + nested-fold validation + uses all patients);
+#' this is the CONFIRMATORY test, NOT a re-selection. For each target marker, on
+#' the paired (T0+T1) subset, it computes:
+#'   - Quade rank ANCOVA: lm(rank(T1) ~ rank(T0) + Group), group-term estimate/p
+#'   - permutation p (patient-level Group label swap) for exact small-n inference
+#'   - assumption-justification metrics documenting WHY a robust test is used:
+#'       * LMM residual Shapiro-Wilk p (normality)
+#'       * residual heteroscedasticity p (lm(resid^2 ~ fitted))
+#'       * ranova random-intercept LRT p (is the random effect even supported?)
+#'       * max Cook's distance from the parametric ANCOVA (influential observation)
+#'
+#' Rank-based => invariant to the logit/log2 transform by construction;
+#' baseline-adjusted (rank(T0)) => robust to baseline imbalance / regression-to-
+#' the-mean that biases change-scores. RNG is self-contained (seed saved/restored)
+#' so primary pipeline results reproduce byte-for-byte.
+#'
+#' @param data_long Long-format df (Patient_ID, Timepoint with T0/T1, Group, markers).
+#' @param features Character vector of markers to confirm (FDR-significant subset).
+#' @param group_col,time_col,id_col Column names in data_long. Group must be a
+#'   factor with the non-responder label as its reference (matching Step 04), so
+#'   the group term sign matches the LMM interaction convention.
+#' @param n_perm Permutation iterations (default 2000).
+#' @param seed RNG seed (default 2026).
+#' @return Data.frame, one row per marker (Marker, N_Pairs, RankANCOVA_Estimate,
+#'   RankANCOVA_P, RankANCOVA_Perm_P, Resid_Shapiro_P, Hetero_P, Ranova_RE_P,
+#'   Max_Cooks_D), with n_perm/seed attributes. NULL if no marker has paired data.
+run_rank_ancova_confirmation <- function(data_long, features,
+                                         group_col = "Group", time_col = "Timepoint",
+                                         id_col = "Patient_ID", n_perm = 2000L, seed = 2026L) {
+  if (length(features) == 0) return(NULL)
+
+  # Self-contained RNG: restore the global stream on exit so nothing downstream shifts.
+  if (exists(".Random.seed", envir = .GlobalEnv)) {
+    old_seed <- get(".Random.seed", envir = .GlobalEnv)
+    on.exit(assign(".Random.seed", old_seed, envir = .GlobalEnv), add = TRUE)
+  }
+  set.seed(seed)
+
+  glev <- levels(as.factor(data_long[[group_col]]))   # reference (non-responder) first
+
+  build_wide <- function(mk) {
+    sub <- data.frame(ID    = as.character(data_long[[id_col]]),
+                      Time  = as.character(data_long[[time_col]]),
+                      Group = as.character(data_long[[group_col]]),
+                      Value = as.numeric(data_long[[mk]]), stringsAsFactors = FALSE)
+    sub <- sub[complete.cases(sub), ]
+    t0 <- tapply(sub$Value[sub$Time == "T0"], sub$ID[sub$Time == "T0"], mean)
+    t1 <- tapply(sub$Value[sub$Time == "T1"], sub$ID[sub$Time == "T1"], mean)
+    t0 <- t0[!is.na(t0)]; t1 <- t1[!is.na(t1)]
+    grp <- tapply(sub$Group, sub$ID, function(g) g[1])
+    ids <- intersect(names(t0), names(t1))
+    if (length(ids) < 5) return(NULL)
+    data.frame(T0 = t0[ids], T1 = t1[ids],
+               g  = factor(grp[ids], levels = glev),
+               rT0 = rank(t0[ids]), rT1 = rank(t1[ids]))
+  }
+  grp_term <- function(fit, what) {
+    co <- summary(fit)$coefficients
+    i  <- grep("^g", rownames(co))
+    if (length(i) != 1) return(NA_real_)
+    if (what == "est") return(unname(co[i, "Estimate"]))
+    pc <- grep("Pr\\(>\\|t\\|\\)", colnames(co))
+    if (length(pc) != 1) return(NA_real_)
+    unname(co[i, pc])
+  }
+
+  rows <- lapply(features, function(mk) {
+    na_row <- data.frame(Marker = mk, N_Pairs = 0L, RankANCOVA_Estimate = NA_real_,
+                         RankANCOVA_P = NA_real_, RankANCOVA_Perm_P = NA_real_,
+                         Resid_Shapiro_P = NA_real_, Hetero_P = NA_real_,
+                         Ranova_RE_P = NA_real_, Max_Cooks_D = NA_real_,
+                         stringsAsFactors = FALSE)
+    w <- build_wide(mk)
+    if (is.null(w)) return(na_row)
+
+    f_rank <- lm(rT1 ~ rT0 + g, data = w)
+    obs    <- grp_term(f_rank, "est")
+    null   <- replicate(n_perm, {
+      w2 <- w; w2$g <- factor(sample(as.character(w$g)), levels = glev)
+      grp_term(lm(rT1 ~ rT0 + g, data = w2), "est")
+    })
+    perm_p <- (sum(abs(null) >= abs(obs), na.rm = TRUE) + 1) / (sum(!is.na(null)) + 1)
+
+    cookmax <- tryCatch(suppressWarnings(max(cooks.distance(lm(T1 ~ T0 + g, data = w)), na.rm = TRUE)),
+                        error = function(e) NA_real_)
+
+    # Refit the LMM only to extract residual / random-effect justification metrics
+    # (the primary pipeline discards the model object).
+    sh <- NA_real_; het <- NA_real_; reP <- NA_real_
+    md <- data.frame(Value = as.numeric(data_long[[mk]]),
+                     Time  = as.factor(data_long[[time_col]]),
+                     Group = as.factor(data_long[[group_col]]),
+                     ID    = as.factor(data_long[[id_col]]))
+    md <- md[complete.cases(md), ]
+    s <- sd(md$Value); if (is.na(s) || s == 0) s <- 1; md$Value <- md$Value / s
+    m <- tryCatch(suppressWarnings(suppressMessages(
+           lmerTest::lmer(Value ~ Time * Group + (1 | ID), data = md, REML = TRUE,
+                          control = lme4::lmerControl(calc.derivs = FALSE)))),
+         error = function(e) NULL)
+    if (!is.null(m)) {
+      r    <- tryCatch(resid(m, type = "pearson"), error = function(e) NULL)
+      fitv <- tryCatch(fitted(m), error = function(e) NULL)
+      if (!is.null(r))               sh  <- tryCatch(shapiro.test(r)$p.value, error = function(e) NA_real_)
+      if (!is.null(r) && !is.null(fitv)) het <- tryCatch(summary(lm(I(r^2) ~ fitv))$coefficients[2, 4], error = function(e) NA_real_)
+      rv <- tryCatch(lmerTest::ranova(m), error = function(e) NULL)
+      if (!is.null(rv) && "Pr(>Chisq)" %in% names(rv)) reP <- rv$`Pr(>Chisq)`[2]
+    }
+
+    data.frame(Marker = mk, N_Pairs = nrow(w),
+               RankANCOVA_Estimate = round(obs, 4),
+               RankANCOVA_P        = signif(grp_term(f_rank, "p"), 4),
+               RankANCOVA_Perm_P   = signif(perm_p, 4),
+               Resid_Shapiro_P     = signif(sh, 4),
+               Hetero_P            = signif(het, 4),
+               Ranova_RE_P         = signif(reP, 4),
+               Max_Cooks_D         = round(cookmax, 3),
+               stringsAsFactors    = FALSE)
+  })
+  out <- do.call(rbind, rows)
+  attr(out, "n_perm") <- as.integer(n_perm)
+  attr(out, "seed")   <- as.integer(seed)
+  out
+}
+
+
 #' @title Cluster Bootstrap CI for LMM Interaction Betas
 #' @description
 #' Patient-level cluster bootstrap (resample patient IDs with replacement,
