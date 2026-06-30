@@ -180,6 +180,45 @@ if (n_sig_fdr > 0) {
   }
 }
 
+# 4c. Rank ANCOVA Confirmatory Test ("LMM selects -> rank ANCOVA confirms")
+# Distribution-free, baseline-adjusted, transform-invariant confirmation of the
+# FDR-significant interaction findings, plus the assumption-justification metrics
+# (residual normality / heteroscedasticity / random-effect support / influence)
+# that motivate using a robust test. The LMM stays the gate SELECTOR; this is the
+# CONFIRMATORY test, never a re-selection. RNG is self-contained (byte-for-byte).
+# ------------------------------------------------------------------------------
+rank_ancova_results <- NULL
+if (n_sig_fdr > 0) {
+  sig_markers <- df_results$Marker[which(df_results$FDR_Interaction < 0.05)]
+  n_perm_ra <- if (!is.null(config$rank_ancova$n_perm)) as.integer(config$rank_ancova$n_perm) else 2000L
+  seed_ra   <- if (!is.null(config$rank_ancova$seed))   as.integer(config$rank_ancova$seed)   else 2026L
+  message(sprintf(
+    "\n[Stats] Rank ANCOVA confirmatory test (distribution-free, baseline-adjusted; B=%d) on %d FDR-significant marker(s)...",
+    n_perm_ra, length(sig_markers)
+  ))
+  rank_ancova_results <- tryCatch(
+    run_rank_ancova_confirmation(
+      data_long = df_model, features = sig_markers,
+      group_col = "Group", time_col = "Timepoint", id_col = "Patient_ID",
+      n_perm = n_perm_ra, seed = seed_ra
+    ),
+    error = function(e) {
+      warning(sprintf("[Stats] Rank ANCOVA confirmation failed: %s", e$message))
+      NULL
+    }
+  )
+  if (!is.null(rank_ancova_results) && nrow(rank_ancova_results) > 0) {
+    for (i in seq_len(nrow(rank_ancova_results))) {
+      r <- rank_ancova_results[i, ]
+      message(sprintf(
+        "      -> %s: rankANCOVA p=%.4g (perm %.4g) | justify: resid Shapiro %.3g, hetero %.3g, ranova-RE %.3g, maxCook %.2f",
+        r$Marker, r$RankANCOVA_P, r$RankANCOVA_Perm_P,
+        r$Resid_Shapiro_P, r$Hetero_P, r$Ranova_RE_P, r$Max_Cooks_D
+      ))
+    }
+  }
+}
+
 # 5. Covariate Sensitivity Analysis (optional, config-driven)
 # ------------------------------------------------------------------------------
 sensitivity_results <- NULL
@@ -385,6 +424,15 @@ machine_output <- list(
       note           = "Under balanced pairing OLS slope == LMM Time:Group interaction term. Sign + p-value agreement with the LMM table is the relevant robustness signal."
     )
   } else NULL,
+  rank_ancova_confirmation = if (!is.null(rank_ancova_results) && nrow(rank_ancova_results) > 0) {
+    list(
+      method  = "Quade rank ANCOVA lm(rank(T1) ~ rank(T0) + Group) on the paired subset, with patient-level permutation inference. LMM remains the gate SELECTOR; this is the CONFIRMATORY robust test, not a re-selection.",
+      n_perm  = attr(rank_ancova_results, "n_perm"),
+      seed    = attr(rank_ancova_results, "seed"),
+      results = rank_ancova_results,
+      note    = "Rank-based => invariant to the logit/log2 transform by construction; baseline-adjusted (rank(T0)) => robust to baseline imbalance / regression-to-the-mean that biases change-scores. Resid_Shapiro_P / Hetero_P / Ranova_RE_P / Max_Cooks_D document the parametric-LMM assumption violations that motivate the robust confirmation."
+    )
+  } else NULL,
   covariate_sensitivity = if (!is.null(sensitivity_results)) sensitivity_results else NULL,
   bootstrap_ci = if (!is.null(bootstrap_results)) {
     list(
@@ -426,6 +474,11 @@ if (!is.null(sensitivity_results) && nrow(sensitivity_results) > 0) {
 if (!is.null(paired_results) && nrow(paired_results) > 0) {
   openxlsx::addWorksheet(wb, "LMM_Paired_Delta_Sensitivity")
   openxlsx::writeData(wb, "LMM_Paired_Delta_Sensitivity", paired_results)
+}
+
+if (!is.null(rank_ancova_results) && nrow(rank_ancova_results) > 0) {
+  openxlsx::addWorksheet(wb, "LMM_RankANCOVA_Confirm")
+  openxlsx::writeData(wb, "LMM_RankANCOVA_Confirm", rank_ancova_results)
 }
 
 if (!is.null(split_results) && nrow(split_results) > 0) {
