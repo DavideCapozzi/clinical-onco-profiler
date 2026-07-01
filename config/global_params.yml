@@ -104,6 +104,11 @@ experiments:
       # (PD-L1 + NLR + PS), NOT data-selected — dropping PD-L1 would be a fatal
       # reviewer critique (it is the FDA companion biomarker). In-fold median
       # imputation keeps n=70 (complete-case n=55 is the sensitivity analysis).
+      # NLR is LOAD-BEARING (verified 2026-06-30, run 20260630_145210_pdl1_ps):
+      # PD-L1+PS alone is a DEGENERATE LOO baseline (clinical LOO 0.49Δ / 0.31 T0,
+      # below chance) — so NLR is retained in the FORMAL baseline; the PD-L1 / PS /
+      # PD-L1+PS decomposition is reported DESCRIPTIVELY only (apparent, app_submodel
+      # → Figure2CLONE), NOT as the LOO baseline for the increment test (diag_24).
       # Endpoint = response (primary); OS/PFS Cox = secondary/sanity. NSCLC-specific
       # (column names are dataset-specific); absent on other experiments → layer skipped.
       clinical_model:

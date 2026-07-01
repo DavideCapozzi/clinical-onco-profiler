@@ -149,48 +149,6 @@ pub_fig_added_value <- function(av) {
   pub_tag(pA | pB)
 }
 
-# ── Figure2CLONE (EXPLORATORY — NOT for publication) ──────────────────────────
-# APPARENT (in-sample) ROC for four clinical specifications: PD-L1 / PS / PD-L1+PS vs
-# clinical+immune. Consumes the per-patient apparent sub-model probabilities produced by
-# run_clinical_immune_added_value (Prob_PDL1_APP/Prob_PS_APP/Prob_PDL1PS_APP +
-# Prob_Combined_APP). Apparent (not LOO) because leakage-free LOO of these weak/missing
-# single clinical predictors is numerically degenerate (inverts to AUC≈0). A quick
-# "which clinical combo discriminates, and does immune add" check — single panel, no
-# caption, timepoint annotated.
-pub_fig_clinical_combinations <- function(av) {
-  if (is.null(av) || is.null(av$per_patient)) return(NULL)
-  pp  <- av$per_patient; pos <- av$positive_label
-  y   <- as.integer(pp$True_Group == pos)
-  specs <- list(
-    list(col = "Prob_PDL1_APP",     lab = "PD-L1",             hex = "#B2182B", lt = 4),
-    list(col = "Prob_PS_APP",       lab = "PS",                hex = "#009E73", lt = 3),
-    list(col = "Prob_PDL1PS_APP",   lab = "PD-L1 + PS",        hex = "#E69F00", lt = 2),
-    list(col = "Prob_Combined_APP", lab = "Clinical + immune", hex = "#0072B2", lt = 1))
-  roc_l <- list(); lev <- character(0); cols <- character(0); lts <- numeric(0)
-  for (s in specs) {
-    if (!s$col %in% names(pp)) next
-    p <- pp[[s$col]]; fin <- is.finite(p) & is.finite(y)
-    if (sum(fin) < 6 || length(unique(y[fin])) < 2) next
-    r <- pub_roc_df(p[fin], y[fin])
-    lab <- sprintf("%s (AUC %.2f)", s$lab, r$auc)
-    roc_l <- c(roc_l, list(data.frame(r$df, M = lab)))
-    lev <- c(lev, lab); cols <- c(cols, s$hex); lts <- c(lts, s$lt)
-  }
-  if (!length(roc_l)) return(NULL)
-  roc <- do.call(rbind, roc_l); roc$M <- factor(roc$M, levels = lev)
-  tp  <- if (!is.null(av$composite_timepoint)) av$composite_timepoint else "T0"
-  ggplot(roc, aes(FPR, TPR, colour = M, linetype = M)) +
-    geom_abline(slope = 1, intercept = 0, linetype = "dotted", colour = pub_palette[["ref"]]) +
-    geom_path(linewidth = 0.8) +
-    annotate("text", x = 0.97, y = 0.06, hjust = 1, vjust = 0, size = 2.7,
-             label = sprintf("Figure2CLONE · apparent (in-sample) · timepoint = %s", tp)) +
-    scale_colour_manual(values = setNames(cols, lev)) +
-    scale_linetype_manual(values = setNames(lts, lev)) +
-    coord_equal(xlim = c(0, 1), ylim = c(0, 1), expand = FALSE) +
-    labs(x = "1 - Specificity", y = "Sensitivity") +
-    theme_publication() + theme(legend.direction = "vertical")
-}
-
 # ── MAIN Fig 3 — Calibration (unpenalized vs ridge) + IDI fragility ───────────
 pub_fig_calibration_idi <- function(av) {
   if (is.null(av) || is.null(av$per_patient)) return(NULL)
@@ -536,7 +494,6 @@ pub_render_all <- function(objs, out_dir, project_name) {
                     pf("Figure1_Biology"), PUB_W2, 120)
   if (!is.null(av)) {
     save_pub_figure(pub_fig_added_value(av),         pf("Figure2_AddedValue"),      PUB_W2, 120)
-    save_pub_figure(pub_fig_clinical_combinations(av), pf("Figure2CLONE"),          PUB_W1, 110)  # exploratory, not for publication
     # SUPP (S1–S9)
     if (!is.null(objs$consort))
       save_pub_figure(pub_fig_consort(objs$consort), pf("FigureS1_CONSORT"),            PUB_W2, 120)
@@ -565,7 +522,6 @@ pub_render_all <- function(objs, out_dir, project_name) {
       av_tp <- objs$clin_addval_secondary[[tp]]
       if (is.null(av_tp)) next
       save_pub_figure(pub_fig_added_value(av_tp),           pf(paste0("Figure2_AddedValue_", tp)), PUB_W2, 120)
-      save_pub_figure(pub_fig_clinical_combinations(av_tp), pf(paste0("Figure2CLONE_", tp)),        PUB_W1, 110)
     }
   }
   invisible(out_dir)

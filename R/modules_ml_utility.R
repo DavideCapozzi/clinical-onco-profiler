@@ -971,13 +971,14 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
     fi <- suppressWarnings(glm(yb ~ comp, data = data.frame(yb = yb, comp = comp)[tr, ], family = binomial()))
     pl_imm[i] <- as.numeric(predict(fi, newdata = data.frame(comp = comp[i]), type = "response"))
   }
-  # ── Clinical sub-model probabilities for the exploratory Figure2CLONE (PD-L1 / PS /
-  #    PD-L1+PS vs clinical+immune). NB: leakage-free LOO of these weak / missing-heavy
-  #    single clinical predictors (PD-L1 ~20% missing) is numerically DEGENERATE — the
-  #    per-fold coefficient sign is unstable and the LOO ranking inverts (AUC→0), the same
-  #    pathology the PD-L1 benchmark below avoids with complete-case fits. For an honest
-  #    "which clinical spec discriminates, and does immune add over it" check the clone
-  #    therefore uses APPARENT (in-sample) discrimination (clearly labelled on the figure).
+  # ── Apparent clinical sub-model probabilities (PD-L1 / PS / PD-L1+PS vs clinical+immune),
+  #    retained as the DESCRIPTIVE PD-L1/PS/PD-L1+PS benchmark in the _Patients Excel sheet
+  #    (diag_28: report this split descriptively, NOT as the formal LOO baseline). The
+  #    exploratory Figure2CLONE that used to plot these was removed 2026-07-01. NB: leakage-
+  #    free LOO of these weak / missing-heavy single clinical predictors (PD-L1 ~20% missing)
+  #    is numerically DEGENERATE — per-fold coefficient sign is unstable and the LOO ranking
+  #    inverts (AUC→0), the same pathology the PD-L1 benchmark below avoids with complete-case
+  #    fits — hence these are APPARENT (in-sample) only.
   #    Deterministic (no RNG) and BEFORE the bootstrap loops → primary numbers reproduce.
   #    Columns selected BY NAME for new-dataset versatility; absent column → all-NA (skipped).
   app_submodel <- function(cols) {
