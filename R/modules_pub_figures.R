@@ -332,7 +332,23 @@ pub_fig_gate_signal <- function(gd) {
     theme_publication() + theme(axis.text.x = element_text(angle = 30, hjust = 1))
 }
 
-# ── SUPP S4 — Baseline invariance of the increment ────────────────────────────
+# ── helper: adaptive log10 p-value axis ───────────────────────────────────────
+# T0 LRT p's sat in ~0.004-0.2, so the axis limits used to be hardcoded there.
+# Under Δ-primary the increment p's are 10-100x smaller and the asymptotic χ² LRT
+# can underflow to exactly 0 (log10(0) = -Inf → point silently dropped). Floor
+# positions AND labels at PVAL_FLOOR (an honest "<1e-4" reporting floor for an
+# underflowed asymptotic p) and derive the axis limits from the data, so every
+# point stays on-axis and the p=0.05 reference line remains visible at either scale.
+PVAL_FLOOR <- 1e-4
+pub_pval_x   <- function(p) pmax(p, PVAL_FLOOR)                       # on-axis position (no -Inf)
+pub_pval_fmt <- function(p) ifelse(!is.finite(p) | p < PVAL_FLOOR,   # honest label for underflow
+                                   sprintf("<%g", PVAL_FLOOR), sprintf("%.4f", p))
+pub_pval_log_scale <- function(p, upper = 0.2) {
+  pv <- pub_pval_x(p[is.finite(p)])
+  scale_x_log10(limits = c(min(pv) / 1.8, max(upper, max(pv)) * 1.3))
+}
+
+# ── SUPP S2 — Baseline invariance of the increment ────────────────────────────
 pub_fig_baseline_invariance <- function(av) {
   bsen <- av$baseline_sensitivity
   rows <- list(list(b = "Reference\nclinical model", lrt = av$increment$lrt_p, idi = av$increment$idi))
@@ -340,18 +356,18 @@ pub_fig_baseline_invariance <- function(av) {
     list(b = sub("^\\+", "+ ", nm), lrt = bsen[[nm]]$lrt_p, idi = bsen[[nm]]$idi)
   d <- do.call(rbind, lapply(rows, as.data.frame, stringsAsFactors = FALSE))
   d$b <- factor(d$b, levels = rev(d$b))
-  ggplot(d, aes(lrt, b)) +
+  ggplot(d, aes(pub_pval_x(lrt), b)) +
     geom_vline(xintercept = 0.05, linetype = "dashed", colour = pub_palette[["unpen"]]) +
     geom_point(size = 3, colour = pub_palette[["combined"]]) +
-    geom_text(aes(label = sprintf("LRT p=%.4f  |  IDI %+.3f", lrt, idi)),
+    geom_text(aes(label = sprintf("LRT p=%s  |  IDI %+.3f", pub_pval_fmt(lrt), idi)),
               hjust = -0.08, size = 2.6, colour = "grey20") +
-    scale_x_log10(limits = c(0.004, 0.2)) +
+    pub_pval_log_scale(d$lrt) +
     labs(x = "LRT p (log scale) - increment vs each baseline", y = NULL) +
     coord_cartesian(clip = "off") +
     theme_publication() + theme(plot.margin = margin(6, 60, 6, 6))
 }
 
-# ── SUPP S5 — Specificity vs random k-marker composites ───────────────────────
+# ── SUPP S3 — Specificity vs random k-marker composites ───────────────────────
 pub_fig_specificity_null <- function(av) {
   sn <- av$specificity_null; if (is.null(sn)) return(NULL)
   qd <- data.frame(pct = c(50, 90, 95, 99),
@@ -359,16 +375,20 @@ pub_fig_specificity_null <- function(av) {
   ggplot(qd, aes(dauc, pct)) +
     geom_line(colour = "grey55") + geom_point(colour = "grey40", size = 2) +
     geom_vline(xintercept = sn$gate_delta_auc_apparent, colour = pub_palette[["combined"]], linewidth = 0.9) +
-    annotate("text", x = sn$gate_delta_auc_apparent, y = 60, hjust = -0.05, size = 2.6,
+    # gate ΔAUC lands beyond the 99% null quantile → the vline sits at the right
+    # edge; annotate to the LEFT of the line (hjust=1) so the label reads into the
+    # empty upper-left area instead of clipping off the panel.
+    annotate("text", x = sn$gate_delta_auc_apparent, y = 60, hjust = 1.05, size = 2.6,
              colour = pub_palette[["combined"]],
              label = sprintf("Ki67 gate ΔAUC=%.3f\nspec-p(LRT)=%.3f; %.0f%% random LRT<0.05",
                              sn$gate_delta_auc_apparent, sn$spec_p_lrt, 100 * sn$frac_sig_lrt)) +
+    scale_x_continuous(expand = expansion(mult = c(0.05, 0.10))) +
     labs(x = sprintf("Null ΔAUC across %d random %d-marker composites", sn$n_random, sn$k_markers),
          y = "Null percentile") +
     theme_publication()
 }
 
-# ── SUPP S6 — Standalone classifier ROC (secondary; not the headline) ─────────
+# ── SUPP S4 — Standalone classifier ROC (secondary; not the headline) ─────────
 #' @param results_list named list of nested-LOOCV result objects (Elastic Net, SVM-RBF),
 #'        each with $per_patient_predictions or out-of-fold probs + $positive_label,
 #'        OR a data.frame of out-of-fold predictions.
@@ -424,7 +444,7 @@ pub_fig_coupling <- function(av) {
     theme_publication()
 }
 
-# ── MAIN Fig 4 — Robustness / evidence-stability of the increment ─────────────
+# ── SUPP S6 — Robustness / evidence-stability of the increment ────────────────
 #' Defensibility centrepiece: (A) the LRT anchor stays significant across every
 #' specification we tested; (B) the IDI estimator gradient is honestly fragile.
 #' Consolidates the baseline-invariance, specificity-null and IDI panels.
@@ -443,11 +463,11 @@ pub_fig_robustness <- function(av) {
                    p    = as.numeric(vapply(rowsA, `[`, "", 2)), stringsAsFactors = FALSE)
   dA <- dA[is.finite(dA$p), , drop = FALSE]
   dA$spec <- factor(dA$spec, levels = rev(dA$spec))
-  pA <- ggplot(dA, aes(p, spec)) +
+  pA <- ggplot(dA, aes(pub_pval_x(p), spec)) +
     geom_vline(xintercept = 0.05, linetype = "dashed", colour = pub_palette[["unpen"]]) +
     geom_point(size = 2.8, colour = pub_palette[["combined"]]) +
-    geom_text(aes(label = sprintf("p=%.3f", p)), vjust = -1.0, size = 2.6, colour = "grey20") +
-    scale_x_log10(limits = c(0.004, 0.2)) +
+    geom_text(aes(label = sprintf("p=%s", pub_pval_fmt(p))), vjust = -1.0, size = 2.6, colour = "grey20") +
+    pub_pval_log_scale(dA$p) +
     labs(x = "Likelihood-ratio test p (log scale)", y = NULL) +
     coord_cartesian(clip = "off") +
     theme_publication() + theme(plot.margin = margin(6, 16, 6, 6))
