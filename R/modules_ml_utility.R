@@ -855,6 +855,7 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
                                             n_random_null = 0L,
                                             lmm_interaction = NULL,
                                             composite_timepoint = "T0", DATA_LONG = NULL,
+                                            baseline_exclude = NULL, comparator_label = NULL,
                                             min_n = 30L, seed = 2026L) {
   if (!requireNamespace("readxl", quietly = TRUE) ||
       !requireNamespace("pROC",   quietly = TRUE) ||
@@ -912,6 +913,24 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
   y    <- factor(grp, levels = c(neg_label, resp_label))
   pid  <- meta_ids[keep]
   n    <- length(yb)
+
+  # ── Optional: drop var(s) from the FORMAL clinical baseline, keep FULL model as a
+  #    display-only comparator curve. `baseline_exclude` (labels) => the formal
+  #    clinical/combined models + every downstream test (LRT/Firth/IDI/ridge/optimism/
+  #    specificity/DCA) are recomputed on the reduced baseline (Cmat is reduced IN PLACE
+  #    so all downstream references follow automatically); `Cmat_full` retains the full
+  #    clinical set only to draw the comparator curve. Empty exclude => byte-for-byte.
+  cl_all         <- colnames(Cmat)
+  excl           <- intersect(as.character(unlist(baseline_exclude)), cl_all)
+  Cmat_full      <- Cmat
+  has_comparator <- length(excl) > 0 && !is.null(comparator_label) &&
+                    length(setdiff(cl_all, excl)) > 0
+  if (has_comparator) {
+    Cmat <- Cmat[, setdiff(cl_all, excl), drop = FALSE]
+    message(sprintf("[ML][AV] FORMAL baseline reduced to {%s}; comparator '%s' = {%s}",
+                    paste(colnames(Cmat), collapse = "+"), comparator_label,
+                    paste(cl_all, collapse = "+")))
+  }
   n_cc <- sum(complete.cases(Cmat))
   if (n < min_n || length(unique(yb)) < 2) {
     message(sprintf("[ML][AV] n=%d (<%d) or single class — skipped.", n, min_n)); return(NULL)
@@ -970,6 +989,20 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
     pl_comb[i] <- fit_predict(Cmat, comp, tr, i, TRUE)
     fi <- suppressWarnings(glm(yb ~ comp, data = data.frame(yb = yb, comp = comp)[tr, ], family = binomial()))
     pl_imm[i] <- as.numeric(predict(fi, newdata = data.frame(comp = comp[i]), type = "response"))
+  }
+  # ── Comparator = FULL clinical (incl. excluded var) + immune composite — the
+  #    'everything' model (e.g. 'clinical + immune + NLR'); display-only ROC/DCA curve,
+  #    does NOT enter the formal increment (which stays immune over the reduced baseline).
+  pl_comp <- pa_comp <- NULL
+  if (has_comparator) {
+    cnc     <- make.names(colnames(Cmat_full), unique = TRUE)
+    Ci_full <- impute_median(Cmat_full, all_rows)
+    dfc     <- data.frame(yb = yb, Ci_full, comp = comp, check.names = TRUE)
+    colnames(dfc)[2:(1 + length(cnc))] <- cnc
+    fca     <- suppressWarnings(glm(reformulate(c(cnc, "comp"), "yb"), data = dfc, family = binomial()))
+    pa_comp <- as.numeric(predict(fca, type = "response"))
+    pl_comp <- numeric(n)
+    for (i in all_rows) pl_comp[i] <- fit_predict(Cmat_full, comp, all_rows[-i], i, TRUE)
   }
   # ── Apparent clinical sub-model probabilities (PD-L1 / PS / PD-L1+PS vs clinical+immune),
   #    retained as the DESCRIPTIVE PD-L1/PS/PD-L1+PS benchmark in the _Patients Excel sheet
@@ -1098,6 +1131,7 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
                    pdl1       = nb_cc(pl_bench),
                    treat_all  = prev - (1 - prev) * (pt_grid / (1 - pt_grid)),
                    treat_none = 0)
+  if (has_comparator) dc$comparator <- nb(pl_comp)   # display-only comparator (full clinical + immune) net benefit
 
   # ── Survival secondary (OS/PFS): Cox clinical vs clinical+immune ─────────────
   survival <- NULL
@@ -1391,6 +1425,7 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
 
   list(
     clinical_vars   = as.list(clinical_vars),
+    formal_vars     = as.list(colnames(Cmat)),   # vars actually in the FORMAL baseline
     locked_model    = locked_model,
     composite_markers = avail,
     composite_timepoint = composite_timepoint,
@@ -1398,6 +1433,9 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
     n = n, n_complete_case = n_cc, n_pos = sum(yb), n_neg = sum(1 - yb),
     prevalence = prev, positive_label = resp_label, negative_label = neg_label,
     auc = auc,
+    comparator = if (has_comparator) list(
+      label = comparator_label, vars = as.list(colnames(Cmat_full)),
+      auc = list(apparent = auc_pos(pa_comp), loo = auc_pos(pl_comp)), n = n) else NULL,
     increment = list(
       delta_auc_loo = unname(auc$combined[["loo"]] - auc$clinical[["loo"]]),
       delong_p_loo  = delong_p,
@@ -1419,6 +1457,7 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
       Patient_ID = pid, True_Group = as.character(grp),
       Composite = round(comp, 4),
       Prob_Clinical = round(pl_clin, 4), Prob_Combined = round(pl_comb, 4),
+      Prob_ClinicalComp = if (!is.null(pl_comp)) round(pl_comp, 4) else NA_real_,
       Prob_PDL1 = round(pl_bench, 4), PD_L1 = round(as.numeric(Cmat[, 1]), 4),
       Prob_PDL1_APP = round(submodel_app$PDL1, 4),
       Prob_PS_APP = round(submodel_app$PS, 4),

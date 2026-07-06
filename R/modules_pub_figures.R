@@ -96,13 +96,30 @@ pub_fig_added_value <- function(av) {
   pp  <- av$per_patient; pos <- av$positive_label
   y   <- as.integer(pp$True_Group == pos)
   inc <- av$increment
-  PDL1_RED <- "#B2182B"
+  PDL1_RED <- "#B2182B"; COMP_COL <- "#CC79A7"      # PD-L1 dark red; comparator reddish-purple
+  clab <- if (!is.null(av$comparator$label)) av$comparator$label else "Clinical + immune + NLR"
+  # Name the base clinical model by its constituents (e.g. "Clinical (PD-L1+PS)") so the
+  # reader sees what 'clinical' contains; downstream curves build on it verbally.
+  clin_str <- if (!is.null(av$formal_vars) && length(av$formal_vars))
+                gsub("_", "-", paste(unlist(av$formal_vars), collapse = "+")) else NULL
+  clin_nm  <- if (!is.null(clin_str)) sprintf("Clinical (%s)", clin_str) else "Clinical"
+  nfin <- function(v) sum(is.finite(v))
+  # honest p formatting (avoid 'p = 0.000' on asymptotic underflow)
+  op_p  <- function(p) if (is.null(p) || !is.finite(p)) "= NA" else if (p < 0.001) "< 0.001" else sprintf("= %.3f", p)
+  val_p <- function(p) if (is.null(p) || !is.finite(p)) "NA"   else if (p < 1e-4)  "< 1e-4"  else sprintf("%.4f", p)
   pdl1_ok  <- "Prob_PDL1" %in% names(pp) && any(is.finite(pp$Prob_PDL1))
+  comp_ok  <- "Prob_ClinicalComp" %in% names(pp) && any(is.finite(pp$Prob_ClinicalComp))
   rc  <- pub_roc_df(pp$Prob_Clinical, y); ro <- pub_roc_df(pp$Prob_Combined, y)
-  lc  <- sprintf("Clinical (AUC %.2f)", rc$auc)
-  lk  <- sprintf("Clinical + immune (AUC %.2f)", ro$auc)
+  lc  <- sprintf("%s (AUC %.2f, n=%d)", clin_nm, rc$auc, nfin(pp$Prob_Clinical))
+  lk  <- sprintf("Clinical + immune (AUC %.2f, n=%d)", ro$auc, nfin(pp$Prob_Combined))
   roc_l <- list(data.frame(rc$df, M = lc), data.frame(ro$df, M = lk))
   lev   <- c(lc, lk); cols <- c(pub_palette[["clinical"]], pub_palette[["combined"]]); lts <- c(2, 1)
+  if (comp_ok) {                                # display-only 'clinical + NLR' comparator
+    rcmp <- pub_roc_df(pp$Prob_ClinicalComp, y)
+    lm_  <- sprintf("%s (AUC %.2f, n=%d)", clab, rcmp$auc, nfin(pp$Prob_ClinicalComp))
+    roc_l <- c(roc_l, list(data.frame(rcmp$df, M = lm_)))
+    lev <- c(lev, lm_); cols <- c(cols, COMP_COL); lts <- c(lts, 5)
+  }
   if (pdl1_ok) {
     fin <- is.finite(pp$Prob_PDL1)              # complete-case only (PD-L1 missingness)
     rp <- pub_roc_df(pp$Prob_PDL1[fin], y[fin])
@@ -115,8 +132,7 @@ pub_fig_added_value <- function(av) {
     geom_abline(slope = 1, intercept = 0, linetype = "dotted", colour = pub_palette[["ref"]]) +
     geom_path(linewidth = 0.8) +
     annotate("text", x = 0.97, y = 0.06, hjust = 1, vjust = 0, size = 2.7,
-             label = sprintf("LRT p = %.3f (perm %.3f)", inc$lrt_p,
-                             if (!is.null(inc$lrt_perm_p)) inc$lrt_perm_p else NA)) +
+             label = sprintf("LRT p %s (perm %s)", op_p(inc$lrt_p), val_p(inc$lrt_perm_p))) +
     scale_colour_manual(values = setNames(cols, lev)) +
     scale_linetype_manual(values = setNames(lts, lev)) +
     coord_equal(xlim = c(0, 1), ylim = c(0, 1), expand = FALSE) +
@@ -124,10 +140,14 @@ pub_fig_added_value <- function(av) {
     theme_publication() + theme(legend.direction = "vertical")
 
   cur <- av$decision_curve$curve
-  nb_l <- list(data.frame(t = cur$threshold, nb = cur$clinical, s = "Clinical"),
+  nb_l <- list(data.frame(t = cur$threshold, nb = cur$clinical, s = clin_nm),
                data.frame(t = cur$threshold, nb = cur$combined, s = "Clinical + immune"))
-  b_cols <- c("Clinical" = pub_palette[["clinical"]], "Clinical + immune" = pub_palette[["combined"]])
-  b_lts  <- c("Clinical" = 2, "Clinical + immune" = 1)
+  b_cols <- setNames(c(pub_palette[["clinical"]], pub_palette[["combined"]]), c(clin_nm, "Clinical + immune"))
+  b_lts  <- setNames(c(2, 1), c(clin_nm, "Clinical + immune"))
+  if (!is.null(cur$comparator)) {
+    nb_l <- c(nb_l, list(data.frame(t = cur$threshold, nb = cur$comparator, s = clab)))
+    b_cols <- c(b_cols, setNames(COMP_COL, clab)); b_lts <- c(b_lts, setNames(5, clab))
+  }
   if (!is.null(cur$pdl1)) {
     nb_l <- c(nb_l, list(data.frame(t = cur$threshold, nb = cur$pdl1, s = "PD-L1 alone")))
     b_cols <- c(b_cols, "PD-L1 alone" = PDL1_RED); b_lts <- c(b_lts, "PD-L1 alone" = 4)
@@ -137,13 +157,15 @@ pub_fig_added_value <- function(av) {
   b_cols <- c(b_cols, "Treat all" = pub_palette[["treat_all"]], "Treat none" = pub_palette[["treat_none"]])
   b_lts  <- c(b_lts, "Treat all" = 1, "Treat none" = 3)
   nb <- do.call(rbind, nb_l)
-  nb$s <- factor(nb$s, levels = c("Clinical", "Clinical + immune",
+  nb$s <- factor(nb$s, levels = c(clin_nm, "Clinical + immune",
+                                  if (!is.null(cur$comparator)) clab,
                                   if (!is.null(cur$pdl1)) "PD-L1 alone", "Treat all", "Treat none"))
   pB <- ggplot(nb, aes(t, nb, colour = s, linetype = s)) +
     geom_line(linewidth = 0.8) +
     scale_colour_manual(values = b_cols) +
     scale_linetype_manual(values = b_lts) +
-    coord_cartesian(ylim = c(min(-0.02, min(cur$treat_all)), max(c(cur$clinical, cur$combined)) + 0.02)) +
+    coord_cartesian(ylim = c(min(-0.02, min(cur$treat_all)),
+                             max(c(cur$clinical, cur$combined, cur$comparator)) + 0.02)) +
     labs(x = "Threshold probability", y = "Net benefit") +
     theme_publication() + theme(legend.direction = "vertical")
   pub_tag(pA | pB)
