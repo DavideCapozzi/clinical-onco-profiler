@@ -469,7 +469,11 @@ if (lmm_robust$n_robust == 0) {
         lmm_interaction = if (!isFALSE(cm$dynamics_coupling) &&
                               is.data.frame(lmm_robust$full_results) &&
                               nrow(lmm_robust$full_results) > 0) lmm_robust$full_results else NULL,
-        composite_timepoint = tp, DATA_LONG = DATA_LONG_av
+        composite_timepoint = tp, DATA_LONG = DATA_LONG_av,
+        baseline_exclude = if (!is.null(cm$baseline_exclude))
+                             as.character(unlist(cm$baseline_exclude)) else NULL,
+        comparator_label = if (!is.null(cm$comparator_label))
+                             as.character(cm$comparator_label) else NULL
       ),
       error = function(e) {
         warning(sprintf("[ML] Added-value layer (timepoint=%s) failed (non-fatal): %s", tp, e$message)); NULL
