@@ -14,7 +14,12 @@
 # main-figure payoff) → SUPP. SUPP S1 CONSORT / S2 baseline-invariance / S3
 # specificity-null / S4 standalone / S5 coupling / S6 robustness / S7 calibration /
 # S8 gate-signal decomposition / S9 nested-selection validation (pub_fig_nested_robustness:
-# increment invariant to per-fold gate re-selection + Ki67 module recovered ~100% of folds).
+# increment invariant to per-fold gate re-selection + Ki67 module recovered ~100% of folds) /
+# S10 deployment nomograms (pub_fig_nomogram: apparent display-only, per timepoint; panel A =
+# 3 gate markers individual, panel B = gate + PD-L1 + PS — NLR dropped by request, so B is a
+# deployment aid, NOT the formal combined model; validated performance stays in Fig 2) /
+# S11 classification performance (pub_fig_classification: confusion matrix + precision-recall from
+# the combined model's leakage-free LOO probs at the pre-specified prevalence threshold; NOT Youden).
 # ==============================================================================
 
 suppressMessages({ library(ggplot2); library(patchwork) })
@@ -522,6 +527,242 @@ pub_fig_robustness <- function(av) {
 #' sizes/styling live in exactly one place.
 #' @param objs list: clin_addval, gate_decomp, stratified_result, lmm_boot
 #'        (list boot/obs), consort, df_preds, positive_label, perm (en/svm).
+# ── SUPP — deployment nomograms (display-only, apparent model fits) ────────────
+#' Draw one classic points-based nomogram from a `build_nomogram_spec()` object.
+#' Rows top→bottom: Points ruler, one ruler per predictor, Total-points ruler,
+#' Predicted-probability ruler. The upper block (Points + predictors) shares the
+#' 0..points_max scale; the lower block (Total points + probability) shares the
+#' 0..total_max scale. Both are drawn on a common [0,1] canvas.
+pub_nomo_panel <- function(s, header = NULL) {
+  if (is.null(s) || is.null(s$predictors) || !length(s$predictors)) return(NULL)
+  col_imm <- unname(pub_palette[["immune"]])     # gate markers (z-scale)
+  col_cln <- unname(pub_palette[["clinical"]])    # clinical vars (raw scale)
+  col_sc  <- "grey20"                             # Points / Total / Probability scales
+  fmt_val <- function(v, type) {
+    if (identical(type, "z")) sprintf("%.1f", v)
+    else if (all(abs(v - round(v)) < 1e-6)) sprintf("%.0f", v)
+    else sprintf("%.1f", v)
+  }
+  preds   <- s$predictors
+  npred   <- length(preds)
+  n_row   <- npred + 3                         # Points + preds + Total points + Prob
+  y_of    <- function(top_idx) n_row - top_idx + 1   # top row = highest y
+  TICK    <- 0.13
+  X0 <- -0.34; X1 <- 1.03                       # canvas bounds (labels | rulers)
+  # Keep the far endpoint, then greedily drop interior LABELS closer than min_gap
+  # (tick marks are all retained) — guarantees legible labels on collapsed axes.
+  thin_lab <- function(xs, txt, min_gap = 0.05) {
+    o <- order(xs); xs <- xs[o]; txt <- txt[o]; n <- length(xs)
+    keep <- logical(n); keep[1] <- TRUE; last <- xs[1]
+    if (n > 1) for (i in 2:n) if (xs[i] - last >= min_gap) { keep[i] <- TRUE; last <- xs[i] }
+    keep[n] <- TRUE
+    if (n > 2 && (xs[n] - xs[max(which(keep[-n]))]) < min_gap) keep[max(which(keep[-n]))] <- FALSE
+    data.frame(x = xs[keep], label = txt[keep])
+  }
+  axes <- ticks <- labs <- rowlab <- bands <- notes <- list()
+  add_ruler  <- function(y, x0, x1, col) axes[[length(axes) + 1]]  <<- data.frame(x = x0, xe = x1, y = y, ye = y, col = col)
+  add_ticks  <- function(y, xs, txt, col) {
+    ticks[[length(ticks) + 1]] <<- data.frame(x = xs, xe = xs, y = y, ye = y + TICK, col = col)
+    tl <- thin_lab(xs, txt)
+    if (any(nzchar(tl$label)))
+      labs[[length(labs) + 1]] <<- data.frame(x = tl$x, y = y + TICK + 0.13, label = tl$label, col = col)
+  }
+  add_rowlab <- function(y, txt, col) rowlab[[length(rowlab) + 1]] <<- data.frame(x = -0.05, y = y, label = txt, col = col)
+  add_note   <- function(x, y, txt) notes[[length(notes) + 1]] <<- data.frame(x = x, y = y, label = txt)
+
+  # Row 1: Points ruler (0..points_max), scaled to [0,1]
+  yP <- y_of(1)
+  pt_ticks <- pretty(c(0, s$points_max), n = 6)
+  pt_ticks <- pt_ticks[pt_ticks >= 0 & pt_ticks <= s$points_max]
+  add_ruler(yP, 0, 1, col_sc); add_ticks(yP, pt_ticks / s$points_max, sprintf("%.0f", pt_ticks), col_sc)
+  add_rowlab(yP, "Points", col_sc)
+
+  # Predictor rulers (share the Points scale → x = points / points_max). Gate markers
+  # coloured immune-green, clinical vars clinical-orange; input rows get a faint band.
+  for (j in seq_len(npred)) {
+    d   <- preds[[j]]; y <- y_of(1 + j)
+    col <- if (identical(d$scale_type[1], "z")) col_imm else col_cln
+    bands[[length(bands) + 1]] <- data.frame(xmin = X0, xmax = X1, ymin = y - 0.46, ymax = y + 0.46)
+    mp  <- max(d$points, na.rm = TRUE)
+    xr  <- range(d$points, na.rm = TRUE) / s$points_max
+    add_ruler(y, xr[1], xr[2], col)
+    if (mp < 4) {                               # negligible axis → note, not cramped numbers
+      add_ticks(y, xr, c("", ""), col)
+      add_note(xr[2] + 0.03, y + 0.02, "≈ 0 points (negligible)")
+    } else {
+      add_ticks(y, d$points / s$points_max,
+                vapply(seq_len(nrow(d)), function(i) fmt_val(d$value[i], d$scale_type[i]), character(1)), col)
+    }
+    add_rowlab(y, d$display[1], col)
+  }
+
+  # Total points ruler (0..total_max → [0,1])
+  yT <- y_of(npred + 2); tmax <- s$total_max_points; if (!is.finite(tmax) || tmax <= 0) tmax <- 1
+  add_ruler(yT, 0, 1, col_sc); add_ticks(yT, s$tp_ticks / tmax, sprintf("%.0f", s$tp_ticks), col_sc)
+  add_rowlab(yT, "Total points", col_sc)
+
+  # Predicted-probability ruler (placed by total-points position)
+  yQ <- y_of(npred + 3); pa <- s$prob_axis
+  if (!is.null(pa) && nrow(pa)) {
+    add_ruler(yQ, min(pa$total_points) / tmax, max(pa$total_points) / tmax, col_sc)
+    add_ticks(yQ, pa$total_points / tmax, sprintf("%.2g", pa$prob), col_sc)
+  } else add_ruler(yQ, 0, 1, col_sc)
+  add_rowlab(yQ, "Predicted prob.", col_sc)
+
+  bands  <- do.call(rbind, bands)
+  axes   <- do.call(rbind, axes);  ticks  <- do.call(rbind, ticks)
+  labs   <- do.call(rbind, labs);  rowlab <- do.call(rbind, rowlab)
+  notes  <- if (length(notes)) do.call(rbind, notes) else NULL
+
+  p <- ggplot() +
+    geom_rect(data = bands, aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
+              fill = "grey95", colour = NA) +
+    geom_segment(data = axes,  aes(x = x, xend = xe, y = y, yend = ye, colour = col), linewidth = 0.55) +
+    geom_segment(data = ticks, aes(x = x, xend = xe, y = y, yend = ye, colour = col), linewidth = 0.4) +
+    geom_text(data = labs,   aes(x = x, y = y, label = label, colour = col), size = 2.15) +
+    geom_text(data = rowlab, aes(x = x, y = y, label = label, colour = col),
+              hjust = 1, size = 2.6, fontface = "bold") +
+    scale_colour_identity() +
+    coord_cartesian(xlim = c(X0 - 0.02, X1), ylim = c(0.3, n_row + 1.15), clip = "off") +
+    theme_void(base_size = 9)
+  if (!is.null(notes))
+    p <- p + geom_text(data = notes, aes(x = x, y = y, label = label),
+                       hjust = 0, size = 2.0, fontface = "italic", colour = "grey55")
+  if (!is.null(header))
+    p <- p +
+      annotate("segment", x = X0, xend = X1, y = n_row + 0.66, yend = n_row + 0.66,
+               colour = "grey75", linewidth = 0.4) +
+      annotate("text", x = X0, y = n_row + 0.98, hjust = 0,
+               label = header, fontface = "bold", size = 3.0, colour = "grey15")
+  p
+}
+
+#' Two-panel deployment nomogram figure: (A) LMM gate markers, (B) gate + clinical.
+#' Apparent fits (full-sample) — a communication aid; validated discrimination /
+#' optimism live in Fig 2 / the added-value layer. NLR is dropped from panel B by
+#' request (deployment-friendly), so B is NOT the formal combined model.
+pub_fig_nomogram <- function(nomo) {
+  if (is.null(nomo)) return(NULL)
+  tp  <- if (!is.null(nomo$timepoint)) nomo$timepoint else "T0"
+  tpl <- switch(tp, delta = "Δ (T1−T0)", T1 = "T1", "T0")
+  # Immune-marker axes are the standardized (z) logit cell-fraction; for Δ they are the
+  # standardized on-treatment change. Clinical vars (panel B) are on their raw scale.
+  imm_scale <- if (identical(tp, "delta")) "standardized change, z" else "standardized, z"
+  pA  <- pub_nomo_panel(nomo$immune,
+           header = sprintf("A   Immune gate markers  [%s; %s]", tpl, imm_scale))
+  clab <- if (!is.null(nomo$clinical_vars)) gsub("_", "-", paste(nomo$clinical_vars, collapse = " + ")) else "clinical"
+  pB  <- if (!is.null(nomo$clinical_immune))
+           pub_nomo_panel(nomo$clinical_immune,
+             header = sprintf("B   Gate markers [%s] + %s  (clinical on raw scale)", tpl, clab)) else NULL
+  if (is.null(pA) && is.null(pB)) return(NULL)
+  if (is.null(pB)) return(pA)
+  if (is.null(pA)) return(pB)
+  nA <- length(nomo$immune$predictors) + 3
+  nB <- length(nomo$clinical_immune$predictors) + 3
+  foot <- paste0(
+    "Apparent logistic fit (display only): sum each predictor's Points → Total points → Predicted probability of response.\n",
+    "Immune-marker axes = z-score of logit(cell fraction)",
+    if (identical(tp, "delta")) " (Δ = standardized T1−T0 change)" else "",
+    "; clinical axes on raw scale.")
+  (pA / pB + patchwork::plot_layout(heights = c(nA, nB))) +
+    patchwork::plot_annotation(
+      caption = foot,
+      theme = ggplot2::theme(plot.caption = ggplot2::element_text(size = 6.3, colour = "grey40", hjust = 0)))
+}
+
+# ── SUPP — classification performance (confusion matrix + precision/recall) ────
+#' Confusion matrix + precision–recall of the combined (clinical + immune) model,
+#' from its LEAKAGE-FREE LOO probabilities (`per_patient$Prob_Combined`). The
+#' operating point is the PRE-SPECIFIED disease prevalence (= locked_model
+#' threshold_default); 0.5 is also tabulated. The threshold is deliberately NOT
+#' optimised (Youden on n=49 would be optimistic). Panel A confusion matrix,
+#' Panel B precision–recall curve (combined vs clinical, no-skill = prevalence).
+pub_fig_classification <- function(av) {
+  if (is.null(av) || is.null(av$per_patient) ||
+      !"Prob_Combined" %in% names(av$per_patient)) return(NULL)
+  pp  <- av$per_patient
+  pos <- av$positive_label; neg <- av$negative_label
+  ok  <- is.finite(pp$Prob_Combined) & !is.na(pp$True_Group)
+  y   <- as.integer(pp$True_Group[ok] == pos); p <- pp$Prob_Combined[ok]
+  if (length(unique(y)) < 2) return(NULL)
+  n <- length(y); prev <- mean(y)
+  pc <- if ("Prob_Clinical" %in% names(pp)) pp$Prob_Clinical[ok] else NULL
+
+  metr <- function(pr, thr) {
+    pred <- as.integer(pr >= thr)
+    TP <- sum(pred & y == 1); FP <- sum(pred & y == 0)
+    FN <- sum(!pred & y == 1); TN <- sum(!pred & y == 0)
+    rec  <- TP / (TP + FN); prc <- if ((TP + FP) > 0) TP / (TP + FP) else NA_real_
+    spec <- TN / (TN + FP); npv <- if ((TN + FN) > 0) TN / (TN + FN) else NA_real_
+    f1   <- if (is.finite(prc) && (prc + rec) > 0) 2 * prc * rec / (prc + rec) else NA_real_
+    list(TP = TP, FP = FP, FN = FN, TN = TN, rec = rec, prc = prc, spec = spec,
+         npv = npv, f1 = f1, acc = (TP + TN) / n, bacc = (rec + spec) / 2)
+  }
+  pr_curve <- function(pr) {
+    thr <- sort(unique(pr), decreasing = TRUE)
+    d <- do.call(rbind, lapply(thr, function(t) { m <- metr(pr, t); data.frame(recall = m$rec, precision = m$prc) }))
+    d <- d[is.finite(d$precision) & is.finite(d$recall), , drop = FALSE]
+    d <- d[order(d$recall), , drop = FALSE]
+    if (nrow(d)) d <- rbind(data.frame(recall = 0, precision = d$precision[1]), d)
+    d
+  }
+  auprc <- function(d) if (nrow(d) < 2) NA_real_ else
+    sum(diff(d$recall) * (head(d$precision, -1) + tail(d$precision, -1)) / 2)
+
+  mP <- metr(p, prev); mH <- metr(p, 0.5)
+  prc_comb <- pr_curve(p); ap_comb <- auprc(prc_comb)
+  prc_clin <- if (!is.null(pc)) pr_curve(pc) else NULL
+  ap_clin  <- if (!is.null(prc_clin)) auprc(prc_clin) else NA_real_
+
+  # Panel A — confusion matrix at the prevalence operating point (LOO)
+  posd <- pub_relabel_group(pos); negd <- pub_relabel_group(neg)
+  cm <- data.frame(
+    Actual = factor(c(posd, posd, negd, negd), levels = c(posd, negd)),
+    Pred   = factor(c(posd, negd, posd, negd), levels = c(negd, posd)),
+    n      = c(mP$TP, mP$FN, mP$FP, mP$TN),
+    kind   = c("correct", "error", "error", "correct"))
+  pA <- ggplot(cm, aes(Pred, Actual)) +
+    geom_tile(aes(fill = kind), colour = "white", linewidth = 2) +
+    geom_text(aes(label = n), size = 6, fontface = "bold", colour = "black") +
+    scale_fill_manual(values = c(correct = "#A6DBC9", error = "grey85"), guide = "none") +
+    scale_x_discrete(position = "top") +
+    labs(x = "Predicted", y = "Actual") +
+    coord_equal() + theme_publication() +
+    theme(panel.grid = element_blank(), axis.text = element_text(size = 10))
+
+  # Panel B — precision–recall curve (combined vs clinical; no-skill = prevalence)
+  pB <- ggplot(prc_comb, aes(recall, precision)) +
+    geom_hline(yintercept = prev, linetype = "dotted", colour = "grey50")
+  if (!is.null(prc_clin))
+    pB <- pB + geom_path(data = prc_clin, aes(recall, precision),
+                         colour = pub_palette[["clinical"]], linewidth = 0.7, linetype = "dashed")
+  pB <- pB +
+    geom_path(colour = pub_palette[["combined"]], linewidth = 0.9) +
+    annotate("text", x = 0.02, y = prev - 0.05, hjust = 0, size = 2.3, colour = "grey45",
+             label = sprintf("no-skill = %.2f", prev)) +
+    annotate("text", x = 0.98, y = 0.05, hjust = 1, size = 2.5, colour = pub_palette[["combined"]],
+             label = sprintf("AUPRC %.2f", ap_comb)) +
+    coord_equal(xlim = c(0, 1), ylim = c(0, 1)) +
+    labs(x = "Recall (sensitivity)", y = "Precision (PPV)") +
+    theme_publication()
+
+  # Panel C — metrics table (monospace so columns align) + provenance line
+  hdr  <- sprintf("%-20s %5s %5s %5s %5s %5s %5s", "Operating point", "Sens", "Prec", "Spec", "NPV", "F1", "Acc")
+  fmt  <- function(lab, m) sprintf("%-20s %5.2f %5.2f %5.2f %5.2f %5.2f %5.2f",
+                                   lab, m$rec, m$prc, m$spec, m$npv, m$f1, m$acc)
+  tbl  <- paste(hdr, fmt(sprintf("prevalence (%.2f)", prev), mP), fmt("0.50", mH), sep = "\n")
+  note <- sprintf("Combined (clinical+immune) model · leakage-free LOO probabilities (n=%d).\nAUPRC %.2f vs clinical %.2f (no-skill = prevalence %.2f) · threshold pre-specified, not optimised.",
+                  n, ap_comb, ap_clin, prev)
+  pC <- ggplot() +
+    annotate("text", x = 0, y = 1, hjust = 0, vjust = 1, family = "mono", size = 2.6, label = tbl) +
+    annotate("text", x = 0, y = 0.06, hjust = 0, vjust = 0, size = 2.2, colour = "grey40", label = note) +
+    xlim(0, 1) + ylim(0, 1) + theme_void()
+
+  ((pA | pB) / pC + patchwork::plot_layout(heights = c(3.2, 1.15))) +
+    patchwork::plot_annotation(tag_levels = list(c("A", "B", ""))) &
+    ggplot2::theme(plot.tag = ggplot2::element_text(size = 11, face = "bold"))
+}
+
 pub_render_all <- function(objs, out_dir, project_name) {
   dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
   pf <- function(n) file.path(out_dir, sprintf("%s_%s.pdf", n, project_name))
@@ -545,6 +786,9 @@ pub_render_all <- function(objs, out_dir, project_name) {
       save_pub_figure(pub_fig_coupling(av),          pf("FigureS5_Coupling"),           PUB_W1, 95)
     save_pub_figure(pub_fig_robustness(av),          pf("FigureS6_Robustness"),         PUB_W2, 95)
     save_pub_figure(pub_fig_calibration_idi(av),     pf("FigureS7_Calibration_IDI"),    PUB_W2, 120)
+    if (!is.null(av$nomogram))
+      save_pub_figure(pub_fig_nomogram(av$nomogram), pf("FigureS10_Nomogram"),          PUB_W2, 172)
+    save_pub_figure(pub_fig_classification(av),      pf("FigureS11_Classification"),    PUB_W2, 120)
   }
   if (!is.null(objs$stratified_result))
     save_pub_figure(pub_fig_pdl1_context(objs$stratified_result), pf("Figure3_PDL1_context"), PUB_W2, 115)
@@ -564,6 +808,9 @@ pub_render_all <- function(objs, out_dir, project_name) {
       av_tp <- objs$clin_addval_secondary[[tp]]
       if (is.null(av_tp)) next
       save_pub_figure(pub_fig_added_value(av_tp),           pf(paste0("Figure2_AddedValue_", tp)), PUB_W2, 120)
+      if (!is.null(av_tp$nomogram))
+        save_pub_figure(pub_fig_nomogram(av_tp$nomogram),   pf(paste0("FigureS10_Nomogram_", tp)), PUB_W2, 172)
+      save_pub_figure(pub_fig_classification(av_tp),        pf(paste0("FigureS11_Classification_", tp)), PUB_W2, 120)
     }
   }
   invisible(out_dir)

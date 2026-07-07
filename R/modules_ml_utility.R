@@ -844,6 +844,106 @@ build_timepoint_composite_data <- function(DATA_T0, DATA_LONG, timepoint = "T0")
 # `clinical_vars` is a named character vector: names = model-safe labels,
 # values = exact column names in `input_file` (e.g. c(NLR="neutrophils/lymphocytes")).
 # =============================================================================
+
+#' Build a display-only nomogram spec from a logistic fit on individual predictors.
+#'
+#' Fits `glm(y ~ x1 + ... + xk, binomial)` on the supplied (already-imputed)
+#' predictor matrix and returns everything the ggplot builder needs to draw a
+#' classic points-based nomogram: per-predictor points axes, a total-points axis
+#' and the total-points→predicted-probability mapping. This is an APPARENT model
+#' display (fit on the full analytic sample) — a communication/deployment aid,
+#' NOT a validated performance claim (those live in the added-value LOO layer).
+#' The point scale follows the rms convention: the predictor whose linear-predictor
+#' contribution spans the widest observed range gets 0–`points_max` points, and
+#' every other predictor is scaled to the same points-per-logit unit.
+#'
+#' @param y01        integer 0/1 outcome (1 = positive/`resp_label`).
+#' @param X          data.frame of numeric predictors (imputed; one column each).
+#' @param var_scale  optional named vector mapping display name -> "z" | "raw"
+#'                   (drives value-label formatting only).
+#' @param points_max points assigned to the widest-range predictor (default 100).
+build_nomogram_spec <- function(y01, X, resp_label = NULL, var_scale = NULL,
+                                points_max = 100) {
+  X    <- as.data.frame(X)
+  disp <- colnames(X)
+  cn   <- make.names(disp, unique = TRUE)
+  colnames(X) <- cn
+  dat  <- data.frame(.y = as.integer(y01), X, check.names = FALSE)
+  fit  <- suppressWarnings(glm(reformulate(cn, ".y"), data = dat, family = binomial()))
+  b    <- coef(fit); b0 <- b[["(Intercept)"]]
+  betas <- b[cn]; betas[!is.finite(betas)] <- 0
+
+  # Per-predictor DISPLAY range + linear-predictor contribution range. For
+  # continuous predictors the range is robustified to the 5th–95th percentile so a
+  # single skewed outlier (common for Δ z-scores) does not dominate the shared point
+  # scale and compress the other axes; discrete/ordinal predictors keep min–max.
+  # This affects the drawn axis only — the glm fit/coefficients are unchanged.
+  info <- lapply(seq_along(cn), function(j) {
+    v  <- X[[cn[j]]]; uq <- unique(v[is.finite(v)])
+    if (length(uq) <= 6) { lo <- min(v, na.rm = TRUE); hi <- max(v, na.rm = TRUE) }
+    else { q <- quantile(v, c(.05, .95), na.rm = TRUE, names = FALSE); lo <- q[1]; hi <- q[2] }
+    if (!is.finite(lo) || !is.finite(hi) || hi <= lo) {
+      lo <- min(v, na.rm = TRUE); hi <- max(v, na.rm = TRUE) }
+    bj <- betas[[j]]; c_lo <- bj * lo; c_hi <- bj * hi
+    list(lo = lo, hi = hi, beta = bj,
+         cmin = min(c_lo, c_hi), range = abs(bj) * (hi - lo))
+  })
+  ranges    <- vapply(info, function(z) z$range, numeric(1))
+  max_range <- max(ranges); if (!is.finite(max_range) || max_range <= 0) max_range <- 1
+  scale     <- points_max / max_range
+  base_lp   <- b0 + sum(vapply(info, function(z) z$cmin, numeric(1)))
+
+  # Per-predictor tick tables (value -> points), on the shared 0..points_max scale.
+  preds <- lapply(seq_along(cn), function(j) {
+    z     <- info[[j]]
+    uq    <- sort(unique(X[[cn[j]]][is.finite(X[[cn[j]]])]))
+    mp    <- z$range * scale                    # axis length in points
+    # Ordinal/integer predictors (few distinct levels, e.g. ECOG PS 0/1/2): tick at
+    # the actual observed levels — pretty() would invent meaningless half-steps.
+    # For continuous predictors thin the ticks on SHORT (near-null) axes so labels
+    # don't overlap: a barely-contributing predictor gets a short axis + few ticks.
+    ntick <- if (mp < 8) 2L else if (mp < 25) 3L else 5L
+    ticks <- if (length(uq) <= 6) uq else pretty(c(z$lo, z$hi), n = ntick)
+    ticks <- ticks[ticks >= z$lo - 1e-9 & ticks <= z$hi + 1e-9]
+    if (length(ticks) < 2) ticks <- unique(c(z$lo, z$hi))
+    if (mp < 8 && length(ticks) > 2) ticks <- range(ticks)   # collapsed axis → endpoints only
+    data.frame(display    = disp[j],
+               value      = ticks,
+               points     = (z$beta * ticks - z$cmin) * scale,
+               scale_type = if (!is.null(var_scale) && disp[j] %in% names(var_scale))
+                              var_scale[[disp[j]]] else "raw",
+               max_points = z$range * scale,
+               stringsAsFactors = FALSE)
+  })
+  names(preds) <- disp
+
+  total_max <- sum(ranges) * scale
+  # Total-points axis ticks + total-points -> probability mapping. A thinned prob
+  # set (logit spacing compresses mid-probabilities → labels would collide near 0.5).
+  probs   <- c(.05, .1, .2, .35, .5, .65, .8, .9, .95)
+  prob_tp <- (qlogis(probs) - base_lp) * scale
+  keep_p  <- prob_tp >= -1e-6 & prob_tp <= total_max + 1e-6
+  prob_axis <- data.frame(prob = probs[keep_p],
+                          total_points = pmin(pmax(prob_tp[keep_p], 0), total_max))
+  tp_ticks  <- pretty(c(0, total_max), n = 6)
+  tp_ticks  <- tp_ticks[tp_ticks >= 0 & tp_ticks <= total_max]
+
+  list(
+    predictors       = preds,
+    points_max       = points_max,
+    total_max_points = total_max,
+    tp_ticks         = tp_ticks,
+    prob_axis        = prob_axis,
+    base_lp          = base_lp,
+    scale            = scale,
+    coefficients     = as.list(b),
+    positive_label   = resp_label,
+    auc_apparent     = tryCatch(as.numeric(pROC::auc(pROC::roc(
+                          y01, as.numeric(predict(fit, type = "response")),
+                          direction = "<", quiet = TRUE))), error = function(e) NA_real_),
+    n                = length(y01))
+}
+
 run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
                                             input_file, clinical_vars,
                                             gate_provenance = "lmm-prespecified",
@@ -856,6 +956,7 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
                                             lmm_interaction = NULL,
                                             composite_timepoint = "T0", DATA_LONG = NULL,
                                             baseline_exclude = NULL, comparator_label = NULL,
+                                            nomogram_clinical_vars = NULL,
                                             min_n = 30L, seed = 2026L) {
   if (!requireNamespace("readxl", quietly = TRUE) ||
       !requireNamespace("pROC",   quietly = TRUE) ||
@@ -1423,9 +1524,38 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
                     paste(dbc$gate_rank_t0, collapse = ","), dbc$n_panel, dbc$gate_is_top_t0_marker))
   }
 
+  # ── Publication nomograms (display-only; apparent fits on individual predictors) ─
+  #   1) the LMM gate markers (individual, z-scale) — richer than the 1-df composite
+  #      used for the formal increment, so it carries more apparent optimism (disclosed
+  #      in the caption; the validated model is the composite in the added-value layer).
+  #   2) the gate markers + selected clinical vars (default PD-L1 + PS on raw scale).
+  #      NB: NLR is load-bearing in the FORMAL baseline but is intentionally omitted
+  #      here per the deployment-oriented request → this is NOT the formal combined model.
+  #   RNG-free, additive → primary numbers unaffected.
+  nomo <- tryCatch({
+    Zc_keep     <- as.data.frame(Zc[keep, , drop = FALSE])          # gate markers (z, imputed)
+    Ci_full_app <- impute_median(Cmat_full, all_rows)              # all clinical, imputed apparent
+    clin_sel    <- if (is.null(nomogram_clinical_vars)) colnames(Cmat_full)
+                   else intersect(as.character(unlist(nomogram_clinical_vars)), colnames(Cmat_full))
+    spec_imm <- build_nomogram_spec(
+      yb, Zc_keep, resp_label = resp_label,
+      var_scale = setNames(rep("z", ncol(Zc_keep)), colnames(Zc_keep)))
+    spec_ci <- NULL
+    if (length(clin_sel)) {
+      d_ci   <- cbind(Zc_keep, as.data.frame(Ci_full_app[, clin_sel, drop = FALSE]))
+      vscale <- c(setNames(rep("z",   ncol(Zc_keep)), colnames(Zc_keep)),
+                  setNames(rep("raw", length(clin_sel)), clin_sel))
+      spec_ci <- build_nomogram_spec(yb, d_ci, resp_label = resp_label, var_scale = vscale)
+    }
+    list(timepoint = composite_timepoint, positive_label = resp_label,
+         gate_markers = avail, clinical_vars = clin_sel,
+         immune = spec_imm, clinical_immune = spec_ci)
+  }, error = function(e) { message(sprintf("[ML][AV] nomogram spec failed (non-fatal): %s", e$message)); NULL })
+
   list(
     clinical_vars   = as.list(clinical_vars),
     formal_vars     = as.list(colnames(Cmat)),   # vars actually in the FORMAL baseline
+    nomogram        = nomo,
     locked_model    = locked_model,
     composite_markers = avail,
     composite_timepoint = composite_timepoint,
@@ -1473,6 +1603,7 @@ clinical_immune_json <- function(av) {
   av$per_patient <- NULL
   av$decision_curve$curve <- NULL
   av$locked_model <- NULL          # serialized separately via write_locked_model()
+  av$nomogram     <- NULL          # figure/RDS artifact only (kept out of the JSON contract)
   av
 }
 

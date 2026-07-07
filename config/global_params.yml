@@ -145,6 +145,15 @@ experiments:
           os:    "OS"
           pfs:   "PFS"
           death: "Alive_0/Dead_1"
+        # ── Publication nomograms (display-only, apparent model fits) ──
+        #   Two point-based nomograms are rendered in the publication set:
+        #     (1) the LMM gate markers (individual, z-scale);
+        #     (2) the gate markers + these clinical vars (raw scale).
+        #   NLR is load-bearing in the FORMAL baseline but is deliberately dropped
+        #   here → the combined nomogram is a deployment aid using the two most
+        #   standard clinical variables, NOT the formal combined model (Fig 2).
+        nomogram:
+          clinical_vars: ["PD_L1", "PS"]
 
   Comorbidity_1v0:
     enabled: false   # closed NO-GO (diag_22), negative control — retained for record
