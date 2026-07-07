@@ -473,7 +473,9 @@ if (lmm_robust$n_robust == 0) {
         baseline_exclude = if (!is.null(cm$baseline_exclude))
                              as.character(unlist(cm$baseline_exclude)) else NULL,
         comparator_label = if (!is.null(cm$comparator_label))
-                             as.character(cm$comparator_label) else NULL
+                             as.character(cm$comparator_label) else NULL,
+        nomogram_clinical_vars = if (!is.null(cm$nomogram$clinical_vars))
+                                   as.character(unlist(cm$nomogram$clinical_vars)) else NULL
       ),
       error = function(e) {
         warning(sprintf("[ML] Added-value layer (timepoint=%s) failed (non-fatal): %s", tp, e$message)); NULL
