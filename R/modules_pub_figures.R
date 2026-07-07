@@ -19,7 +19,10 @@
 # 3 gate markers individual, panel B = gate + PD-L1 + PS — NLR dropped by request, so B is a
 # deployment aid, NOT the formal combined model; validated performance stays in Fig 2) /
 # S11 classification performance (pub_fig_classification: confusion matrix + precision-recall from
-# the combined model's leakage-free LOO probs at the pre-specified prevalence threshold; NOT Youden).
+# the combined model's leakage-free LOO probs at the pre-specified prevalence threshold; NOT Youden) /
+# S12 raw fold-change of the gate markers (pub_fig_foldchange: clinician-facing, computed directly
+# from raw cell % — responders halve Ki67+ subsets, non-responders rise ~20%; descriptive, formal
+# test stays the Step-04 LMM; agrees with the logit-scale model at r=0.999 for these small fractions).
 # ==============================================================================
 
 suppressMessages({ library(ggplot2); library(patchwork) })
@@ -763,6 +766,79 @@ pub_fig_classification <- function(av) {
     ggplot2::theme(plot.tag = ggplot2::element_text(size = 11, face = "bold"))
 }
 
+# ── SUPP — on-treatment fold-change of the gate markers (raw, clinician-facing) ─
+#' Descriptive fold-change view of the immune-gate dynamic, computed DIRECTLY from
+#' the raw cell fractions (`gate_decomp$per_patient_values$Value_pct`) — NOT derived
+#' from the logit/z model, so it carries no transformation-equivalence assumption.
+#' Panel A: per-marker log2 fold-change (T1/T0) by response group, with a fold-change
+#' secondary axis and a reference line at "no change" (×1). Panel B: median %
+#' change per group. The formal inferential test remains the Step-04 LMM
+#' Time×Group interaction; the between-group p-values here are descriptive only.
+pub_fig_foldchange <- function(gate_decomp, resp_label = NULL) {
+  ppv <- if (!is.null(gate_decomp)) gate_decomp$per_patient_values else NULL
+  if (is.null(ppv) || !nrow(ppv) || !"Value_pct" %in% names(ppv)) return(NULL)
+  d  <- ppv[is.finite(ppv$Value_pct), c("Patient_ID", "Marker", "Timepoint", "Group", "Value_pct")]
+  t0 <- d[d$Timepoint == "T0", c("Patient_ID", "Marker", "Group", "Value_pct")]; names(t0)[4] <- "pct0"
+  t1 <- d[d$Timepoint == "T1", c("Patient_ID", "Marker", "Value_pct")];         names(t1)[3] <- "pct1"
+  w  <- merge(t0, t1, by = c("Patient_ID", "Marker"))
+  w  <- w[is.finite(w$pct0) & is.finite(w$pct1) & w$pct0 > 0, , drop = FALSE]
+  if (!nrow(w)) return(NULL)
+  w$log2FC <- log2(w$pct1 / w$pct0)
+  w$pctchg <- 100 * (w$pct1 - w$pct0) / w$pct0
+
+  # group colours/order matched to Fig 1 biology: responder = blue, non-resp = vermillion
+  w$Group   <- pub_relabel_group(w$Group)
+  resp_disp <- if (!is.null(resp_label)) pub_relabel_group(resp_label) else NULL
+  grps <- unique(as.character(w$Group))
+  ord  <- if (!is.null(resp_disp) && resp_disp %in% grps) c(resp_disp, setdiff(grps, resp_disp)) else sort(grps)
+  w$Group  <- factor(w$Group, levels = ord)
+  grp_cols <- setNames(c(pub_palette[["combined"]], pub_palette[["unpen"]])[seq_along(ord)], ord)
+  w$Marker <- factor(w$Marker, levels = unique(w$Marker))
+
+  # descriptive between-group Wilcoxon on log2FC (per marker)
+  pl <- lapply(levels(w$Marker), function(mk) {
+    s <- w[w$Marker == mk, ]
+    p <- tryCatch(suppressWarnings(wilcox.test(log2FC ~ Group, data = s)$p.value), error = function(e) NA_real_)
+    data.frame(Marker = mk, y = max(s$log2FC, na.rm = TRUE) + 0.4,
+               label = if (is.finite(p)) sprintf("p=%.3f", p) else "")
+  })
+  plab <- do.call(rbind, pl)
+
+  # Panel A — log2 fold-change distribution
+  pA <- ggplot(w, aes(Marker, log2FC, colour = Group)) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "grey55") +
+    geom_boxplot(fill = NA, width = 0.6, outlier.shape = NA,
+                 position = position_dodge(0.7), linewidth = 0.5) +
+    geom_point(position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.7),
+               size = 0.7, alpha = 0.45) +
+    geom_text(data = plab, aes(Marker, y, label = label), inherit.aes = FALSE,
+              size = 2.2, colour = "grey35") +
+    scale_colour_manual(values = grp_cols) +
+    scale_y_continuous(sec.axis = sec_axis(~ 2^., name = "fold-change (T1/T0)",
+                                           breaks = c(0.125, 0.25, 0.5, 1, 2, 4))) +
+    guides(colour = "none") +                       # shared legend comes from panel B
+    labs(x = NULL, y = expression(log[2]~"fold-change (T1/T0)"),
+         caption = "dashed line = no change (×1)") +
+    theme_publication() +
+    theme(plot.caption = element_text(size = 7, colour = "grey45", hjust = 0))
+
+  # Panel B — median % change per group
+  med <- aggregate(pctchg ~ Marker + Group, data = w, FUN = median)
+  pB <- ggplot(med, aes(pctchg, Marker)) +
+    geom_vline(xintercept = 0, linetype = "dashed", colour = "grey55") +
+    geom_line(aes(group = Marker), colour = "grey75", linewidth = 0.6) +
+    geom_point(aes(colour = Group), size = 2.8) +
+    geom_text(aes(colour = Group, label = sprintf("%+.0f%%", pctchg)),
+              vjust = -1.1, size = 2.3, show.legend = FALSE) +
+    scale_colour_manual(values = grp_cols) +
+    scale_x_continuous(expand = expansion(mult = c(0.12, 0.12))) +
+    labs(x = "median change T0→T1 (%)", y = NULL) +
+    theme_publication()
+
+  pub_tag((pA | pB) + patchwork::plot_layout(widths = c(1.5, 1), guides = "collect") &
+          theme(legend.position = "bottom"))
+}
+
 pub_render_all <- function(objs, out_dir, project_name) {
   dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
   pf <- function(n) file.path(out_dir, sprintf("%s_%s.pdf", n, project_name))
@@ -800,6 +876,10 @@ pub_render_all <- function(objs, out_dir, project_name) {
     save_pub_figure(pub_fig_gate_signal(objs$gate_decomp),         pf("FigureS8_GateSignal"),     PUB_W2, 110)
   if (!is.null(objs$nested_val))
     save_pub_figure(pub_fig_nested_robustness(objs$nested_val),    pf("FigureS9_NestedValidation"), PUB_W2, 95)
+  # S12 raw fold-change of the gate markers (clinician-facing biology; computed from raw %)
+  if (!is.null(objs$gate_decomp))
+    save_pub_figure(pub_fig_foldchange(objs$gate_decomp, resp_label = objs$positive_label),
+                    pf("FigureS12_FoldChange"), PUB_W2, 100)
   # Secondary-timepoint added-value artifacts (e.g. T0 reference when delta is primary,
   # or delta when T0 is primary). Builders are timepoint-agnostic → render per node so
   # the publication/ dir always reflects every analyzed timepoint.
