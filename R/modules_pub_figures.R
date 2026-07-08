@@ -538,9 +538,13 @@ pub_fig_robustness <- function(av) {
 #' 0..total_max scale. Both are drawn on a common [0,1] canvas.
 pub_nomo_panel <- function(s, header = NULL) {
   if (is.null(s) || is.null(s$predictors) || !length(s$predictors)) return(NULL)
-  col_imm <- unname(pub_palette[["immune"]])     # gate markers (z-scale)
-  col_cln <- unname(pub_palette[["clinical"]])    # clinical vars (raw scale)
-  col_sc  <- "grey20"                             # Points / Total / Probability scales
+  FONT    <- "sans"                              # cairo → Helvetica/Arial at embed
+  CHARC   <- "#222222"                           # all TEXT: high-contrast charcoal
+  col_imm <- unname(pub_palette[["immune"]])     # gate-marker axis/tick colour (green)
+  col_cln <- unname(pub_palette[["clinical"]])    # clinical-var axis/tick colour (orange)
+  col_track <- "grey80"                          # full-width guide rail behind each axis
+  band_fill <- "#e9edf1"                          # crisper zebra band vs white canvas
+  LW_AXIS <- 0.9; LW_TICK <- 0.7; LW_TRACK <- 0.6   # heavier strokes → sharp at 300+ dpi
   fmt_val <- function(v, type) {
     if (identical(type, "z")) sprintf("%.1f", v)
     else if (all(abs(v - round(v)) < 1e-6)) sprintf("%.0f", v)
@@ -550,11 +554,11 @@ pub_nomo_panel <- function(s, header = NULL) {
   npred   <- length(preds)
   n_row   <- npred + 3                         # Points + preds + Total points + Prob
   y_of    <- function(top_idx) n_row - top_idx + 1   # top row = highest y
-  TICK    <- 0.13
-  X0 <- -0.34; X1 <- 1.03                       # canvas bounds (labels | rulers)
+  TICK    <- 0.14
+  X0 <- -0.34; X1 <- 1.04                       # canvas bounds (labels | rulers)
   # Keep the far endpoint, then greedily drop interior LABELS closer than min_gap
   # (tick marks are all retained) — guarantees legible labels on collapsed axes.
-  thin_lab <- function(xs, txt, min_gap = 0.05) {
+  thin_lab <- function(xs, txt, min_gap = 0.055) {
     o <- order(xs); xs <- xs[o]; txt <- txt[o]; n <- length(xs)
     keep <- logical(n); keep[1] <- TRUE; last <- xs[1]
     if (n > 1) for (i in 2:n) if (xs[i] - last >= min_gap) { keep[i] <- TRUE; last <- xs[i] }
@@ -562,81 +566,119 @@ pub_nomo_panel <- function(s, header = NULL) {
     if (n > 2 && (xs[n] - xs[max(which(keep[-n]))]) < min_gap) keep[max(which(keep[-n]))] <- FALSE
     data.frame(x = xs[keep], label = txt[keep])
   }
-  axes <- ticks <- labs <- rowlab <- bands <- notes <- list()
-  add_ruler  <- function(y, x0, x1, col) axes[[length(axes) + 1]]  <<- data.frame(x = x0, xe = x1, y = y, ye = y, col = col)
+  axes <- arrows <- tracks <- ticks <- labs <- rowlab <- bullets <- bands <- notes <- list()
+  # Scale rulers (Points / Total points) get a directional arrowhead; predictor and
+  # probability rulers are plain segments. Ticks hang BELOW the ruler, labels above.
+  # Tick MARKS carry the axis colour; all TEXT is charcoal for maximum contrast.
+  add_ruler  <- function(y, x0, x1, col, arrow = FALSE) {
+    row <- data.frame(x = x0, xe = x1, y = y, ye = y, col = col)
+    if (arrow) arrows[[length(arrows) + 1]] <<- row
+    else       axes[[length(axes)   + 1]] <<- row
+  }
+  add_track  <- function(y) tracks[[length(tracks) + 1]] <<- data.frame(x = 0, xe = 1, y = y, ye = y)
   add_ticks  <- function(y, xs, txt, col) {
-    ticks[[length(ticks) + 1]] <<- data.frame(x = xs, xe = xs, y = y, ye = y + TICK, col = col)
+    ticks[[length(ticks) + 1]] <<- data.frame(x = xs, xe = xs, y = y - TICK, ye = y, col = col)
     tl <- thin_lab(xs, txt)
     if (any(nzchar(tl$label)))
-      labs[[length(labs) + 1]] <<- data.frame(x = tl$x, y = y + TICK + 0.13, label = tl$label, col = col)
+      labs[[length(labs) + 1]] <<- data.frame(x = tl$x, y = y + 0.20, label = tl$label)
   }
-  add_rowlab <- function(y, txt, col) rowlab[[length(rowlab) + 1]] <<- data.frame(x = -0.05, y = y, label = txt, col = col)
+  add_rowlab <- function(y, txt, bullet = NA) {
+    rowlab[[length(rowlab) + 1]] <<- data.frame(x = -0.06, y = y, label = txt)
+    if (!is.na(bullet)) bullets[[length(bullets) + 1]] <<- data.frame(x = -0.03, y = y, col = bullet)
+  }
   add_note   <- function(x, y, txt) notes[[length(notes) + 1]] <<- data.frame(x = x, y = y, label = txt)
 
   # Row 1: Points ruler (0..points_max), scaled to [0,1]
   yP <- y_of(1)
   pt_ticks <- pretty(c(0, s$points_max), n = 6)
   pt_ticks <- pt_ticks[pt_ticks >= 0 & pt_ticks <= s$points_max]
-  add_ruler(yP, 0, 1, col_sc); add_ticks(yP, pt_ticks / s$points_max, sprintf("%.0f", pt_ticks), col_sc)
-  add_rowlab(yP, "Points", col_sc)
+  add_ruler(yP, 0, 1, CHARC, arrow = TRUE); add_ticks(yP, pt_ticks / s$points_max, sprintf("%.0f", pt_ticks), CHARC)
+  add_rowlab(yP, "Points")
 
-  # Predictor rulers (share the Points scale → x = points / points_max). Gate markers
-  # coloured immune-green, clinical vars clinical-orange; input rows get a faint band.
+  # Predictor rulers (share the Points scale → x = points / points_max). A full-width
+  # grey guide RAIL underlays every axis so short (low-weight) axes are not orphaned in
+  # empty space — the coloured active segment still encodes the true points range, so
+  # the mathematical weights are unchanged. Gate markers green, clinical vars orange;
+  # a colour bullet keeps the group cue while the name stays charcoal.
   for (j in seq_len(npred)) {
     d   <- preds[[j]]; y <- y_of(1 + j)
     col <- if (identical(d$scale_type[1], "z")) col_imm else col_cln
-    bands[[length(bands) + 1]] <- data.frame(xmin = X0, xmax = X1, ymin = y - 0.46, ymax = y + 0.46)
+    if (j %% 2 == 1)
+      bands[[length(bands) + 1]] <- data.frame(xmin = X0, xmax = X1, ymin = y - 0.5, ymax = y + 0.5)
+    add_track(y)
     mp  <- max(d$points, na.rm = TRUE)
     xr  <- range(d$points, na.rm = TRUE) / s$points_max
     add_ruler(y, xr[1], xr[2], col)
-    if (mp < 4) {                               # negligible axis → note, not cramped numbers
+    if (mp < 4) {                               # negligible axis → clean charcoal note
       add_ticks(y, xr, c("", ""), col)
-      add_note(xr[2] + 0.03, y + 0.02, "≈ 0 points (negligible)")
+      add_note(xr[2] + 0.03, y, "≈ 0 points (negligible)")
     } else {
       add_ticks(y, d$points / s$points_max,
                 vapply(seq_len(nrow(d)), function(i) fmt_val(d$value[i], d$scale_type[i]), character(1)), col)
     }
-    add_rowlab(y, d$display[1], col)
+    add_rowlab(y, d$display[1], bullet = col)
   }
 
   # Total points ruler (0..total_max → [0,1])
   yT <- y_of(npred + 2); tmax <- s$total_max_points; if (!is.finite(tmax) || tmax <= 0) tmax <- 1
-  add_ruler(yT, 0, 1, col_sc); add_ticks(yT, s$tp_ticks / tmax, sprintf("%.0f", s$tp_ticks), col_sc)
-  add_rowlab(yT, "Total points", col_sc)
+  add_ruler(yT, 0, 1, CHARC, arrow = TRUE); add_ticks(yT, s$tp_ticks / tmax, sprintf("%.0f", s$tp_ticks), CHARC)
+  add_rowlab(yT, "Total points")
 
-  # Predicted-probability ruler (placed by total-points position)
-  yQ <- y_of(npred + 3); pa <- s$prob_axis
+  # Predicted-probability ruler (placed by total-points position). A perceptually
+  # uniform Viridis bar (colour-blind- and greyscale-safe) replaces the plain rule so
+  # the probability scale reads at a glance and survives black-and-white printing.
+  yQ <- y_of(npred + 3); pa <- s$prob_axis; gradbar <- NULL
   if (!is.null(pa) && nrow(pa)) {
-    add_ruler(yQ, min(pa$total_points) / tmax, max(pa$total_points) / tmax, col_sc)
-    add_ticks(yQ, pa$total_points / tmax, sprintf("%.2g", pa$prob), col_sc)
-  } else add_ruler(yQ, 0, 1, col_sc)
-  add_rowlab(yQ, "Predicted prob.", col_sc)
+    gx0 <- min(pa$total_points) / tmax; gx1 <- max(pa$total_points) / tmax
+    ng  <- 128; gx <- seq(gx0, gx1, length.out = ng + 1)
+    gpal <- grDevices::hcl.colors(ng, "Viridis")
+    gradbar <- data.frame(xmin = gx[-(ng + 1)], xmax = gx[-1],
+                          ymin = yQ - 0.10, ymax = yQ + 0.10, fill = gpal)
+    add_ticks(yQ, pa$total_points / tmax, sprintf("%.2g", pa$prob), CHARC)
+  } else add_ruler(yQ, 0, 1, CHARC)
+  add_rowlab(yQ, "Predicted prob.")
 
-  bands  <- do.call(rbind, bands)
-  axes   <- do.call(rbind, axes);  ticks  <- do.call(rbind, ticks)
+  bands  <- if (length(bands)) do.call(rbind, bands) else NULL
+  tracks <- do.call(rbind, tracks)
+  axes   <- do.call(rbind, axes); arrows <- if (length(arrows)) do.call(rbind, arrows) else NULL
+  ticks  <- do.call(rbind, ticks)
   labs   <- do.call(rbind, labs);  rowlab <- do.call(rbind, rowlab)
+  bullets<- if (length(bullets)) do.call(rbind, bullets) else NULL
   notes  <- if (length(notes)) do.call(rbind, notes) else NULL
 
-  p <- ggplot() +
-    geom_rect(data = bands, aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
-              fill = "grey95", colour = NA) +
-    geom_segment(data = axes,  aes(x = x, xend = xe, y = y, yend = ye, colour = col), linewidth = 0.55) +
-    geom_segment(data = ticks, aes(x = x, xend = xe, y = y, yend = ye, colour = col), linewidth = 0.4) +
-    geom_text(data = labs,   aes(x = x, y = y, label = label, colour = col), size = 2.15) +
-    geom_text(data = rowlab, aes(x = x, y = y, label = label, colour = col),
-              hjust = 1, size = 2.6, fontface = "bold") +
-    scale_colour_identity() +
-    coord_cartesian(xlim = c(X0 - 0.02, X1), ylim = c(0.3, n_row + 1.15), clip = "off") +
-    theme_void(base_size = 9)
+  p <- ggplot()
+  if (!is.null(bands))
+    p <- p + geom_rect(data = bands, aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
+                       fill = band_fill, colour = NA)
+  if (!is.null(gradbar))
+    p <- p + geom_rect(data = gradbar, aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax, fill = fill),
+                       colour = NA) + scale_fill_identity()
+  p <- p +
+    geom_segment(data = tracks, aes(x = x, xend = xe, y = y, yend = ye),
+                 colour = col_track, linewidth = LW_TRACK, lineend = "round") +
+    geom_segment(data = axes,  aes(x = x, xend = xe, y = y, yend = ye, colour = col), linewidth = LW_AXIS, lineend = "round") +
+    geom_segment(data = ticks, aes(x = x, xend = xe, y = y, yend = ye, colour = col), linewidth = LW_TICK, lineend = "round") +
+    geom_text(data = labs,   aes(x = x, y = y, label = label), colour = CHARC, family = FONT, size = 2.35) +
+    geom_text(data = rowlab, aes(x = x, y = y, label = label), colour = CHARC, family = FONT,
+              hjust = 1, vjust = 0.5, size = 2.8, fontface = "bold")
+  if (!is.null(bullets))
+    p <- p + geom_point(data = bullets, aes(x = x, y = y, colour = col), shape = 15, size = 1.7)
+  if (!is.null(arrows))
+    p <- p + geom_segment(data = arrows, aes(x = x, xend = xe, y = y, yend = ye), colour = CHARC,
+                          linewidth = LW_AXIS, lineend = "round",
+                          arrow = arrow(length = unit(1.7, "mm"), type = "closed"))
+  p <- p + scale_colour_identity() +
+    coord_cartesian(xlim = c(X0 - 0.02, X1 + 0.03), ylim = c(0.25, n_row + 1.2), clip = "off") +
+    theme_void(base_size = 9, base_family = FONT)
   if (!is.null(notes))
-    p <- p + geom_text(data = notes, aes(x = x, y = y, label = label),
-                       hjust = 0, size = 2.0, fontface = "italic", colour = "grey55")
+    p <- p + geom_text(data = notes, aes(x = x, y = y, label = label), colour = CHARC, family = FONT,
+                       hjust = 0, vjust = 0.5, size = 2.05, fontface = "italic")
   if (!is.null(header))
     p <- p +
-      annotate("segment", x = X0, xend = X1, y = n_row + 0.66, yend = n_row + 0.66,
-               colour = "grey75", linewidth = 0.4) +
-      annotate("text", x = X0, y = n_row + 0.98, hjust = 0,
-               label = header, fontface = "bold", size = 3.0, colour = "grey15")
+      annotate("rect", xmin = X0, xmax = X1, ymin = n_row + 0.55, ymax = n_row + 1.05,
+               fill = "#dde4ea", colour = NA) +
+      annotate("text", x = X0 + 0.01, y = n_row + 0.80, hjust = 0, family = FONT,
+               label = header, fontface = "bold", size = 3.1, colour = CHARC)
   p
 }
 
@@ -670,7 +712,8 @@ pub_fig_nomogram <- function(nomo) {
   (pA / pB + patchwork::plot_layout(heights = c(nA, nB))) +
     patchwork::plot_annotation(
       caption = foot,
-      theme = ggplot2::theme(plot.caption = ggplot2::element_text(size = 6.3, colour = "grey40", hjust = 0)))
+      theme = ggplot2::theme(plot.caption = ggplot2::element_text(
+        size = 7.6, colour = "#222222", family = "sans", hjust = 0)))   # +20% & charcoal for scaled-down legibility
 }
 
 # ── SUPP — classification performance (confusion matrix + precision/recall) ────
