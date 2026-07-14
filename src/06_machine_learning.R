@@ -443,6 +443,16 @@ if (lmm_robust$n_robust == 0) {
   clin_addval_secondary <- list()
   if (!is.null(ml_cfg$clinical_model) && !is.null(config$input_file_t0)) {
     cm  <- ml_cfg$clinical_model
+    # NLR toggle (top-level include_nlr / env INCLUDE_NLR): when off, drop NLR from the
+    # clinical model ONCE so every downstream consumer is consistent — call_av reads cm$vars,
+    # nested-gate validation reads ml_cfg$clinical_model$vars. Immune gate / EN-SVM / PD-L1
+    # benchmark are untouched. The no-NLR run then yields a PD-L1+PS added-value layer + a
+    # PD-L1+PS+immune locked_model (the deployment scorer). See diag_24 caveat in docs.
+    if (!isTRUE(config$include_nlr) && !is.null(cm$vars[["NLR"]])) {
+      cm$vars <- cm$vars[setdiff(names(cm$vars), "NLR")]
+      ml_cfg$clinical_model$vars <- cm$vars
+      message("[ML][AV] include_nlr=FALSE -> NLR dropped from clinical model (deployment variant).")
+    }
     cu_cfg <- if (!is.null(ml_cfg$clinical_utility)) ml_cfg$clinical_utility else list()
     DATA_LONG_av <- if (exists("DATA_LONG_decomp")) DATA_LONG_decomp else NULL
     tp_primary   <- if (!is.null(cm$composite_timepoint)) as.character(cm$composite_timepoint) else "T0"

@@ -10,6 +10,14 @@ run_nested_loocv_validation: true
 run_clinical_utility: true       # Step 06: calibration + decision curve + bootstrap optimism on the pre-specified composite (TRIPOD/REMARK layer)
 run_nested_validation: true      # Step 06: re-select the LMM gate inside each outer LOO fold (anti-circularity / selection-optimism test); NSCLC only (needs clinical_model + longitudinal); ~1 min, additive
 run_publication_figures: true    # Step 06: Frontiers-styled manuscript figure set (publication/ subdir; cairo_pdf, no titles, Okabe-Ito) — additive, driven by live objects
+# NLR toggle — single switch for the with-/without-NLR runs; run them SEPARATELY.
+#   true  = clinical model = PD-L1 + NLR + PS  (headline; canonical).
+#   false = drop NLR (deployment variant, PD-L1 + PS); the run's own locked_model_<exp> is the
+#           deployable scorer. NB: PD-L1+PS is a LOO-degenerate baseline (diag_24) → the no-NLR
+#           run's added-value increment is INFLATED; it is NOT the incremental-value claim.
+# main.R auto-labels the run dir with_nlr / no_nlr. Override per-run without editing this file:
+#   INCLUDE_NLR=false Rscript main.R
+include_nlr: true
 input_file: "data/Dati_NSCLC_standardizzati_anonimi_T0.xlsx"
 input_file_t0: "data/Dati_NSCLC_standardizzati_anonimi_T0.xlsx"
 input_file_t1: "data/Dati_NSCLC_standardizzati_anonimi_T1.xlsx"
@@ -112,6 +120,8 @@ experiments:
       # Endpoint = response (primary); OS/PFS Cox = secondary/sanity. NSCLC-specific
       # (column names are dataset-specific); absent on other experiments → layer skipped.
       clinical_model:
+        # NLR presence is governed by the top-level `include_nlr` switch (env INCLUDE_NLR):
+        # when false, Step 06 drops the NLR entry below before building the added-value layer.
         vars:
           PD_L1: "PD_L1"
           NLR:   "neutrophils/lymphocytes"
