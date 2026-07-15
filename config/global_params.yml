@@ -155,15 +155,17 @@ experiments:
           os:    "OS"
           pfs:   "PFS"
           death: "Alive_0/Dead_1"
-        # ── Publication nomograms (display-only, apparent model fits) ──
+        # ── Publication nomograms (Figure S10) ──
         #   Two point-based nomograms are rendered in the publication set:
-        #     (1) the LMM gate markers (individual, z-scale);
-        #     (2) the gate markers + these clinical vars (raw scale).
-        #   NLR is load-bearing in the FORMAL baseline but is deliberately dropped
-        #   here → the combined nomogram is a deployment aid using the two most
-        #   standard clinical variables, NOT the formal combined model (Fig 2).
+        #     (A) the LMM gate markers as individual predictors — per-marker display read;
+        #     (B) the 1-df immune composite + clinical vars = the FORMAL model, so its
+        #         probability is the one Fig 2 validates (reported with its LOO AUC).
+        #   null => B follows THIS run's own clinical vars, i.e. `include_nlr` drives it
+        #   (with_nlr → PD-L1+NLR+PS; no_nlr → PD-L1+PS). Do NOT hard-code a subset here:
+        #   dropping load-bearing NLR would make B a model the paper never validated.
+        #   Set a list only to deliberately draw a sub-model (display-only).
         nomogram:
-          clinical_vars: ["PD_L1", "PS"]
+          clinical_vars: null
 
   Comorbidity_1v0:
     enabled: false   # closed NO-GO (diag_22), negative control — retained for record

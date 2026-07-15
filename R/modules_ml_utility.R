@@ -845,6 +845,43 @@ build_timepoint_composite_data <- function(DATA_T0, DATA_LONG, timepoint = "T0")
 # values = exact column names in `input_file` (e.g. c(NLR="neutrophils/lymphocytes")).
 # =============================================================================
 
+# Row label for the 1-df immune composite on nomogram panel B. Single source so the
+# spec, the var_scale/var_convert lookups and the figure caption cannot drift apart.
+COMPOSITE_DISPLAY <- "Immune composite"
+
+#' Exact display label for one nomogram tick.
+#'
+#' The nomogram is fitted on the model's own scale (z of logit(cell fraction), or the
+#' Δ of those z's). Both map BIJECTIVELY back to a quantity a clinician reads, so a tick
+#' can be RELABELLED exactly — no refit, no approximation, model untouched:
+#'   "fc"  -> exp(value * sigma). Since logit(p) = log(p/(1-p)) and p is a cell fraction
+#'           of a parent gate, p/(1-p) is the positive:negative cell RATIO (for the KI67
+#'           gate: proliferating:resting). So exp(Δlogit) is EXACTLY the fold change in
+#'           that ratio. Centering cancels in a Δ (Δz*sigma == Δlogit to machine
+#'           precision), hence sigma alone inverts it — no mu needed. For a COMPOSITE
+#'           (mean_i Δlogit_i/sigma_i) pass sigma = 1: exp(composite) is then the exact
+#'           weighted geometric-mean ratio fold change, weights w_i = 1/(k*sigma_i).
+#'           NB this is the fold change of the RATIO, not of the fraction: the latter is
+#'           FC = exp(Δlogit)*(1-p1)/(1-p0) and is NOT identified from Δlogit alone.
+#'           For low-frequency subsets the two agree closely (r ~ 0.999) — say so in the
+#'           caption, but never relabel the axis as the fraction fold change.
+#'   "pct" -> plogis(value * sigma + mu) * 100, the cell fraction (%) itself. Only
+#'           meaningful at a single timepoint (no fold change exists at baseline).
+#' Falls back to the plain numeric value when no conversion applies.
+#' @param v          numeric tick value(s), on the model scale.
+#' @param conv       list(type="fc", sigma=) | list(type="pct", mu=, sigma=) | NULL.
+#' @param scale_type the predictor's `var_scale` entry (used only by the fallback).
+nomo_tick_label <- function(v, conv, scale_type) {
+  if (!is.null(conv) && identical(conv$type, "fc")) {
+    f <- exp(v * conv$sigma)
+    return(ifelse(f >= 10, sprintf("%.1fx", f), sprintf("%.2fx", f)))
+  }
+  if (!is.null(conv) && identical(conv$type, "pct"))
+    return(sprintf("%.1f%%", stats::plogis(v * conv$sigma + conv$mu) * 100))
+  if (identical(scale_type, "z")) return(sprintf("%.1f", v))
+  ifelse(abs(v - round(v)) < 1e-6, sprintf("%.0f", v), sprintf("%.1f", v))
+}
+
 #' Build a display-only nomogram spec from a logistic fit on individual predictors.
 #'
 #' Fits `glm(y ~ x1 + ... + xk, binomial)` on the supplied (already-imputed)
@@ -859,11 +896,14 @@ build_timepoint_composite_data <- function(DATA_T0, DATA_LONG, timepoint = "T0")
 #'
 #' @param y01        integer 0/1 outcome (1 = positive/`resp_label`).
 #' @param X          data.frame of numeric predictors (imputed; one column each).
-#' @param var_scale  optional named vector mapping display name -> "z" | "raw"
-#'                   (drives value-label formatting only).
+#' @param var_scale  optional named vector mapping display name -> "z" | "fc" | "pct" |
+#'                   "raw" (drives value-label formatting + axis colour).
+#' @param var_convert optional named list mapping display name -> an EXACT display-scale
+#'                   conversion (see `nomo_tick_label()`). Relabels ticks only: the fit,
+#'                   the points and the tick POSITIONS are untouched.
 #' @param points_max points assigned to the widest-range predictor (default 100).
 build_nomogram_spec <- function(y01, X, resp_label = NULL, var_scale = NULL,
-                                points_max = 100) {
+                                var_convert = NULL, points_max = 100) {
   X    <- as.data.frame(X)
   disp <- colnames(X)
   cn   <- make.names(disp, unique = TRUE)
@@ -907,11 +947,13 @@ build_nomogram_spec <- function(y01, X, resp_label = NULL, var_scale = NULL,
     ticks <- ticks[ticks >= z$lo - 1e-9 & ticks <= z$hi + 1e-9]
     if (length(ticks) < 2) ticks <- unique(c(z$lo, z$hi))
     if (mp < 8 && length(ticks) > 2) ticks <- range(ticks)   # collapsed axis → endpoints only
+    st <- if (!is.null(var_scale)   && disp[j] %in% names(var_scale))   var_scale[[disp[j]]]   else "raw"
+    cv <- if (!is.null(var_convert) && disp[j] %in% names(var_convert)) var_convert[[disp[j]]] else NULL
     data.frame(display    = disp[j],
-               value      = ticks,
+               value      = ticks,                            # model scale (positions ticks)
+               label      = nomo_tick_label(ticks, cv, st),   # display scale (printed)
                points     = (z$beta * ticks - z$cmin) * scale,
-               scale_type = if (!is.null(var_scale) && disp[j] %in% names(var_scale))
-                              var_scale[[disp[j]]] else "raw",
+               scale_type = st,
                max_points = z$range * scale,
                stringsAsFactors = FALSE)
   })
@@ -1479,16 +1521,36 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
   # epsilon, attached by the caller) -> z with FROZEN per-marker center/scale (recovered from
   # `hybrid_data_raw`, the pre-z transformed matrix) -> median-impute on the z scale. The
   # clinical side stores per-variable medians (raw scale). See diagnostics/run_validation.R.
-  raw_df   <- as.data.frame(DATA_T0$hybrid_data_raw)
+  #
+  # Constants MUST come from the same rows Step 01's scale() saw, because it discards
+  # `scaled:center`/`scaled:scale` (modules_coda.R:276-277) and recomputing from raw is the
+  # only recovery route. On a T1/delta timepoint `DATA_T0` was REPLACED above by
+  # build_timepoint_composite_data() (no `hybrid_data_raw`) and the z's came from the
+  # POOLED T0+T1 longitudinal matrix — so read the constants from the full, unrestricted
+  # DATA_LONG. Using the T0 RDS's constants here would be a silent wrong answer, and
+  # reading the destroyed DATA_T0 yields NaN/NA (a lock that scores every patient to a
+  # constant instead of erroring).
+  raw_src  <- if (identical(composite_timepoint, "T0")) DATA_T0 else DATA_LONG
+  raw_df   <- as.data.frame(raw_src$hybrid_data_raw)
   z_center <- sapply(avail, function(m) mean(suppressWarnings(as.numeric(raw_df[[m]])),     na.rm = TRUE))
   z_scale  <- sapply(avail, function(m) stats::sd(suppressWarnings(as.numeric(raw_df[[m]])), na.rm = TRUE))
   z_imp    <- sapply(avail, function(m) median(suppressWarnings(as.numeric(z[[m]])),         na.rm = TRUE))
+  # A non-scorable lock must never ship silently — fail at the source instead.
+  bad_const <- !is.finite(z_center) | !is.finite(z_scale) | z_scale <= 0
+  if (any(bad_const))
+    stop(sprintf(paste("[ML][AV] locked model: non-finite z constants for {%s} (timepoint=%s).",
+                       "The frozen scorer would be unusable — check %s$hybrid_data_raw."),
+                 paste(avail[bad_const], collapse = ", "), composite_timepoint,
+                 if (identical(composite_timepoint, "T0")) "DATA_T0" else "DATA_LONG"))
   clin_med <- apply(Cmat, 2, median, na.rm = TRUE); clin_med[!is.finite(clin_med)] <- 0
   locked_model <- list(
     schema_version    = 1L,
     positive_label    = resp_label, negative_label = neg_label,
     prevalence        = prev, threshold_default = round(prev, 4),
     gate_provenance   = gate_provenance, provenance_note = provenance_note,
+    # Predictor timepoint the composite is read at. "delta"/"T1" => the scorer needs
+    # PAIRED T0+T1 draws (z at each timepoint, then differenced); "T0" => a single draw.
+    composite_timepoint = composite_timepoint,
     immune = list(
       markers  = avail,
       z_center = as.list(z_center), z_scale = as.list(z_scale), z_impute = as.list(z_imp)),
@@ -1524,31 +1586,58 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
                     paste(dbc$gate_rank_t0, collapse = ","), dbc$n_panel, dbc$gate_is_top_t0_marker))
   }
 
-  # ── Publication nomograms (display-only; apparent fits on individual predictors) ─
-  #   1) the LMM gate markers (individual, z-scale) — richer than the 1-df composite
-  #      used for the formal increment, so it carries more apparent optimism (disclosed
-  #      in the caption; the validated model is the composite in the added-value layer).
-  #   2) the gate markers + selected clinical vars (default PD-L1 + PS on raw scale).
-  #      NB: NLR is load-bearing in the FORMAL baseline but is intentionally omitted
-  #      here per the deployment-oriented request → this is NOT the formal combined model.
-  #   RNG-free, additive → primary numbers unaffected.
+  # ── Publication nomograms ───────────────────────────────────────────────────────
+  #   A) the LMM gate markers as INDIVIDUAL predictors — a display-only per-marker read
+  #      (apparent fit; richer than the 1-df composite, so more apparent optimism).
+  #   B) the FORMAL model itself: the 1-df immune composite + this run's own clinical
+  #      vars. Same predictors + same data as `fk_app`, so B reproduces the formal
+  #      apparent fit exactly and its validated discrimination is the layer's LOO AUC
+  #      (not an inflated apparent number). `include_nlr` therefore drives B per run.
+  #
+  #   Immune axes are RELABELLED onto their exact clinical scale (nomo_tick_label):
+  #   Δ -> fold change in the positive:negative cell ratio, exp(value*sigma), with the
+  #   composite at sigma=1; T0 -> the cell fraction (%) itself. Both are bijections of
+  #   the model scale, so this is display-only: no refit, no approximation, tick
+  #   positions and every fitted number unchanged. The T0 composite has no such reading
+  #   (it averages standardized values across markers with different mu) -> left as an
+  #   index. RNG-free, additive → primary numbers unaffected.
   nomo <- tryCatch({
-    Zc_keep     <- as.data.frame(Zc[keep, , drop = FALSE])          # gate markers (z, imputed)
-    Ci_full_app <- impute_median(Cmat_full, all_rows)              # all clinical, imputed apparent
-    clin_sel    <- if (is.null(nomogram_clinical_vars)) colnames(Cmat_full)
-                   else intersect(as.character(unlist(nomogram_clinical_vars)), colnames(Cmat_full))
+    Zc_keep  <- as.data.frame(Zc[keep, , drop = FALSE])            # gate markers (z, imputed)
+    clin_sel <- if (is.null(nomogram_clinical_vars)) cl_names
+                else intersect(as.character(unlist(nomogram_clinical_vars)), cl_names)
+    is_delta <- !identical(composite_timepoint, "T0")
+    # Exact per-marker relabel constants — the SAME frozen z constants the locked model
+    # ships (pooled longitudinal on Δ/T1, T0 RDS on T0), so figure and scorer agree.
+    imm_conv <- setNames(lapply(colnames(Zc_keep), function(m) if (is_delta)
+                           list(type = "fc",  sigma = unname(z_scale[[m]]))
+                         else
+                           list(type = "pct", mu = unname(z_center[[m]]),
+                                              sigma = unname(z_scale[[m]]))),
+                         colnames(Zc_keep))
     spec_imm <- build_nomogram_spec(
       yb, Zc_keep, resp_label = resp_label,
-      var_scale = setNames(rep("z", ncol(Zc_keep)), colnames(Zc_keep)))
+      var_scale   = setNames(rep(if (is_delta) "fc" else "pct", ncol(Zc_keep)), colnames(Zc_keep)),
+      var_convert = imm_conv)
     spec_ci <- NULL
     if (length(clin_sel)) {
-      d_ci   <- cbind(Zc_keep, as.data.frame(Ci_full_app[, clin_sel, drop = FALSE]))
-      vscale <- c(setNames(rep("z",   ncol(Zc_keep)), colnames(Zc_keep)),
-                  setNames(rep("raw", length(clin_sel)), clin_sel))
-      spec_ci <- build_nomogram_spec(yb, d_ci, resp_label = resp_label, var_scale = vscale)
+      # B == the formal model: composite + formal clinical, apparent-imputed (== fk_app).
+      d_ci <- cbind(setNames(data.frame(comp), COMPOSITE_DISPLAY),
+                    as.data.frame(Ci_app[, clin_sel, drop = FALSE]))
+      spec_ci <- build_nomogram_spec(
+        yb, d_ci, resp_label = resp_label,
+        var_scale   = c(setNames(if (is_delta) "fc" else "z", COMPOSITE_DISPLAY),
+                        setNames(rep("raw", length(clin_sel)), clin_sel)),
+        # sigma = 1: the per-marker sigmas are already absorbed into the composite mean,
+        # so exp(composite) is the exact weighted geometric-mean ratio fold change.
+        var_convert = if (is_delta) setNames(list(list(type = "fc", sigma = 1)),
+                                             COMPOSITE_DISPLAY) else NULL)
     }
     list(timepoint = composite_timepoint, positive_label = resp_label,
          gate_markers = avail, clinical_vars = clin_sel,
+         composite_display = COMPOSITE_DISPLAY,
+         # Panel B is the formal model → report its LEAKAGE-FREE LOO AUC (already
+         # computed by this layer), never the apparent one it is drawn from.
+         combined_loo_auc = auc$combined[["loo"]],
          immune = spec_imm, clinical_immune = spec_ci)
   }, error = function(e) { message(sprintf("[ML][AV] nomogram spec failed (non-fatal): %s", e$message)); NULL })
 

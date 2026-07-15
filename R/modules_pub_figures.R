@@ -15,9 +15,11 @@
 # specificity-null / S4 standalone / S5 coupling / S6 robustness / S7 calibration /
 # S8 gate-signal decomposition / S9 nested-selection validation (pub_fig_nested_robustness:
 # increment invariant to per-fold gate re-selection + Ki67 module recovered ~100% of folds) /
-# S10 deployment nomograms (pub_fig_nomogram: apparent display-only, per timepoint; panel A =
-# 3 gate markers individual, panel B = gate + PD-L1 + PS — NLR dropped by request, so B is a
-# deployment aid, NOT the formal combined model; validated performance stays in Fig 2) /
+# S10 nomograms (pub_fig_nomogram, per timepoint; panel A = 3 gate markers individual, apparent
+# display-only; panel B = immune composite + THIS run's clinical vars = the formal model, so
+# include_nlr drives it — reported with its leakage-free LOO AUC. Immune axes are relabelled
+# onto their exact clinical scale: Δ = fold change in the Ki67+:Ki67− ratio, T0 = % of parent
+# gate; a bijection of the model scale, so nothing fitted changes — see nomo_tick_label()) /
 # S11 classification performance (pub_fig_classification: confusion matrix + precision-recall from
 # the combined model's leakage-free LOO probs at the pre-specified prevalence threshold; NOT Youden) /
 # S12 raw fold-change of the gate markers (pub_fig_foldchange: clinician-facing, computed directly
@@ -530,7 +532,7 @@ pub_fig_robustness <- function(av) {
 #' sizes/styling live in exactly one place.
 #' @param objs list: clin_addval, gate_decomp, stratified_result, lmm_boot
 #'        (list boot/obs), consort, df_preds, positive_label, perm (en/svm).
-# ── SUPP — deployment nomograms (display-only, apparent model fits) ────────────
+# ── SUPP — nomograms (A: display-only apparent fit; B: the run's formal model) ──
 #' Draw one classic points-based nomogram from a `build_nomogram_spec()` object.
 #' Rows top→bottom: Points ruler, one ruler per predictor, Total-points ruler,
 #' Predicted-probability ruler. The upper block (Points + predictors) shares the
@@ -545,10 +547,17 @@ pub_nomo_panel <- function(s, header = NULL) {
   col_track <- "grey80"                          # full-width guide rail behind each axis
   band_fill <- "#e9edf1"                          # crisper zebra band vs white canvas
   LW_AXIS <- 0.9; LW_TICK <- 0.7; LW_TRACK <- 0.6   # heavier strokes → sharp at 300+ dpi
+  # Tick labels are precomputed on the display scale by build_nomogram_spec() (all unit
+  # math lives there — see nomo_tick_label). fmt_val is the fallback for specs persisted
+  # before the `label` column existed.
   fmt_val <- function(v, type) {
     if (identical(type, "z")) sprintf("%.1f", v)
     else if (all(abs(v - round(v)) < 1e-6)) sprintf("%.0f", v)
     else sprintf("%.1f", v)
+  }
+  tick_labels <- function(d) {
+    if (!is.null(d$label)) return(as.character(d$label))
+    vapply(seq_len(nrow(d)), function(i) fmt_val(d$value[i], d$scale_type[i]), character(1))
   }
   preds   <- s$predictors
   npred   <- length(preds)
@@ -602,7 +611,7 @@ pub_nomo_panel <- function(s, header = NULL) {
   # a colour bullet keeps the group cue while the name stays charcoal.
   for (j in seq_len(npred)) {
     d   <- preds[[j]]; y <- y_of(1 + j)
-    col <- if (identical(d$scale_type[1], "z")) col_imm else col_cln
+    col <- if (d$scale_type[1] %in% c("z", "fc", "pct")) col_imm else col_cln
     if (j %% 2 == 1)
       bands[[length(bands) + 1]] <- data.frame(xmin = X0, xmax = X1, ymin = y - 0.5, ymax = y + 0.5)
     add_track(y)
@@ -613,8 +622,7 @@ pub_nomo_panel <- function(s, header = NULL) {
       add_ticks(y, xr, c("", ""), col)
       add_note(xr[2] + 0.03, y, "≈ 0 points (negligible)")
     } else {
-      add_ticks(y, d$points / s$points_max,
-                vapply(seq_len(nrow(d)), function(i) fmt_val(d$value[i], d$scale_type[i]), character(1)), col)
+      add_ticks(y, d$points / s$points_max, tick_labels(d), col)
     }
     add_rowlab(y, d$display[1], bullet = col)
   }
@@ -682,33 +690,45 @@ pub_nomo_panel <- function(s, header = NULL) {
   p
 }
 
-#' Two-panel deployment nomogram figure: (A) LMM gate markers, (B) gate + clinical.
-#' Apparent fits (full-sample) — a communication aid; validated discrimination /
-#' optimism live in Fig 2 / the added-value layer. NLR is dropped from panel B by
-#' request (deployment-friendly), so B is NOT the formal combined model.
+#' Two-panel nomogram figure: (A) LMM gate markers, (B) immune composite + clinical.
+#' Panel A = per-marker display read (apparent fit on individual markers). Panel B = the
+#' run's FORMAL model (1-df immune composite + that run's clinical vars, so `include_nlr`
+#' drives it) — drawn from the apparent fit but reported with its leakage-free LOO AUC.
+#' Immune axes are relabelled onto their exact clinical scale (see `nomo_tick_label()`):
+#' a bijection of the model scale, so nothing fitted changes.
 pub_fig_nomogram <- function(nomo) {
   if (is.null(nomo)) return(NULL)
   tp  <- if (!is.null(nomo$timepoint)) nomo$timepoint else "T0"
   tpl <- switch(tp, delta = "Δ (T1−T0)", T1 = "T1", "T0")
-  # Immune-marker axes are the standardized (z) logit cell-fraction; for Δ they are the
-  # standardized on-treatment change. Clinical vars (panel B) are on their raw scale.
-  imm_scale <- if (identical(tp, "delta")) "standardized change, z" else "standardized, z"
+  # Δ  -> exp(Δlogit) = EXACT fold change in the positive:negative cell ratio.
+  # T0 -> the cell fraction (%) itself. Clinical vars (panel B) stay on their raw scale.
+  is_delta  <- identical(tp, "delta")
+  imm_scale <- if (is_delta) "fold change, Ki67+:Ki67− ratio" else "% of parent gate"
   pA  <- pub_nomo_panel(nomo$immune,
            header = sprintf("A   Immune gate markers  [%s; %s]", tpl, imm_scale))
   clab <- if (!is.null(nomo$clinical_vars)) gsub("_", "-", paste(nomo$clinical_vars, collapse = " + ")) else "clinical"
   pB  <- if (!is.null(nomo$clinical_immune))
            pub_nomo_panel(nomo$clinical_immune,
-             header = sprintf("B   Gate markers [%s] + %s  (clinical on raw scale)", tpl, clab)) else NULL
+             header = sprintf("B   Immune composite [%s] + %s  =  formal model", tpl, clab)) else NULL
   if (is.null(pA) && is.null(pB)) return(NULL)
   if (is.null(pB)) return(pA)
   if (is.null(pA)) return(pB)
   nA <- length(nomo$immune$predictors) + 3
   nB <- length(nomo$clinical_immune$predictors) + 3
+  # Keep every caption line under ~110 characters: at size 7.6 on PUB_W2 (190 mm) a
+  # longer line is silently clipped at the panel edge rather than wrapped.
+  loo  <- nomo$combined_loo_auc
   foot <- paste0(
-    "Apparent logistic fit (display only): sum each predictor's Points → Total points → Predicted probability of response.\n",
-    "Immune-marker axes = z-score of logit(cell fraction)",
-    if (identical(tp, "delta")) " (Δ = standardized T1−T0 change)" else "",
-    "; clinical axes on raw scale.")
+    "Sum each predictor's Points → Total points → Predicted probability of response.\n",
+    "A: apparent fit, per-marker display only. B: the formal model",
+    if (!is.null(loo) && is.finite(loo)) sprintf(" (LOO AUC %.3f)", loo) else "",
+    " — axis positions from its apparent fit.\n",
+    if (is_delta)
+      paste0("Immune axes = exp(Δlogit) = fold change in the Ki67+:Ki67− (proliferating:resting) ",
+             "cell ratio — exact;\ncomposite = weighted geometric mean of the three. ")
+    else
+      "Immune axes = cell fraction (% of parent gate) — exact; composite is an index (z).\n",
+    "Clinical axes on raw scale.")
   (pA / pB + patchwork::plot_layout(heights = c(nA, nB))) +
     patchwork::plot_annotation(
       caption = foot,
