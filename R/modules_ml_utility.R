@@ -1288,6 +1288,10 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
     Cimp <- impute_median(Cmat, all_rows); cn <- make.names(cl_names, unique = TRUE)
     cox_block <- function(time, event) {
       ok <- is.finite(time) & time > 0 & !is.na(event)
+      # `time > 0` silently drops patients recorded at time 0 — some of whom DIED (a real event).
+      # Report the exclusion instead of hiding it.
+      n_drop_zero <- sum(is.finite(time) & time <= 0 & !is.na(event))
+      n_drop_ev   <- sum(is.finite(time) & time <= 0 & !is.na(event) & event == 1)
       if (sum(ok) < 20 || length(unique(event[ok])) < 2) return(NULL)
       d <- data.frame(time = time[ok], event = event[ok], Cimp[ok, , drop = FALSE], comp = comp[ok])
       colnames(d)[3:(2 + length(cn))] <- cn
@@ -1295,12 +1299,36 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
       fk <- tryCatch(survival::coxph(reformulate(c(cn, "comp"), "survival::Surv(time, event)"), data = d), error = function(e) NULL)
       if (is.null(fc) || is.null(fk)) return(NULL)
       lrt <- tryCatch(anova(fc, fk, test = "Chisq")[["Pr(>|Chi|)"]][2], error = function(e) NA_real_)
-      list(n = sum(ok), events = sum(event[ok]),
+      # Effect size for the immune term + a PH check. Previously computed and DISCARDED: a C-index
+      # and an LRT p cannot tell a reader whether a null is "no effect" or "underpowered". The HR
+      # CI can, and `min detectable HR` below turns the null into an informative result.
+      sk <- summary(fk)
+      hr <- tryCatch(unname(sk$conf.int["comp", c(1, 3, 4)]), error = function(e) rep(NA_real_, 3))
+      hp <- tryCatch(unname(sk$coefficients["comp", ncol(sk$coefficients)]), error = function(e) NA_real_)
+      zp <- tryCatch(survival::cox.zph(fk)$table["comp", "p"], error = function(e) NA_real_)
+      # smallest per-unit HR detectable at 80% power with the observed events (Schoenfeld)
+      v  <- stats::var(comp[ok]); ev_n <- sum(event[ok])
+      mdh <- if (is.finite(v) && v > 0 && ev_n > 0)
+               exp((stats::qnorm(0.975) + stats::qnorm(0.80)) / sqrt(ev_n * v)) else NA_real_
+      list(n = sum(ok), events = ev_n,
            c_clinical = summary(fc)$concordance[["C"]],
-           c_combined = summary(fk)$concordance[["C"]],
-           lrt_p = lrt)
+           c_combined = sk$concordance[["C"]],
+           lrt_p = lrt,
+           immune_hr = hr[1], immune_hr_ci = hr[2:3], immune_p = hp,
+           ph_zph_p = zp, min_detectable_hr_80 = mdh,
+           n_excluded_time_zero = n_drop_zero, n_excluded_time_zero_events = n_drop_ev)
     }
     survival <- list(OS = cox_block(os, ev_os), PFS = cox_block(pfs, ev_pfs))
+    # PFS here is a PROXY, not an observed PFS: this cohort has NO progression-date column, so the
+    # event is derived as death | (alive & PFS<OS). It is also near-tautological with best response
+    # (BR=PD => progression at the first scan), so it cannot independently validate a response
+    # model. OS is the defensible survival endpoint. Flag it in the payload so no downstream
+    # consumer can quietly treat it as a real PFS.
+    if (!is.null(survival$PFS))
+      survival$PFS$endpoint_caveat <- paste(
+        "DERIVED PROXY: no progression date exists in this cohort; event = death |",
+        "(alive & PFS < OS). Near-tautological with best response (BR=PD => progression at",
+        "first scan). Descriptive only — OS is the primary survival endpoint.")
   }
 
   # ── Sensitivity layers (additive; placed AFTER all pre-existing RNG consumers so the
@@ -1641,10 +1669,71 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
          immune = spec_imm, clinical_immune = spec_ci)
   }, error = function(e) { message(sprintf("[ML][AV] nomogram spec failed (non-fatal): %s", e$message)); NULL })
 
+  # ── Repeated stratified k-fold CV (additive; the REPORTABLE discrimination) ───────────────
+  # WHY THIS EXISTS. The LOO AUCs above are artifact-prone for TIED/DISCRETE predictors. Leaving
+  # patient i out shifts the fit in a direction that depends on y_i, which breaks ties among the
+  # many patients sharing a value ANTI-correlated with y_i, dragging AUC below 0.5. It is not
+  # anti-prediction — it is a CV pathology, and it scales with the tie fraction (diag_41):
+  #     immune  0% tied pairs -> LOO 0.771 vs 10-fold 0.778   (no deficit)
+  #     PS     44% tied pairs -> LOO 0.424 vs 10-fold 0.551   (-0.13)
+  #     PD-L1  14% tied pairs -> LOO 0.237 vs 10-fold 0.393   (-0.16)
+  # Reporting a clinical baseline "AUC 0.309" invites the fair objection that the CV is broken,
+  # and makes the increment over it uninterpretable. Repeated stratified k-fold has many patients
+  # per held-out fold, so no single y_i can steer the tie-break.
+  # NOTE: this changes NO test. The primary test for the increment is the LRT, which uses no
+  # cross-validation at all. These are discrimination DESCRIPTORS. Folds are shared between the
+  # clinical and combined models within each rep, so the delta is paired.
+  # RNG-isolated (state saved/restored, local seed) => every pre-existing number reproduces
+  # byte-for-byte.
+  cv_kfold <- tryCatch({
+    if (exists(".Random.seed", envir = .GlobalEnv)) {
+      .old_seed_cv <- get(".Random.seed", envir = .GlobalEnv)
+      on.exit(assign(".Random.seed", .old_seed_cv, envir = .GlobalEnv), add = TRUE)
+    }
+    set.seed(seed + 977L)
+    k    <- min(10L, max(3L, floor(min(sum(yb), sum(1 - yb)) / 2)))
+    reps <- 50L
+    R <- matrix(NA_real_, reps, 3, dimnames = list(NULL, c("clinical", "immune", "combined")))
+    for (r in seq_len(reps)) {
+      fold <- integer(n)
+      for (cl in unique(yb)) {                       # stratified fold assignment
+        ix <- which(yb == cl)
+        fold[ix] <- sample(rep(seq_len(k), length.out = length(ix)))
+      }
+      pc <- pk <- pi_ <- numeric(n)
+      for (f in seq_len(k)) {
+        te <- which(fold == f); tr <- which(fold != f)
+        if (length(unique(yb[tr])) < 2) { pc[te] <- pk[te] <- pi_[te] <- mean(yb[tr]); next }
+        pc[te]  <- fit_predict(Cmat, comp, tr, te, use_immune = FALSE)
+        pk[te]  <- fit_predict(Cmat, comp, tr, te, use_immune = TRUE)
+        di      <- data.frame(yb = yb, comp = comp)
+        fi      <- suppressWarnings(glm(yb ~ comp, data = di[tr, , drop = FALSE], family = binomial()))
+        pi_[te] <- as.numeric(predict(fi, newdata = di[te, , drop = FALSE], type = "response"))
+      }
+      R[r, ] <- c(auc_pos(pc), auc_pos(pi_), auc_pos(pk))
+    }
+    dlt <- R[, "combined"] - R[, "clinical"]
+    list(method = sprintf("repeated stratified %d-fold CV, %d reps (paired folds)", k, reps),
+         k = k, reps = reps,
+         auc_clinical = unname(mean(R[, "clinical"])),
+         auc_immune   = unname(mean(R[, "immune"])),
+         auc_combined = unname(mean(R[, "combined"])),
+         delta_auc    = unname(mean(dlt)),
+         delta_auc_ci = unname(stats::quantile(dlt, c(.025, .975))),
+         baseline_degenerate = unname(mean(R[, "clinical"]) < 0.5),
+         note = paste("Reportable discrimination. LOO values in `auc` are retained for",
+                      "continuity but are artifact-prone for tied/discrete clinical predictors",
+                      "(see diag_41); a sub-chance LOO AUC is a CV pathology, not anti-prediction.",
+                      "The increment's primary test is the LRT, which uses no CV."))
+  }, error = function(e) {
+    message(sprintf("[ML][AV] k-fold CV block failed (non-fatal): %s", e$message)); NULL
+  })
+
   list(
     clinical_vars   = as.list(clinical_vars),
     formal_vars     = as.list(colnames(Cmat)),   # vars actually in the FORMAL baseline
     nomogram        = nomo,
+    cv_kfold        = cv_kfold,
     locked_model    = locked_model,
     composite_markers = avail,
     composite_timepoint = composite_timepoint,
@@ -1659,6 +1748,14 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
       delta_auc_loo = unname(auc$combined[["loo"]] - auc$clinical[["loo"]]),
       delong_p_loo  = delong_p,
       lrt_p = lrt_p, lrt_perm_p = lrt_perm_p, lrt_firth_p = lrt_firth_p,
+      # `jsonlite::write_json(digits = 4)` rounds to 4 DECIMAL PLACES, so any p < 0.00005
+      # serialises as literally `0` — which is what the JSON has been reporting for the
+      # headline LRT (true value 3.787e-05). "p = 0" is not a reportable number. These
+      # companions survive the rounding and are exactly invertible: p = 10^-lrt_neglog10_p.
+      # Additive; the raw `lrt_p` fields above are untouched.
+      lrt_neglog10_p       = if (is.finite(lrt_p)      && lrt_p      > 0) -log10(lrt_p)      else NA_real_,
+      lrt_firth_neglog10_p = if (is.finite(lrt_firth_p) && lrt_firth_p > 0) -log10(lrt_firth_p) else NA_real_,
+      lrt_p_sci            = if (is.finite(lrt_p)) format(lrt_p, digits = 4, scientific = TRUE) else NA_character_,
       idi = idi_app, idi_ci = qci(idi_bs),
       idi_loo = idi_loo, idi_loo_ci = idi_loo_ci,
       cnri = nri_app, cnri_ci = qci(nri_bs)),

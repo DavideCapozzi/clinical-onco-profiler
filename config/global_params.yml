@@ -11,13 +11,27 @@ run_clinical_utility: true       # Step 06: calibration + decision curve + boots
 run_nested_validation: true      # Step 06: re-select the LMM gate inside each outer LOO fold (anti-circularity / selection-optimism test); NSCLC only (needs clinical_model + longitudinal); ~1 min, additive
 run_publication_figures: true    # Step 06: Frontiers-styled manuscript figure set (publication/ subdir; cairo_pdf, no titles, Okabe-Ito) — additive, driven by live objects
 # NLR toggle — single switch for the with-/without-NLR runs; run them SEPARATELY.
-#   true  = clinical model = PD-L1 + NLR + PS  (headline; canonical).
-#   false = drop NLR (deployment variant, PD-L1 + PS); the run's own locked_model_<exp> is the
-#           deployable scorer. NB: PD-L1+PS is a LOO-degenerate baseline (diag_24) → the no-NLR
-#           run's added-value increment is INFLATED; it is NOT the incremental-value claim.
+#   false = clinical model = PD-L1 + PS  → THE MAIN-TEXT HEADLINE *and* the deployment scorer
+#           (default since 2026-07-15). NLR is UNUSABLE prospectively: unavailable for some
+#           patients and ~17% median-imputed here. Headline (cv_kfold, Delta n=49):
+#           PD-L1+PS 0.543 -> +immune 0.780, increment +0.223 [0.173, 0.280],
+#           LRT chi2=16.98 p=3.787e-05 (the LRT uses NO cross-validation).
+#   true  = PD-L1 + NLR + PS → the SUPPLEMENTARY specificity run ("the immune signal is not a
+#           proxy for standard prognostics, incl. NLR"): 0.6396 -> 0.8156, LRT p=4.211e-05.
 # main.R auto-labels the run dir with_nlr / no_nlr. Override per-run without editing this file:
-#   INCLUDE_NLR=false Rscript main.R
-include_nlr: true
+#   INCLUDE_NLR=true Rscript main.R
+#
+# ⚠ RETRACTED 2026-07-15 — the old note here read "PD-L1+PS is a LOO-degenerate baseline
+#   (diag_24) → the no-NLR increment is INFLATED; NOT the incremental-value claim". That
+#   degeneracy was a **LOO tie-breaking artifact**, not a property of the data (diag_41): the LOO
+#   deficit tracks the fraction of TIED patient pairs — the immune composite (0% ties) shows NO
+#   deficit (0.771 vs 0.778), PS (44% ties) collapses 0.424 vs 0.551, PD-L1 (14%) 0.237 vs 0.393.
+#   Under repeated stratified 10-fold, PD-L1+PS on Delta is 0.543 — ABOVE chance, NOT degenerate
+#   → the NLR-free increment IS interpretable and IS the claim. See the cv_kfold JSON node.
+#   STILL TRUE at T0 (0.440, degenerate even under 10-fold) → T0 dropped from the main text.
+#   STILL TRUE: increments are NOT comparable across baselines — NLR-free +0.223 > with-NLR
+#   +0.176 is the diag_24 degradation effect (weaker baseline ⇒ bigger increment), not more value.
+include_nlr: false
 input_file: "data/Dati_NSCLC_standardizzati_anonimi_T0.xlsx"
 input_file_t0: "data/Dati_NSCLC_standardizzati_anonimi_T0.xlsx"
 input_file_t1: "data/Dati_NSCLC_standardizzati_anonimi_T1.xlsx"
@@ -108,17 +122,24 @@ experiments:
     machine_learning:
       # Clinical + cytometric ADDED-VALUE layer (run_clinical_immune_added_value):
       # does the immune gate composite add predictive value BEYOND a pre-specified
-      # standard-of-care clinical model? Baseline LOCKED from NSCLC-ICI literature
-      # (PD-L1 + NLR + PS), NOT data-selected — dropping PD-L1 would be a fatal
-      # reviewer critique (it is the FDA companion biomarker). In-fold median
-      # imputation keeps n=70 (complete-case n=55 is the sensitivity analysis).
-      # NLR is LOAD-BEARING (verified 2026-06-30, run 20260630_145210_pdl1_ps):
-      # PD-L1+PS alone is a DEGENERATE LOO baseline (clinical LOO 0.49Δ / 0.31 T0,
-      # below chance) — so NLR is retained in the FORMAL baseline; the PD-L1 / PS /
-      # PD-L1+PS decomposition is reported DESCRIPTIVELY only (apparent, app_submodel
-      # → Figure2CLONE), NOT as the LOO baseline for the increment test (diag_24).
-      # Endpoint = response (primary); OS/PFS Cox = secondary/sanity. NSCLC-specific
-      # (column names are dataset-specific); absent on other experiments → layer skipped.
+      # standard-of-care clinical model? Baseline LOCKED from NSCLC-ICI literature,
+      # NOT data-selected — dropping PD-L1 would be a fatal reviewer critique (it is
+      # the FDA companion biomarker), so PD-L1 stays even though it is at CHANCE here
+      # (direction-optimised rank AUC 0.508) — its failure is the study's MOTIVATION.
+      # In-fold median imputation (complete-case is the sensitivity analysis).
+      #
+      # ⚠ 2026-07-15 — the "NLR is LOAD-BEARING / PD-L1+PS is a DEGENERATE LOO baseline
+      # (0.49Δ / 0.31 T0)" rationale that lived here is RETRACTED: those sub-chance LOO
+      # values are a TIE-BREAKING ARTIFACT (diag_41), not anti-prediction. Under repeated
+      # stratified 10-fold PD-L1+PS on Delta is 0.543 (above chance) → the NLR-free
+      # baseline is the MAIN-TEXT one (top-level include_nlr: false). See that key.
+      # Retained from the old note: increments are NOT comparable across baselines, and
+      # T0's NLR-free baseline IS genuinely degenerate (0.440) → T0 dropped from main.
+      #
+      # Endpoint = response (primary). OS/PFS Cox = secondary and NULL — it is a
+      # SPECIFICITY argument ("response-specific, not a proxy for general prognosis"),
+      # never a survival claim; PFS is a DERIVED PROXY (no progression date exists).
+      # NSCLC-specific (column names are dataset-specific); absent elsewhere → skipped.
       clinical_model:
         # NLR presence is governed by the top-level `include_nlr` switch (env INCLUDE_NLR):
         # when false, Step 06 drops the NLR entry below before building the added-value layer.
@@ -161,8 +182,9 @@ experiments:
         #     (B) the 1-df immune composite + clinical vars = the FORMAL model, so its
         #         probability is the one Fig 2 validates (reported with its LOO AUC).
         #   null => B follows THIS run's own clinical vars, i.e. `include_nlr` drives it
-        #   (with_nlr → PD-L1+NLR+PS; no_nlr → PD-L1+PS). Do NOT hard-code a subset here:
-        #   dropping load-bearing NLR would make B a model the paper never validated.
+        #   (no_nlr → PD-L1+PS = the main-text model; with_nlr → PD-L1+NLR+PS). Do NOT
+        #   hard-code a subset here: B must stay identical to the model the run actually
+        #   validates, otherwise the nomogram draws a model the paper never tested.
         #   Set a list only to deliberately draw a sub-model (display-only).
         nomogram:
           clinical_vars: null
