@@ -683,6 +683,22 @@ validate_experiment_columns <- function(cfg, exp, nm) {
 #' @param run_root The run root directory; \code{output_root} becomes
 #'   \code{run_root/exp_name}.
 #' @return The isolated, pass-ready config list.
+#' Resolve the NLR toggle: env INCLUDE_NLR overrides the config default.
+#'
+#' Single source of truth for the with-/without-NLR variants. `main.R` needs it early
+#' (it labels the run dir with_nlr/no_nlr), and `prepare_pass_config()` re-applies it so
+#' EVERY consumer — including the `diagnostics/` single-step runners, which read the YAML
+#' directly and never saw main.R's resolution — honours the env var. Idempotent: main.R
+#' writes the resolved value back into base_config, so re-resolving yields the same answer.
+#' Without this the runners silently ran the WITH-NLR model regardless of INCLUDE_NLR, and
+#' would happily write it into a `*_no_nlr` run dir — a mislabeled artifact with no error.
+#' @return TRUE/FALSE
+resolve_include_nlr <- function(base_config) {
+  e <- Sys.getenv("INCLUDE_NLR", unset = NA_character_)
+  if (!is.na(e) && nzchar(e)) tolower(e) %in% c("1", "true", "yes", "t")
+  else !isFALSE(base_config$include_nlr)
+}
+
 prepare_pass_config <- function(base_config, exp_cfg, exp_name, pass_mode, run_root) {
   valid_modes <- c("standard", "longitudinal", "machine_learning")
   if (!pass_mode %in% valid_modes)
@@ -692,6 +708,10 @@ prepare_pass_config <- function(base_config, exp_cfg, exp_name, pass_mode, run_r
   config <- base_config
   config$project_name <- exp_name
   config$run_mode     <- pass_mode
+  # Re-apply the NLR toggle here so a runner that never called main.R's resolution
+  # cannot silently produce a with-NLR model under INCLUDE_NLR=false (Step 06 reads
+  # config$include_nlr). No-op when the caller already resolved it.
+  config$include_nlr  <- resolve_include_nlr(base_config)
 
   # Clinical override (all passes)
   if (!is.null(exp_cfg$clinical)) config$clinical <- exp_cfg$clinical
@@ -718,6 +738,11 @@ prepare_pass_config <- function(base_config, exp_cfg, exp_name, pass_mode, run_r
   } else if (pass_mode == "machine_learning") {
     if (!is.null(exp_cfg$input_file))    config$input_file    <- exp_cfg$input_file
     if (!is.null(exp_cfg$input_file_t0)) config$input_file_t0 <- exp_cfg$input_file_t0
+    # Step 06 reads T1 via the Step 01 longitudinal RDS, not this path — but the value is
+    # frozen into locked_model$development so a Δ scorer can name its own T1 cohort file.
+    # Without the override it would silently inherit the top-level default (a DIFFERENT
+    # extraction), and anonymized IDs are not stable across extractions.
+    if (!is.null(exp_cfg$input_file_t1)) config$input_file_t1 <- exp_cfg$input_file_t1
     if (!is.null(exp_cfg$machine_learning)) {
       config$machine_learning <- modifyList(
         if (!is.null(config$machine_learning)) config$machine_learning else list(),

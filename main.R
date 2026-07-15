@@ -64,9 +64,7 @@ validate_config(base_config)
 # as SEPARATE invocations. The run dir is auto-labeled with_nlr / no_nlr so each
 # configuration lands in its own self-describing directory. Applied in Step 06
 # (drops the NLR clinical var when false); reaches every pass via base_config.
-.inc_env    <- Sys.getenv("INCLUDE_NLR", unset = NA_character_)
-include_nlr <- if (!is.na(.inc_env) && nzchar(.inc_env))
-                 tolower(.inc_env) %in% c("1", "true", "yes", "t") else !isFALSE(base_config$include_nlr)
+include_nlr <- resolve_include_nlr(base_config)   # R/utils_io.R — shared with prepare_pass_config()
 base_config$include_nlr <- include_nlr
 .variant <- if (include_nlr) "with_nlr" else "no_nlr"
 base_config$run_label <- if (!is.null(base_config$run_label) && nzchar(base_config$run_label))

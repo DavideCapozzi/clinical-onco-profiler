@@ -521,6 +521,9 @@ if (lmm_robust$n_robust == 0) {
         seed          = if (!is.null(config$stats$seed)) as.integer(config$stats$seed) else NA_integer_,
         created       = format(Sys.time(), "%Y-%m-%d %H:%M:%S %Z"),
         input_file_t0 = config$input_file_t0,
+        # Only meaningful for a Δ/T1 scorer (composite_timepoint != "T0"), which needs a
+        # paired T1 draw — diagnostics/run_validation.R uses it for --self-test.
+        input_file_t1 = config$input_file_t1,
         n = clin_addval$n, n_pos = clin_addval$n_pos, n_neg = clin_addval$n_neg))
     write_locked_model(
       clin_addval$locked_model,
