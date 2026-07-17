@@ -14,8 +14,12 @@ run_publication_figures: true    # Step 06: Frontiers-styled manuscript figure s
 #   false = clinical model = PD-L1 + PS  → THE MAIN-TEXT HEADLINE *and* the deployment scorer
 #           (default since 2026-07-15). NLR is UNUSABLE prospectively: unavailable for some
 #           patients and ~17% median-imputed here. Headline (cv_kfold, Delta n=49):
-#           PD-L1+PS 0.543 -> +immune 0.780, increment +0.223 [0.173, 0.280],
+#           PD-L1+PS 0.543 -> combined 0.766, increment +0.223 [0.173, 0.280],
 #           LRT chi2=16.98 p=3.787e-05 (the LRT uses NO cross-validation).
+#           NB the immune composite ALONE is 0.780 — i.e. slightly ABOVE the combined model:
+#           the weak clinical vars add nothing on top of the composite under k-fold. The
+#           increment (+0.223) is immune-OVER-clinical and is unaffected; do NOT quote 0.780
+#           as the combined model (cv_kfold$auc_immune is the immune-alone arm).
 #   true  = PD-L1 + NLR + PS → the SUPPLEMENTARY specificity run ("the immune signal is not a
 #           proxy for standard prognostics, incl. NLR"): 0.6396 -> 0.8156, LRT p=4.211e-05.
 # main.R auto-labels the run dir with_nlr / no_nlr. Override per-run without editing this file:

@@ -1729,6 +1729,17 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
     message(sprintf("[ML][AV] k-fold CV block failed (non-fatal): %s", e$message)); NULL
   })
 
+  # Panel B of the nomogram IS the formal model, so it must be labelled with the
+  # REPORTABLE discrimination (repeated stratified k-fold), not the LOO AUC: the latter
+  # is tie-artifact-prone for the discrete clinical vars this model contains (diag_41),
+  # and is the number the project retired. `combined_loo_auc` is retained for continuity
+  # (older persisted publication_data rds carry only that field); the figure prefers
+  # `combined_cv_auc` and falls back to LOO only when it is absent. Display-only.
+  if (!is.null(nomo) && !is.null(cv_kfold)) {
+    nomo$combined_cv_auc <- cv_kfold$auc_combined
+    nomo$combined_cv_k   <- cv_kfold$k
+  }
+
   list(
     clinical_vars   = as.list(clinical_vars),
     formal_vars     = as.list(colnames(Cmat)),   # vars actually in the FORMAL baseline

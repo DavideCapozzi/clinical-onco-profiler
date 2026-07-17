@@ -717,12 +717,20 @@ pub_fig_nomogram <- function(nomo) {
   nB <- length(nomo$clinical_immune$predictors) + 3
   # Keep every caption line under ~110 characters: at size 7.6 on PUB_W2 (190 mm) a
   # longer line is silently clipped at the panel edge rather than wrapped.
-  loo  <- nomo$combined_loo_auc
+  # Panel B is the formal model → report its REPORTABLE discrimination (repeated
+  # stratified k-fold). LOO is the retired, tie-artifact-prone quantity (diag_41) and is
+  # used only as a fallback for publication_data rds persisted before combined_cv_auc.
+  cvauc <- nomo$combined_cv_auc
+  loo   <- nomo$combined_loo_auc
+  auc_txt <- if (!is.null(cvauc) && is.finite(cvauc))
+    sprintf(" (%d-fold CV AUC %.3f)", if (!is.null(nomo$combined_cv_k)) nomo$combined_cv_k else 10L, cvauc)
+  else if (!is.null(loo) && is.finite(loo)) sprintf(" (LOO AUC %.3f)", loo)
+  else ""
   foot <- paste0(
     "Sum each predictor's Points → Total points → Predicted probability of response.\n",
-    "A: apparent fit, per-marker display only. B: the formal model",
-    if (!is.null(loo) && is.finite(loo)) sprintf(" (LOO AUC %.3f)", loo) else "",
+    "A: apparent fit, per-marker display only. B: the formal model", auc_txt,
     " — axis positions from its apparent fit.\n",
+    "Continuous axes span the central 90% (5th–95th percentile) of observed values.\n",
     if (is_delta)
       paste0("Immune axes = exp(Δlogit) = fold change in the Ki67+:Ki67− (proliferating:resting) ",
              "cell ratio — exact;\ncomposite = weighted geometric mean of the three. ")
