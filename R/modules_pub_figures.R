@@ -9,12 +9,17 @@
 #
 # Narrative (rebalanced 2026-06-24 toward immunology, 3 main): MAIN Fig1 biology
 # (gate-marker cell frequencies T0/T1×group, log-y + LMM forest) / Fig2 added-value
-# (LRT-led) / Fig3 PD-L1 context. The gate-signal decomposition and the new
-# nested-selection validation are DEFENSE figures (statistical / invariance ⇒ weak
-# main-figure payoff) → SUPP. SUPP S1 CONSORT / S2 baseline-invariance / S3
-# specificity-null / S4 standalone / S5 coupling / S6 robustness / S7 calibration /
-# S8 gate-signal decomposition / S9 nested-selection validation (pub_fig_nested_robustness:
-# increment invariant to per-fold gate re-selection + Ki67 module recovered ~100% of folds) /
+# (LRT-led) / Fig3 PD-L1 context. The gate-signal decomposition and the
+# selection-aware circularity nulls are DEFENSE figures (statistical / invariance ⇒
+# weak main-figure payoff) → SUPP (promote S9 to main only for a Trustworthy-AI
+# venue). SUPP S1 CONSORT / S2 baseline-invariance / S3 specificity-null / S4
+# standalone / S5 coupling / S6 robustness / S7 calibration / S8 gate-signal
+# decomposition / S9 selection-aware circularity nulls (pub_fig_selection_aware:
+# the Δ-headline anti-circularity evidence — replays the WHOLE gate selection under
+# permuted labels; A = naive→selection-honest p ladder, B = increment/LRT null,
+# C = nested-AUC null. Built OUT-OF-PIPELINE by manuscript/figures/render_selection_aware.R
+# from the persisted diag_39b / diag_44 nulls — NOT pub_render_all. The old in-pipeline
+# S9 (pub_fig_nested_robustness, T0 nested-selection, milder circularity) is RETIRED) /
 # S10 nomograms (pub_fig_nomogram, per timepoint; panel A = 3 gate markers individual, apparent
 # display-only; panel B = immune composite + THIS run's clinical vars = the formal model, so
 # include_nlr drives it — reported with its leakage-free LOO AUC. Immune axes are relabelled
@@ -345,6 +350,105 @@ pub_fig_nested_robustness <- function(nv) {
     labs(x = "% of LOO folds selected", y = NULL) +
     theme_publication()
   pub_tag(pA | pB)
+}
+
+# ── SUPP — Selection-aware circularity nulls (Δ headline) ─────────────────────
+# Renders from the two persisted diagnostics nulls (NOT live pipeline objects,
+# so it is driven by a standalone script, not pub_render_all):
+#   nested_null = diag_39b_nested_null.rds  (fully-nested AUC permutation null)
+#   lrt_null    = diag_44_selection_aware_lrt.rds (selection-aware LRT null)
+# The circularity attack: the gate was chosen by a Time×Group interaction and
+# Group IS best response, so markers were picked using the outcome and tested on
+# the same outcome/patients. Both nulls REPLAY the whole selection under permuted
+# labels, so the p-value pays for the selection step (not just the model fit).
+# Three panels: A = the naive→selection-honest p ladder (the interpretive panel);
+# B = the LRT (increment) null; C = the nested-AUC (discrimination) null. Fat
+# tails (null maxima) are drawn explicitly — they are the honest caveat.
+pub_fig_selection_aware <- function(nested_null, lrt_null) {
+  if (is.null(nested_null) || is.null(lrt_null)) return(NULL)
+
+  # ---- recompute every number from the rds so nothing can drift ----
+  auc_perm <- nested_null$perm; auc_obs <- nested_null$observed
+  p_auc    <- (sum(auc_perm >= auc_obs) + 1) / (length(auc_perm) + 1)
+  auc_med  <- median(auc_perm); auc_max <- max(auc_perm)
+
+  lr_null  <- lrt_null$lr_null; lr_obs <- lrt_null$lr_obs   # FDR rule = the pipeline's own rule
+  p_lrt    <- (1 + sum(lr_null >= lr_obs)) / (length(lr_null) + 1)   # 0.0080 = the headline p
+  lr_null3 <- lrt_null$lr_null3                            # top-3 rule = the non-degenerate companion
+  p_lrt3   <- (1 + sum(lr_null3 >= lr_obs)) / (length(lr_null3) + 1) # 0.0100 (agrees with FDR)
+  naive_p  <- pchisq(lr_obs, df = 1, lower.tail = FALSE)   # the gate-FIXED asymptotic LRT
+  lr3_max  <- max(lr_null3)
+  frac_empty_fdr <- mean(lr_null == 0)                     # FDR gate empty under permuted labels
+  inflation <- signif(p_lrt / naive_p, 1)                  # ~200x
+
+  pfmt <- function(p) ifelse(p < 1e-4, sprintf("%.1e", p), sprintf("%.4f", p))
+
+  # ---- Panel A — the p-value ladder (naive vs selection-honest) ----
+  lad <- data.frame(
+    y     = c(3, 2, 1),   # Naive top, then the two honest tests
+    label = c("Naive test\n(gate held fixed)",
+              "Selection-honest\nincrement (LRT)",
+              "Selection-honest\ndiscrimination (AUC)"),
+    p     = c(naive_p, p_lrt, p_auc),
+    kind  = c("Optimistic (leaks selection)", "Honest", "Honest"),
+    stringsAsFactors = FALSE)
+  pA <- ggplot(lad, aes(p, y, colour = kind)) +
+    geom_vline(xintercept = 0.05, linetype = "dashed", colour = "grey50") +
+    annotate("text", x = 0.05, y = 3.62, label = "p = 0.05", size = 2.5,
+             colour = "grey40", vjust = 0, hjust = 0.5) +
+    geom_point(size = 3.4) +
+    geom_text(aes(label = pfmt(p)), vjust = -1.1, size = 2.7, colour = "grey20") +
+    annotate("segment", x = naive_p * 1.4, xend = p_lrt / 1.4, y = 2.5, yend = 2.5,
+             colour = "grey35", arrow = grid::arrow(length = unit(1.6, "mm"), ends = "both")) +
+    annotate("text", x = sqrt(naive_p * p_lrt), y = 2.5, vjust = -0.7, size = 2.6,
+             colour = "grey25", label = sprintf("selection inflates p ~%dx", inflation)) +
+    scale_colour_manual(values = c("Optimistic (leaks selection)" = pub_palette[["unpen"]],
+                                   "Honest" = pub_palette[["combined"]]), name = NULL) +
+    scale_x_log10(breaks = c(1e-5, 1e-4, 1e-3, 1e-2, 1e-1),
+                  labels = c("1e-5", "1e-4", "1e-3", "0.01", "0.1"),
+                  limits = c(naive_p / 3, 0.3)) +
+    scale_y_continuous(breaks = lad$y, labels = lad$label,
+                       limits = c(0.6, 3.8)) +
+    labs(x = "p-value (log scale) — lower = stronger evidence", y = NULL) +
+    theme_publication() + theme(plot.margin = margin(6, 12, 4, 6),
+                                legend.position = "bottom")
+
+  # ---- Panel B — the LRT (increment) null ----
+  # Shows the top-3-rule null (a full, legible distribution). The pipeline's own
+  # FDR-rule null is degenerate — its gate is EMPTY in ~96% of permutations, so
+  # there is usually nothing to add — which is why the FDR p (0.0080) is even
+  # slightly smaller than the top-3 p (0.0100). Both p's annotated.
+  pB <- ggplot(data.frame(lr = lr_null3), aes(lr)) +
+    geom_histogram(bins = 34, fill = "grey82", colour = "white", linewidth = 0.2) +
+    geom_vline(xintercept = lr_obs, colour = pub_palette[["combined"]], linewidth = 1) +
+    annotate("text", x = lr_obs, y = Inf, vjust = 1.4, hjust = 1.06, size = 2.5,
+             colour = pub_palette[["combined"]],
+             label = sprintf("observed %.1f\np = %s (FDR)\np = %s (top-3)",
+                             lr_obs, pfmt(p_lrt), pfmt(p_lrt3))) +
+    annotate("text", x = lr3_max, y = -Inf, vjust = -0.6, hjust = 1.0, size = 2.3,
+             colour = "grey45", label = sprintf("null max %.1f", lr3_max)) +
+    labs(x = "Increment likelihood-ratio statistic\n(permuted-label null)",
+         y = "Permutations") +
+    theme_publication()
+
+  # ---- Panel C — the nested-AUC (discrimination) null ----
+  pC <- ggplot(data.frame(auc = auc_perm), aes(auc)) +
+    geom_histogram(bins = 30, fill = "grey82", colour = "white", linewidth = 0.2) +
+    geom_vline(xintercept = 0.5, linetype = "dotted", colour = "grey40") +
+    geom_vline(xintercept = auc_obs, colour = pub_palette[["immune"]], linewidth = 1) +
+    annotate("text", x = 0.49, y = -Inf, vjust = -0.7, hjust = 1, size = 2.3,
+             colour = "grey40", label = sprintf("null median %.2f\n(= chance)", auc_med)) +
+    annotate("text", x = auc_obs, y = Inf, vjust = 1.4, hjust = 1.08, size = 2.6,
+             colour = pub_palette[["immune"]],
+             label = sprintf("observed %.3f\np = %s", auc_obs, pfmt(p_auc))) +
+    annotate("text", x = 0.84, y = -Inf, vjust = -0.7, hjust = 1, size = 2.3,
+             colour = "grey45", label = sprintf("null max %.2f", auc_max)) +
+    scale_x_continuous(limits = c(0, 0.85), breaks = c(0, 0.25, 0.5, 0.75)) +
+    labs(x = "Nested cross-validated AUC\n(permuted-label null)",
+         y = "Permutations") +
+    theme_publication()
+
+  pub_tag(pA / (pB | pC) + patchwork::plot_layout(heights = c(1, 1.15)))
 }
 
 # ── SUPP — Gate-signal decomposition (T0 / T1 / Delta) ────────────────────────
@@ -942,11 +1046,16 @@ pub_render_all <- function(objs, out_dir, project_name) {
   if (!is.null(objs$df_preds))
     save_pub_figure(pub_fig_standalone(objs$df_preds, objs$positive_label, perm = objs$perm),
                     pf("FigureS4_StandaloneClassifier"), PUB_W1, 120)
-  # S8 gate-signal decomposition (demoted from main), S9 nested-selection validation
+  # S8 gate-signal decomposition (demoted from main). NOTE: the former in-pipeline
+  # S9 (pub_fig_nested_robustness on objs$nested_val — the T0 nested-selection test,
+  # n_folds=82, MILDER circularity) is RETIRED: the Δ-headline circularity evidence is
+  # the selection-aware null figure built by manuscript/figures/render_selection_aware.R
+  # from the persisted diag_39b / diag_44 permutation nulls (those nulls are one-time
+  # computations, not per-run live objects, so they cannot be produced here). The
+  # nested_val object is still computed and lives in the JSON; only the weaker figure
+  # is dropped.
   if (!is.null(objs$gate_decomp))
     save_pub_figure(pub_fig_gate_signal(objs$gate_decomp),         pf("FigureS8_GateSignal"),     PUB_W2, 110)
-  if (!is.null(objs$nested_val))
-    save_pub_figure(pub_fig_nested_robustness(objs$nested_val),    pf("FigureS9_NestedValidation"), PUB_W2, 95)
   # S12 raw fold-change of the gate markers (clinician-facing biology; computed from raw %)
   if (!is.null(objs$gate_decomp))
     save_pub_figure(pub_fig_foldchange(objs$gate_decomp, resp_label = objs$positive_label),
