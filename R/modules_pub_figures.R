@@ -18,8 +18,7 @@
 # the Δ-headline anti-circularity evidence — replays the WHOLE gate selection under
 # permuted labels; A = naive→selection-honest p ladder, B = increment/LRT null,
 # C = nested-AUC null. Built OUT-OF-PIPELINE by manuscript/figures/render_selection_aware.R
-# from the persisted diag_39b / diag_44 nulls — NOT pub_render_all. The old in-pipeline
-# S9 (pub_fig_nested_robustness, T0 nested-selection, milder circularity) is RETIRED) /
+# from the persisted diag_39b / diag_44 nulls — NOT pub_render_all) /
 # S10 nomograms (pub_fig_nomogram, per timepoint; panel A = 3 gate markers individual, apparent
 # display-only; panel B = immune composite + THIS run's clinical vars = the formal model, so
 # include_nlr drives it — reported with its leakage-free LOO AUC. Immune axes are relabelled
@@ -124,30 +123,48 @@ pub_fig_added_value <- function(av) {
   val_p <- function(p) if (is.null(p) || !is.finite(p)) "NA"   else if (p < 1e-4)  "< 1e-4"  else sprintf("%.4f", p)
   pdl1_ok  <- "Prob_PDL1" %in% names(pp) && any(is.finite(pp$Prob_PDL1))
   comp_ok  <- "Prob_ClinicalComp" %in% names(pp) && any(is.finite(pp$Prob_ClinicalComp))
+  # NB every Prob_* column here is a LEAVE-ONE-OUT prediction (pl_* upstream), so
+  # every curve — and every AUC in the legend — is LOO. Labelled as such because
+  # LOO is NOT the reportable discrimination: for tied/discrete clinical vars it is
+  # tie-artifact-prone (PS has 44% tied pairs) and under-reports the clinical arm,
+  # which would INFLATE the visually-read increment. The reportable repeated
+  # stratified 10-fold pair is annotated on the panel (see cv_lab below).
   rc  <- pub_roc_df(pp$Prob_Clinical, y); ro <- pub_roc_df(pp$Prob_Combined, y)
-  lc  <- sprintf("%s (AUC %.2f, n=%d)", clin_nm, rc$auc, nfin(pp$Prob_Clinical))
-  lk  <- sprintf("Clinical + immune (AUC %.2f, n=%d)", ro$auc, nfin(pp$Prob_Combined))
+  lc  <- sprintf("%s (LOO AUC %.2f, n=%d)", clin_nm, rc$auc, nfin(pp$Prob_Clinical))
+  lk  <- sprintf("Clinical + immune (LOO AUC %.2f, n=%d)", ro$auc, nfin(pp$Prob_Combined))
   roc_l <- list(data.frame(rc$df, M = lc), data.frame(ro$df, M = lk))
   lev   <- c(lc, lk); cols <- c(pub_palette[["clinical"]], pub_palette[["combined"]]); lts <- c(2, 1)
   if (comp_ok) {                                # display-only 'clinical + NLR' comparator
     rcmp <- pub_roc_df(pp$Prob_ClinicalComp, y)
-    lm_  <- sprintf("%s (AUC %.2f, n=%d)", clab, rcmp$auc, nfin(pp$Prob_ClinicalComp))
+    lm_  <- sprintf("%s (LOO AUC %.2f, n=%d)", clab, rcmp$auc, nfin(pp$Prob_ClinicalComp))
     roc_l <- c(roc_l, list(data.frame(rcmp$df, M = lm_)))
     lev <- c(lev, lm_); cols <- c(cols, COMP_COL); lts <- c(lts, 5)
   }
   if (pdl1_ok) {
     fin <- is.finite(pp$Prob_PDL1)              # complete-case only (PD-L1 missingness)
     rp <- pub_roc_df(pp$Prob_PDL1[fin], y[fin])
-    lp <- sprintf("PD-L1 alone (AUC %.2f, n=%d)", rp$auc, sum(fin))
+    lp <- sprintf("PD-L1 alone (LOO AUC %.2f, n=%d)", rp$auc, sum(fin))
     roc_l <- c(list(data.frame(rp$df, M = lp)), roc_l)
     lev <- c(lp, lev); cols <- c(PDL1_RED, cols); lts <- c(4, lts)
   }
   roc <- do.call(rbind, roc_l); roc$M <- factor(roc$M, levels = lev)
+  # Reportable discrimination = repeated stratified k-fold; the curves above are LOO.
+  # Stated on the panel so the reader never reads the increment off the LOO curves.
+  # Guarded: runs / persisted rds predating the cv_kfold node simply omit the line.
+  cv      <- av$cv_kfold
+  cv_clin <- suppressWarnings(as.numeric(cv$auc_clinical)[1])
+  cv_comb <- suppressWarnings(as.numeric(cv$auc_combined)[1])
+  cv_k    <- suppressWarnings(as.numeric(cv$k)[1])
+  cv_lab  <- if (length(cv_clin) && length(cv_comb) &&
+                 isTRUE(is.finite(cv_clin)) && isTRUE(is.finite(cv_comb)))
+    sprintf("Reportable %d-fold CV AUC: %.2f → %.2f (curves = LOO)\n",
+            if (isTRUE(is.finite(cv_k))) as.integer(cv_k) else 10L, cv_clin, cv_comb) else ""
   pA <- ggplot(roc, aes(FPR, TPR, colour = M, linetype = M)) +
     geom_abline(slope = 1, intercept = 0, linetype = "dotted", colour = pub_palette[["ref"]]) +
     geom_path(linewidth = 0.8) +
     annotate("text", x = 0.97, y = 0.06, hjust = 1, vjust = 0, size = 2.7,
-             label = sprintf("LRT p %s (perm %s)", op_p(inc$lrt_p), val_p(inc$lrt_perm_p))) +
+             label = sprintf("%sLRT p %s (perm %s)", cv_lab,
+                             op_p(inc$lrt_p), val_p(inc$lrt_perm_p))) +
     scale_colour_manual(values = setNames(cols, lev)) +
     scale_linetype_manual(values = setNames(lts, lev)) +
     coord_equal(xlim = c(0, 1), ylim = c(0, 1), expand = FALSE) +
@@ -181,6 +198,11 @@ pub_fig_added_value <- function(av) {
     scale_linetype_manual(values = b_lts) +
     coord_cartesian(ylim = c(min(-0.02, min(cur$treat_all)),
                              max(c(cur$clinical, cur$combined, cur$comparator)) + 0.02)) +
+    # Net benefit is computed on the same LOO probabilities as panel A, so the
+    # clinical reference arm carries the same tie artifact — disclosed on-panel
+    # rather than left for the caption, since the curve is read directly.
+    annotate("text", x = -Inf, y = -Inf, hjust = -0.04, vjust = -0.8, size = 2.3,
+             colour = "grey30", label = "Net benefit from LOO probabilities") +
     labs(x = "Threshold probability", y = "Net benefit") +
     theme_publication() + theme(legend.direction = "vertical")
   pub_tag(pA | pB)
@@ -310,47 +332,6 @@ pub_fig_pdl1_context <- function(sr) {
   pub_tag(pA | pB)
 }
 
-# ── SUPP — Nested gate-selection validation (anti-circularity test) ───────────
-#' Panel A: the increment is invariant to gate selection — clinical→combined LOO
-#' AUC for the pre-specified gate vs the gate re-selected inside every LOO fold.
-#' Panel B: a stable Ki67 module is re-selected every fold (selection frequency of
-#' the markers that are ever chosen; pre-specified markers highlighted).
-pub_fig_nested_robustness <- function(nv) {
-  if (is.null(nv) || is.null(nv$auc)) return(NULL)
-  ap <- nv$auc$prespec; an <- nv$auc$nested
-  dd <- data.frame(
-    set  = factor(c("Pre-specified\ngate", "Gate re-selected\nper fold"),
-                  levels = c("Gate re-selected\nper fold", "Pre-specified\ngate")),
-    clin = c(ap["clinical"], an["clinical"]),
-    comb = c(ap["combined"], an["combined"]))
-  pA <- ggplot(dd, aes(y = set)) +
-    geom_segment(aes(x = clin, xend = comb, yend = set), colour = "grey60", linewidth = 0.8) +
-    geom_point(aes(x = clin), size = 2.8, colour = pub_palette[["clinical"]]) +
-    geom_point(aes(x = comb), size = 2.8, colour = pub_palette[["combined"]]) +
-    geom_text(aes(x = comb, label = sprintf("%.3f (%+.3f)", comb, comb - clin)),
-              vjust = -1.1, size = 2.5, colour = "grey20") +
-    annotate("text", x = dd$clin[1], y = 0.45, vjust = 1, size = 2.4, colour = "grey30",
-             label = sprintf("clinical %.3f", dd$clin[1])) +
-    coord_cartesian(xlim = c(0.5, 0.8), ylim = c(0.5, 2.5), clip = "off") +
-    labs(x = "Clinical → +immune LOO AUC", y = NULL) +
-    theme_publication() + theme(plot.margin = margin(10, 16, 6, 6))
-
-  gf <- nv$gate_freq / nv$n_folds
-  sel <- sort(gf[gf > 0], decreasing = TRUE)
-  db <- data.frame(Marker = names(sel), Freq = 100 * as.numeric(sel))
-  db$grp <- ifelse(db$Marker %in% nv$prespec_markers, "Pre-specified", "Also selected")
-  db$Marker <- factor(db$Marker, levels = rev(db$Marker))
-  n_never <- nv$n_markers - nrow(db)
-  pB <- ggplot(db, aes(Freq, Marker, colour = grp)) +
-    geom_segment(aes(x = 0, xend = Freq, yend = Marker), linewidth = 0.5) +
-    geom_point(size = 2.6) +
-    scale_colour_manual(values = c("Pre-specified" = pub_palette[["combined"]],
-                                   "Also selected" = "grey55"), name = NULL) +
-    scale_x_continuous(limits = c(0, 108), breaks = c(0, 50, 100)) +
-    labs(x = "% of LOO folds selected", y = NULL) +
-    theme_publication()
-  pub_tag(pA | pB)
-}
 
 # ── SUPP — Selection-aware circularity nulls (Δ headline) ─────────────────────
 # Renders from the two persisted diagnostics nulls (NOT live pipeline objects,
@@ -1046,14 +1027,10 @@ pub_render_all <- function(objs, out_dir, project_name) {
   if (!is.null(objs$df_preds))
     save_pub_figure(pub_fig_standalone(objs$df_preds, objs$positive_label, perm = objs$perm),
                     pf("FigureS4_StandaloneClassifier"), PUB_W1, 120)
-  # S8 gate-signal decomposition (demoted from main). NOTE: the former in-pipeline
-  # S9 (pub_fig_nested_robustness on objs$nested_val — the T0 nested-selection test,
-  # n_folds=82, MILDER circularity) is RETIRED: the Δ-headline circularity evidence is
-  # the selection-aware null figure built by manuscript/figures/render_selection_aware.R
-  # from the persisted diag_39b / diag_44 permutation nulls (those nulls are one-time
-  # computations, not per-run live objects, so they cannot be produced here). The
-  # nested_val object is still computed and lives in the JSON; only the weaker figure
-  # is dropped.
+  # S8 gate-signal decomposition (demoted from main). S9 is NOT rendered here: the
+  # selection-aware nulls are one-time computations, not per-run live objects — see
+  # manuscript/figures/render_selection_aware.R. objs$nested_val is still computed
+  # and lives in the JSON as the in-pipeline anti-circularity record.
   if (!is.null(objs$gate_decomp))
     save_pub_figure(pub_fig_gate_signal(objs$gate_decomp),         pf("FigureS8_GateSignal"),     PUB_W2, 110)
   # S12 raw fold-change of the gate markers (clinician-facing biology; computed from raw %)

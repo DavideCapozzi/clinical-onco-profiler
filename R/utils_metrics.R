@@ -71,20 +71,43 @@ extract_run_metrics <- function(exp_root, experiment = basename(exp_root)) {
     # Clinical+immune added-value increment (NSCLC lmm path). When present this is
     # THE publishable angle — the verdict gates on the LRT (correct nested test) +
     # IDI here, not on the exploratory standalone classifier. NULL when not run.
+    #
+    # HEADLINE DISCRIMINATION = cv_kfold (repeated stratified 10-fold). LOO is
+    # RETAINED but demoted to the *_loo fields: for tied/discrete clinical vars it
+    # is tie-artifact-prone and can fall below chance (PS 44% tied pairs → 0.424 vs
+    # 0.551), which UNDER-reports the clinical reference arm and therefore INFLATES
+    # the apparent increment. Never surface a sub-chance LOO AUC as the headline.
+    # Falls back to LOO only for runs predating the cv_kfold node (pre-e386e6f).
     av <- ml$clinical_immune_added_value
     if (!is.null(av)) {
       inc <- av$increment
       ci_lo <- if (!is.null(inc$idi_ci)) inc$idi_ci[[1]] else NA_real_
       ci_hi <- if (!is.null(inc$idi_ci)) inc$idi_ci[[2]] else NA_real_
+      cv    <- av$cv_kfold
+      auc_clin_loo <- .or_else(av$auc$clinical[["loo"]], NA_real_)
+      auc_comb_loo <- .or_else(av$auc$combined[["loo"]], NA_real_)
+      # write_json(digits = 4) rounds p < 5e-5 to a literal 0 in the JSON; the
+      # unrounded value is carried alongside as the lrt_p_sci string. Prefer it.
+      lrt_p_num <- suppressWarnings(as.numeric(.or_else(inc$lrt_p_sci, NA_character_)))
+      if (!isTRUE(is.finite(lrt_p_num))) lrt_p_num <- .or_else(inc$lrt_p, NA_real_)
       out$ml$added_value <- list(
-        lrt_p        = .or_else(inc$lrt_p,       NA_real_),
+        lrt_p        = lrt_p_num,
         lrt_perm_p   = .or_else(inc$lrt_perm_p,  NA_real_),
         lrt_firth_p  = .or_else(inc$lrt_firth_p, NA_real_),
         idi          = .or_else(inc$idi,         NA_real_),
         idi_ci_lo    = .or_else(ci_lo, NA_real_),
         idi_ci_hi    = .or_else(ci_hi, NA_real_),
-        auc_clinical = .or_else(av$auc$clinical[["loo"]], NA_real_),
-        auc_combined = .or_else(av$auc$combined[["loo"]], NA_real_)
+        # headline (k-fold), with the LOO node as the pre-cv_kfold fallback
+        auc_clinical = .or_else(cv$auc_clinical, auc_clin_loo),
+        auc_combined = .or_else(cv$auc_combined, auc_comb_loo),
+        # the immune-alone arm: reported so it stops being invisible — it slightly
+        # EXCEEDS the combined model here, and was transposed into "combined" in
+        # every doc until 2026-07-16.
+        auc_immune   = .or_else(cv$auc_immune, .or_else(av$auc$immune[["loo"]], NA_real_)),
+        cv_k         = .or_else(cv$k, NA_real_),
+        # retained, demoted — the tie-artifact-prone estimates
+        auc_clinical_loo = auc_clin_loo,
+        auc_combined_loo = auc_comb_loo
       )
     }
   }
@@ -110,6 +133,11 @@ extract_run_metrics <- function(exp_root, experiment = basename(exp_root)) {
 flatten_run_metrics <- function(m) {
   out <- if (!is.null(m$ml)) m$ml else list()
   if (!is.null(m$lmm)) out$n_sig_fdr <- m$lmm$n_sig_fdr
+  # Hoist the added-value block to the top level as av_* so run-to-run comparison
+  # can address it (it is the headline angle; nested, it was invisible to compare_runs).
+  # $added_value is kept intact — publishability_verdict() reads it by name.
+  if (!is.null(out$added_value))
+    for (f in names(out$added_value)) out[[paste0("av_", f)]] <- out$added_value[[f]]
   out
 }
 
@@ -217,7 +245,12 @@ compare_runs <- function(run_base, run_new, experiments = NULL, tol = 5e-4) {
   if (length(exps) == 0) return(data.frame())
 
   num_fields <- c("svm_auc", "svm_perm_p", "en_auc", "en_perm_p",
-                  "nested_loo_auc", "n_samples", "n_features", "n_sig_fdr")
+                  "nested_loo_auc", "n_samples", "n_features", "n_sig_fdr",
+                  # added-value angle (headline for NSCLC): k-fold AUCs + the
+                  # increment tests, with the demoted LOO pair kept visible.
+                  "av_auc_clinical", "av_auc_combined", "av_auc_immune",
+                  "av_lrt_p", "av_lrt_perm_p", "av_idi", "av_idi_ci_lo",
+                  "av_auc_clinical_loo", "av_auc_combined_loo")
   chr_fields <- c("primary_method", "gate_method")
 
   fmt <- function(x) if (is.null(x) || length(x) == 0) "—"

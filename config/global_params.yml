@@ -159,7 +159,11 @@ experiments:
         # Primary drives the stable clinical_immune_added_value node + locked model + figures.
         # Secondaries are emitted additively as clinical_immune_added_value_<tp> (paired subset).
         composite_timepoint: "delta"
-        composite_secondary_timepoints: ["T0"]
+        # T0 was DROPPED from the main text (its NLR-free baseline is degenerate even
+        # under repeated 10-fold: 0.440) → emitting the T0 panels every run produced
+        # figures nothing cites. Re-enable with ["T0"] to regenerate the reference
+        # analysis; the numbers are preserved in run 20260716_133555_no_nlr.
+        composite_secondary_timepoints: []
         # ── Defensibility sensitivities (additive; unpenalized SoC model stays PRIMARY) ──
         # 1b — ridge (L2) combined model as a CALIBRATION sensitivity: recalibrates the
         #      over-fit combined model (slope ~0.66 -> ~0.9) without losing discrimination.
