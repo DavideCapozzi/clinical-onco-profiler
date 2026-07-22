@@ -42,97 +42,6 @@ theme_coda <- function() {
     )
 }
 
-#' @title Generate Dynamic Group Palette (Root-Aware)
-#' @description 
-#' Centralized color logic with intelligent matching using a safe List-based approach.
-#' Priority:
-#' 1. Exact Match in Config (e.g., "NSCLC_LS" -> config "NSCLC_LS")
-#' 2. Root Match (e.g., "NSCLC_EP" -> matches config "NSCLC")
-#' 3. Control/Case Defaults
-#' 
-#' @param config The loaded configuration list.
-#' @param match_groups Character vector of groups present in the data (optional). 
-#' @return A named vector of hex codes.
-get_palette <- function(config, match_groups = NULL) {
-  
-  # Initialize as LIST to allow safe NULL checks for missing keys
-  # (Character vectors crash on [[missing_key]])
-  final_palette <- list()
-  
-  # 1. Defaults setup (Safety unlist to handle YAML quirks)
-  ctrl_col <- if(!is.null(config$colors$control)) unlist(config$colors$control) else "grey50"
-  case_cols <- if(!is.null(config$colors$cases)) unlist(config$colors$cases) else c("#CD5C5C", "#4682B4")
-  
-  # Base lists from config
-  defined_colors <- if(!is.null(config$colors$groups)) config$colors$groups else list()
-  ctrl_groups_cfg <- unlist(config$control_group)
-  case_groups_cfg <- unlist(config$case_groups)
-  
-  # Combine specific definitions into the palette first
-  for (grp in names(defined_colors)) {
-    final_palette[[grp]] <- defined_colors[[grp]]
-  }
-  
-  # 2. Assign Generic Control/Case Colors for items in Config not yet colored
-  if (!is.null(ctrl_groups_cfg)) {
-    for(g in ctrl_groups_cfg) {
-      if(is.null(final_palette[[g]])) final_palette[[g]] <- ctrl_col
-    }
-  }
-  
-  if (!is.null(case_groups_cfg)) {
-    for (i in seq_along(case_groups_cfg)) {
-      grp <- case_groups_cfg[i]
-      if(is.null(final_palette[[grp]])) {
-        # Cycle through available case colors
-        col_idx <- (i - 1) %% length(case_cols) + 1
-        final_palette[[grp]] <- case_cols[col_idx]
-      }
-    }
-  }
-  
-  # 3. Data-Driven Extension (Root Matching)
-  if (!is.null(match_groups)) {
-    # Remove NAs and convert to character
-    unique_data_groups <- unique(as.character(na.omit(match_groups)))
-    
-    for (g_data in unique_data_groups) {
-      
-      # Case A: Already has a color (Exact match)
-      if (!is.null(final_palette[[g_data]])) next
-      
-      # Case B: Try Root Matching (Split by first underscore)
-      # e.g., "NSCLC_EP" -> Root "NSCLC"
-      root_name <- strsplit(g_data, "_")[[1]][1]
-      
-      # Safe lookup because final_palette is a list
-      if (!is.null(final_palette[[root_name]])) {
-        # Inherit color from Root
-        final_palette[[g_data]] <- final_palette[[root_name]]
-        
-      } else {
-        # Case C: Fallback
-        if (g_data %in% ctrl_groups_cfg) {
-          final_palette[[g_data]] <- ctrl_col
-        } else {
-          # Default fallback for unknown groups
-          final_palette[[g_data]] <- case_cols[1] 
-        }
-      }
-    }
-  }
-  
-  # 4. Generic Fallback keys (required for legends sometimes)
-  if (is.null(final_palette[["Case"]])) {
-    final_palette[["Case"]] <- case_cols[1]
-  }
-  if (is.null(final_palette[["Control"]])) {
-    final_palette[["Control"]] <- ctrl_col
-  }
-  
-  # Convert back to named character vector for ggplot
-  return(unlist(final_palette))
-}
 
 #' @title Plot Merged Raw Distribution with Highlights & Stats
 #' @description 
@@ -390,16 +299,6 @@ plot_pca_custom <- function(pca_res, metadata, colors, dims = c(1, 2),
   return(p)
 }
 
-#' @title Variable Contribution Plot
-#' @description Wraps fviz_pca_var for consistent styling.
-plot_pca_variables <- function(pca_res) {
-  fviz_pca_var(pca_res, 
-               col.var = "contrib", 
-               gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
-               repel = TRUE) +
-    labs(title = "Marker Contribution to Variance") +
-    theme_coda()
-}
 
 #' @title Plot PCA Variance Dashboard
 #' @description 
@@ -550,65 +449,6 @@ plot_stratification_heatmap <- function(mat_z, metadata, annotation_colors_list,
   return(hm)
 }
 
-#' @title Generate Complex Heatmap Annotation Colors
-#' @description 
-#' Handles the logic for assigning colors to metadata columns in heatmaps.
-#' Implements inheritance (Subgroup inherits from Group) and highlighting rules.
-#' 
-#' @param metadata Dataframe of metadata.
-#' @param group_col Name of the main grouping column.
-#' @param base_colors Named vector of base group colors.
-#' @param hl_pattern Pattern to search for special highlighting.
-#' @param hl_color Color to use for highlighted items.
-#' @return A list of named vectors suitable for ComplexHeatmap.
-viz_generate_complex_heatmap_colors <- function(metadata, group_col, base_colors, 
-                                                hl_pattern = NULL, hl_color = "#FFD700") {
-  
-  annotation_colors <- list()
-  
-  # 1. Base Group Colors
-  present_groups <- unique(metadata[[group_col]])
-  # Intersect to avoid errors if config has more colors than data
-  group_pal <- base_colors[intersect(names(base_colors), present_groups)]
-  annotation_colors[[group_col]] <- group_pal
-  
-  # 2. Extra Columns Logic
-  extra_cols <- setdiff(colnames(metadata), group_col)
-  
-  for (col_name in extra_cols) {
-    # Get unique non-NA values
-    raw_vals <- as.character(metadata[[col_name]])
-    vals <- sort(unique(raw_vals[!is.na(raw_vals)]))
-    
-    col_pal <- character() # Force named vector
-    
-    for (v in vals) {
-      # Priority 1: Exact Match to a known Group Name -> Inherit Color
-      if (v %in% names(group_pal)) {
-        col_pal[[v]] <- group_pal[[v]]
-        
-        # Priority 2: Matches Highlight Pattern -> Use Highlight Color
-      } else if (!is.null(hl_pattern) && hl_pattern != "" && grepl(hl_pattern, v)) {
-        col_pal[[v]] <- hl_color
-        
-        # Priority 3: Parent Group Containment (e.g. "NSCLC_LS" contains "NSCLC")
-      } else {
-        parent_match <- NA
-        for (grp in names(group_pal)) {
-          if (grepl(grp, v)) {
-            parent_match <- grp
-            break
-          }
-        }
-        # Priority 4: Fallback Gray
-        col_pal[[v]] <- if (!is.na(parent_match)) group_pal[[parent_match]] else "#D3D3D3"
-      }
-    }
-    annotation_colors[[col_name]] <- col_pal
-  }
-  
-  return(annotation_colors)
-}
 
 #' @title Plot Signature Boxplots (Top Drivers)
 #' @description 
@@ -870,70 +710,6 @@ viz_report_plsda <- function(pls_res, drivers_df, metadata_viz, colors_viz, out_
   }
 }
 
-#' @title Plot Partial vs Raw Correlation Density Overlay
-#' @description 
-#' Visualizes the distribution of partial correlation values (Shrinkage) overlaid
-#' on top of the raw Pearson correlation values to demonstrate the shrinkage effect.
-#' 
-#' @param pcor_mat Numeric matrix of partial correlations.
-#' @param cor_mat Numeric matrix of raw Pearson correlations.
-#' @param adj_mat Optional. Adjacency matrix (0/1) of stable edges.
-#' @param threshold Numeric. The magnitude threshold used for filtering.
-#' @param group_label String. Label for the group (e.g., "Healthy").
-#' @return A ggplot object.
-viz_plot_edge_density_overlay <- function(pcor_mat, cor_mat, adj_mat = NULL, threshold = 0.15, group_label = "") {
-  
-  require(ggplot2)
-  
-  vals_pcor <- pcor_mat[upper.tri(pcor_mat)]
-  vals_cor <- cor_mat[upper.tri(cor_mat)]
-  
-  df_plot <- rbind(
-    data.frame(Value = vals_cor, Metric = "Pearson (Raw)"),
-    data.frame(Value = vals_pcor, Metric = "Partial (Shrinkage)")
-  )
-  
-  # Set factor levels so Pearson renders behind Partial
-  df_plot$Metric <- factor(df_plot$Metric, levels = c("Pearson (Raw)", "Partial (Shrinkage)"))
-  
-  if (!is.null(adj_mat)) {
-    n_stable <- sum(adj_mat[upper.tri(adj_mat)])
-    sub_text <- sprintf("Threshold: |rho| > %.4f | Final Stable Edges: %d", threshold, n_stable)
-  } else {
-    pct_kept <- round((sum(abs(vals_pcor) >= threshold) / length(vals_pcor)) * 100, 1)
-    sub_text <- sprintf("Threshold: |rho| > %.4f (Keeps %.1f%% of Partial edges)", threshold, pct_kept)
-  }
-  
-  p <- ggplot(df_plot, aes(x = Value, fill = Metric, color = Metric)) +
-    geom_density(alpha = 0.4, linewidth = 0.8)
-  
-  # Conditionally add Threshold Lines
-  if (threshold > 0) {
-    p <- p + geom_vline(xintercept = c(-threshold, threshold), 
-                        linetype = "dashed", color = "red", linewidth = 0.8)
-  }
-  
-  p <- p + 
-    scale_fill_manual(values = c("Pearson (Raw)" = "gray60", "Partial (Shrinkage)" = "steelblue")) +
-    scale_color_manual(values = c("Pearson (Raw)" = "gray40", "Partial (Shrinkage)" = "#1F4E79")) +
-    labs(
-      title = paste("Correlation Distribution Overlay:", group_label),
-      subtitle = sub_text,
-      x = "Correlation Value",
-      y = "Density",
-      fill = "Metric",
-      color = "Metric"
-    ) +
-    theme_bw(base_size = 12) +
-    theme(
-      plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
-      plot.subtitle = element_text(size = 11, hjust = 0.5, color = "gray40"),
-      legend.position = "bottom"
-    ) +
-    xlim(-1, 1) 
-  
-  return(p)
-}
 
 #' @title Extract Clinical Colors
 #' @description Safely extracts colors for responder and non-responder labels from the global configuration.
@@ -1126,64 +902,6 @@ plot_hub_driver_quadrant <- function(hub_driver_df, y_label = "Degree", title_su
   return(p)
 }
 
-#' @title Plot Differential Edge Overlap (Venn / UpSet)
-#' @description Intersection of differential edges across multiple experiments.
-#' @param edge_list Named list of character vectors (Edge IDs per experiment).
-#' @param fill_colors Named color vector matching names(edge_list).
-#' @param title Plot title.
-viz_plot_differential_overlap <- function(edge_list, fill_colors = NULL, title = "Differential Overlap") {
-
-  requireNamespace("ComplexHeatmap", quietly = TRUE)
-  requireNamespace("grid", quietly = TRUE)
-  requireNamespace("ggVennDiagram", quietly = TRUE)
-
-  if (length(edge_list) < 2) {
-    warning("[Viz] Need at least 2 sets for overlap analysis.")
-    return(NULL)
-  }
-
-  final_colors <- NULL
-  if (!is.null(fill_colors)) {
-    common_names <- intersect(names(edge_list), names(fill_colors))
-    if (length(common_names) > 0) {
-      final_colors <- fill_colors[names(edge_list)]
-      final_colors[is.na(final_colors)] <- "grey80"
-    }
-  }
-  if (is.null(final_colors)) {
-    defaults <- c("#4682B4", "#CD5C5C", "#E7B800", "#2E8B57", "#9932CC")
-    final_colors <- setNames(rep_len(defaults, length(edge_list)), names(edge_list))
-  }
-
-  if (length(edge_list) <= 3) {
-    p <- ggVennDiagram::ggVennDiagram(edge_list, label_alpha = 0, set_color = "black") +
-      ggplot2::scale_fill_gradient(low = "white", high = "white") +
-      ggplot2::theme(legend.position = "none") +
-      ggplot2::labs(title = title) +
-      ggplot2::theme(plot.title = ggplot2::element_text(hjust = 0.5, face = "bold")) +
-      ggplot2::scale_x_continuous(expand = ggplot2::expansion(mult = 0.2))
-    print(p)
-    return(invisible(p))
-  } else {
-    m_comb <- ComplexHeatmap::make_comb_mat(edge_list)
-    ComplexHeatmap::draw(
-      ComplexHeatmap::UpSet(
-        m_comb,
-        set_order = names(edge_list),
-        comb_order = order(ComplexHeatmap::comb_size(m_comb), decreasing = TRUE),
-        pt_size = grid::unit(3, "mm"), lwd = 2,
-        top_annotation = ComplexHeatmap::HeatmapAnnotation(
-          "Intersection" = ComplexHeatmap::anno_barplot(
-            ComplexHeatmap::comb_size(m_comb), border = FALSE,
-            gp = grid::gpar(fill = "black"), height = grid::unit(4, "cm")
-          ),
-          annotation_name_side = "left"
-        ),
-        column_title = title
-      )
-    )
-  }
-}
 
 
 #' @title Clinical-Utility Figure (Calibration + Decision Curve)

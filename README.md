@@ -47,7 +47,7 @@ micromamba create -f env/environment.lock.yml   # exact versions + build strings
 Rscript main.R
 
 # With a custom config (e.g. a new cohort) — no repo edits
-CONFIG_PATH=config/global_params_hnscc.yml Rscript main.R
+CONFIG_PATH=/path/to/alt_config.yml Rscript main.R
 
 # Restrict a run to named experiments
 EXPERIMENTS=BestResponse_2v3_4 Rscript main.R
@@ -68,8 +68,7 @@ Rscript data/test_parse_range_midpoint.R  # unit test: CPS range parsing
 
 ```
 config/                    Pipeline configuration (YAML)
-  global_params.yml        Primary multi-experiment config
-  global_params_hnscc.yml  Flat single-cohort config (legacy)
+  global_params.yml        Multi-experiment config (single source of truth)
 
 data/                      Input Excel files (not tracked in git — add your own)
 

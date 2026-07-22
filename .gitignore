@@ -28,3 +28,6 @@ diagnostics/*
 diagnostics/archive/*
 !diagnostics/archive/README.md
 explore_added_value.md
+
+# Archived dated records (closed decisions) — local only
+docs/archive/

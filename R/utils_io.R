@@ -187,53 +187,6 @@ step_output_path <- function(config, step, name, ext = NULL) {
   file.path(step_dir(config, step), fname)
 }
 
-#' @title Load Raw Data (Excel)
-#' @description Iterates over sheets defined in config and merges them, preserving metadata.
-#' @param config The loaded configuration object.
-#' @return A raw dataframe with Patient_ID, Group, and Subgroup info.
-load_raw_data <- function(config) {
-  input_file <- config$input_file
-  subgroup_col <- config$metadata$subgroup_col # Read from config
-  
-  if (!file.exists(input_file)) {
-    stop(sprintf("Input data file not found: %s", input_file))
-  }
-  
-  df_list <- list()
-  message("[IO] Loading Excel sheets...")
-  
-  for (cohort_name in names(config$cohorts)) {
-    sheet_name <- config$cohorts[[cohort_name]]
-    
-    tryCatch({
-      # Load sheet
-      raw_tmp <- read_excel(input_file, sheet = sheet_name)
-      
-      # Standardize Patient_ID
-      colnames(raw_tmp)[1] <- "Patient_ID"
-      
-      # 1. Identify Marker columns (exclude ID and the specific Subgroup column)
-      cols_to_exclude <- c("Patient_ID")
-      if (!is.null(subgroup_col) && subgroup_col %in% colnames(raw_tmp)) {
-        cols_to_exclude <- c(cols_to_exclude, subgroup_col)
-      }
-      
-      # 2. Convert ONLY marker columns to numeric
-      clean_tmp <- raw_tmp %>%
-        mutate(across(-all_of(cols_to_exclude), ~suppressWarnings(as.numeric(as.character(.))))) %>%
-        mutate(Group = cohort_name, .after = Patient_ID)
-      
-      df_list[[cohort_name]] <- clean_tmp
-      message(sprintf("    -> Loaded %s: %d samples", cohort_name, nrow(clean_tmp)))
-      
-    }, error = function(e) {
-      warning(sprintf("    [WARN] Failed to load sheet '%s': %s", sheet_name, e$message))
-    })
-  }
-  
-  full_data <- bind_rows(df_list)
-  return(full_data)
-}
 
 #' @title Save Quality Control Report to Excel
 #' @description Generates a multi-sheet Excel report with filtering statistics, group breakdowns, and categorized marker lists.
