@@ -194,6 +194,20 @@ publishability_verdict <- function(m,
   # --- Added-value angle (NSCLC): gate on the immune increment, not the classifier
   if (!is.null(ml$added_value)) {
     av <- ml$added_value
+    # KNOWN LIMITATION, DELIBERATELY NOT "FIXED" (reviewed 2026-07-27; next_steps.md §6.8).
+    # `lrt_perm_p` is the GATE-FIXED permutation p: it shuffles labels while holding the
+    # pre-specified composite constant, so it tests the COEFFICIENT, not the SELECTION
+    # PROCEDURE. The selection-aware companions live out-of-pipeline in diag_44
+    # (re-select the FDR gate inside every permutation).
+    #
+    # Left as-is on purpose, for two reasons:
+    #   (1) it changes no verdict — on 20260724_124451_no_nlr the gate-fixed p is 0.0015 and
+    #       the selection-aware values are 0.0100 (FDR rule) / 0.0310 (top-3); all clear 0.05;
+    #   (2) this verdict is PRE-SPECIFIED. Re-pointing it after seeing results is the same
+    #       post-hoc move we already have to disclose for diag_39's stop rule — doing it twice,
+    #       for no change in outcome, spends pre-specification credibility to buy nothing.
+    # Re-pointing would also make a pipeline verdict depend on a manually-run diagnostic.
+    # If it is ever re-pointed, say so explicitly; do not substitute quietly.
     criteria <- c(list(
       lrt_perm_p = mk("LRT perm p (immune increment)", av$lrt_perm_p, "<",
                       thresholds$lrt_p, isTRUE(av$lrt_perm_p < thresholds$lrt_p)),
