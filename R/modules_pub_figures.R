@@ -122,6 +122,7 @@ pub_fig_added_value <- function(av) {
   op_p  <- function(p) if (is.null(p) || !is.finite(p)) "= NA" else if (p < 0.001) "< 0.001" else sprintf("= %.3f", p)
   val_p <- function(p) if (is.null(p) || !is.finite(p)) "NA"   else if (p < 1e-4)  "< 1e-4"  else sprintf("%.4f", p)
   pdl1_ok  <- "Prob_PDL1" %in% names(pp) && any(is.finite(pp$Prob_PDL1))
+  imm_ok   <- "Prob_Immune" %in% names(pp) && any(is.finite(pp$Prob_Immune))
   comp_ok  <- "Prob_ClinicalComp" %in% names(pp) && any(is.finite(pp$Prob_ClinicalComp))
   # NB every Prob_* column here is a LEAVE-ONE-OUT prediction (pl_* upstream), so
   # every curve — and every AUC in the legend — is LOO. Labelled as such because
@@ -147,6 +148,17 @@ pub_fig_added_value <- function(av) {
     roc_l <- c(list(data.frame(rp$df, M = lp)), roc_l)
     lev <- c(lp, lev); cols <- c(PDL1_RED, cols); lts <- c(4, lts)
   }
+  # Immune composite ALONE. Shown deliberately: out-of-sample it can sit slightly ABOVE the
+  # combined model when the clinical baseline is near-chance (the clinical coefficients are
+  # near-null, so they cost more in variance than they buy in fit). Omitting the arm while
+  # its AUC sits in the tables is the kind of gap a reader is entitled to read as concealment;
+  # the honest move is to plot it and quantify the gap (cv_kfold$delta_auc_vs_immune).
+  if (imm_ok) {
+    ri  <- pub_roc_df(pp$Prob_Immune, y)
+    li  <- sprintf("Immune composite alone (LOO AUC %.2f, n=%d)", ri$auc, nfin(pp$Prob_Immune))
+    roc_l <- c(roc_l, list(data.frame(ri$df, M = li)))
+    lev <- c(lev, li); cols <- c(cols, pub_palette[["immune"]]); lts <- c(lts, 6)
+  }
   roc <- do.call(rbind, roc_l); roc$M <- factor(roc$M, levels = lev)
   # Reportable discrimination = repeated stratified k-fold; the curves above are LOO.
   # Stated on the panel so the reader never reads the increment off the LOO curves.
@@ -154,16 +166,29 @@ pub_fig_added_value <- function(av) {
   cv      <- av$cv_kfold
   cv_clin <- suppressWarnings(as.numeric(cv$auc_clinical)[1])
   cv_comb <- suppressWarnings(as.numeric(cv$auc_combined)[1])
+  cv_imm  <- suppressWarnings(as.numeric(cv$auc_immune)[1])
   cv_k    <- suppressWarnings(as.numeric(cv$k)[1])
+  # Immune-alone is stated next to the pair, not hidden behind it: when the clinical arm is
+  # near-chance the combined model can fall slightly BELOW it, and the paired delta (same
+  # folds) is what tells the reader whether that ordering is signal or noise.
+  cv_imm_lab <- if (length(cv_imm) && isTRUE(is.finite(cv_imm)))
+    sprintf(", immune alone %.2f", cv_imm) else ""
   cv_lab  <- if (length(cv_clin) && length(cv_comb) &&
                  isTRUE(is.finite(cv_clin)) && isTRUE(is.finite(cv_comb)))
-    sprintf("Reportable %d-fold CV AUC: %.2f → %.2f (curves = LOO)\n",
-            if (isTRUE(is.finite(cv_k))) as.integer(cv_k) else 10L, cv_clin, cv_comb) else ""
+    sprintf("Reportable %d-fold CV AUC: %.2f → %.2f%s (curves = LOO)\n",
+            if (isTRUE(is.finite(cv_k))) as.integer(cv_k) else 10L,
+            cv_clin, cv_comb, cv_imm_lab) else ""
+  dvi    <- suppressWarnings(as.numeric(cv$delta_auc_vs_immune)[1])
+  dvi_ci <- suppressWarnings(as.numeric(cv$delta_auc_vs_immune_ci))
+  dvi_lab <- if (length(dvi) && isTRUE(is.finite(dvi)) && length(dvi_ci) == 2L &&
+                 all(is.finite(dvi_ci)))
+    sprintf("combined − immune alone: %+.3f [%+.3f, %+.3f]\n", dvi, dvi_ci[1], dvi_ci[2])
+  else ""
   pA <- ggplot(roc, aes(FPR, TPR, colour = M, linetype = M)) +
     geom_abline(slope = 1, intercept = 0, linetype = "dotted", colour = pub_palette[["ref"]]) +
     geom_path(linewidth = 0.8) +
     annotate("text", x = 0.97, y = 0.06, hjust = 1, vjust = 0, size = 2.7,
-             label = sprintf("%sLRT p %s (perm %s)", cv_lab,
+             label = sprintf("%s%sLRT p %s (perm %s)", cv_lab, dvi_lab,
                              op_p(inc$lrt_p), val_p(inc$lrt_perm_p))) +
     scale_colour_manual(values = setNames(cols, lev)) +
     scale_linetype_manual(values = setNames(lts, lev)) +
@@ -184,6 +209,13 @@ pub_fig_added_value <- function(av) {
     nb_l <- c(nb_l, list(data.frame(t = cur$threshold, nb = cur$pdl1, s = "PD-L1 alone")))
     b_cols <- c(b_cols, "PD-L1 alone" = PDL1_RED); b_lts <- c(b_lts, "PD-L1 alone" = 4)
   }
+  # Immune alone on the decision curve too — DCA is co-primary with the LRT, so the arm that
+  # may dominate on net benefit has to be visible here, not only on the ROC.
+  if (!is.null(cur$immune)) {
+    nb_l <- c(nb_l, list(data.frame(t = cur$threshold, nb = cur$immune, s = "Immune alone")))
+    b_cols <- c(b_cols, "Immune alone" = pub_palette[["immune"]])
+    b_lts  <- c(b_lts, "Immune alone" = 6)
+  }
   nb_l <- c(nb_l, list(data.frame(t = cur$threshold, nb = cur$treat_all,  s = "Treat all"),
                        data.frame(t = cur$threshold, nb = cur$treat_none, s = "Treat none")))
   b_cols <- c(b_cols, "Treat all" = pub_palette[["treat_all"]], "Treat none" = pub_palette[["treat_none"]])
@@ -191,13 +223,18 @@ pub_fig_added_value <- function(av) {
   nb <- do.call(rbind, nb_l)
   nb$s <- factor(nb$s, levels = c(clin_nm, "Clinical + immune",
                                   if (!is.null(cur$comparator)) clab,
-                                  if (!is.null(cur$pdl1)) "PD-L1 alone", "Treat all", "Treat none"))
+                                  if (!is.null(cur$pdl1)) "PD-L1 alone",
+                                  if (!is.null(cur$immune)) "Immune alone",
+                                  "Treat all", "Treat none"))
   pB <- ggplot(nb, aes(t, nb, colour = s, linetype = s)) +
     geom_line(linewidth = 0.8) +
     scale_colour_manual(values = b_cols) +
     scale_linetype_manual(values = b_lts) +
+    # cur$immune belongs in the max(): it is the highest net-benefit arm whenever the
+    # clinical baseline is near-chance, and would otherwise be clipped off the panel.
     coord_cartesian(ylim = c(min(-0.02, min(cur$treat_all)),
-                             max(c(cur$clinical, cur$combined, cur$comparator)) + 0.02)) +
+                             max(c(cur$clinical, cur$combined, cur$comparator,
+                                   cur$immune)) + 0.02)) +
     # Net benefit is computed on the same LOO probabilities as panel A, so the
     # clinical reference arm carries the same tie artifact — disclosed on-panel
     # rather than left for the caption, since the curve is read directly.
@@ -573,8 +610,15 @@ pub_fig_robustness <- function(av) {
     c("Asymptotic χ²",        inc$lrt_p),
     c("Permutation",          inc$lrt_perm_p),
     c("Firth penalized",      inc$lrt_firth_p))
-  if (!is.null(bsen[["+smoking"]])) rowsA[[length(rowsA) + 1]] <- c("Baseline + smoking",      bsen[["+smoking"]]$lrt_p)
-  if (!is.null(bsen[["+burden"]]))  rowsA[[length(rowsA) + 1]] <- c("Baseline + tumor burden", bsen[["+burden"]]$lrt_p)
+  # Loop over whatever baseline specifications the config defined, rather than naming two of
+  # them: config-driven specs used to be silently dropped from this panel, which is precisely
+  # the invariance claim the panel exists to make.
+  bsen_lab <- c("+smoking" = "Baseline + smoking", "+burden" = "Baseline + tumor burden")
+  for (bn in names(bsen)) {
+    if (is.null(bsen[[bn]]$lrt_p)) next
+    lab <- if (bn %in% names(bsen_lab)) unname(bsen_lab[bn]) else sprintf("Baseline %s", bn)
+    rowsA[[length(rowsA) + 1]] <- c(lab, bsen[[bn]]$lrt_p)
+  }
   if (!is.null(sn))                 rowsA[[length(rowsA) + 1]] <- c("Specificity (vs random)", sn$spec_p_lrt)
   dA <- data.frame(spec = vapply(rowsA, `[`, "", 1),
                    p    = as.numeric(vapply(rowsA, `[`, "", 2)), stringsAsFactors = FALSE)

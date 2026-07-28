@@ -104,6 +104,11 @@ extract_run_metrics <- function(exp_root, experiment = basename(exp_root)) {
         # EXCEEDS the combined model here, and was transposed into "combined" in
         # every doc until 2026-07-16.
         auc_immune   = .or_else(cv$auc_immune, .or_else(av$auc$immune[["loo"]], NA_real_)),
+        # combined MINUS immune-alone on shared folds. Negative here: the near-null
+        # clinical coefficients cost out-of-sample what they buy in-sample. Tracked so a
+        # run that flips the sign (a baseline strong enough to earn its parameters) is
+        # visible in compare_runs() rather than discovered by a reviewer.
+        delta_auc_vs_immune = .or_else(cv$delta_auc_vs_immune, NA_real_),
         cv_k         = .or_else(cv$k, NA_real_),
         # retained, demoted — the tie-artifact-prone estimates
         auc_clinical_loo = auc_clin_loo,
@@ -263,6 +268,7 @@ compare_runs <- function(run_base, run_new, experiments = NULL, tol = 5e-4) {
                   # added-value angle (headline for NSCLC): k-fold AUCs + the
                   # increment tests, with the demoted LOO pair kept visible.
                   "av_auc_clinical", "av_auc_combined", "av_auc_immune",
+                  "av_delta_auc_vs_immune",
                   "av_lrt_p", "av_lrt_perm_p", "av_idi", "av_idi_ci_lo",
                   "av_auc_clinical_loo", "av_auc_combined_loo")
   chr_fields <- c("primary_method", "gate_method")
