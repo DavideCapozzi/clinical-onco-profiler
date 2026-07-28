@@ -1271,6 +1271,10 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
       sum(pos & yb[idx] == 1) / m - sum(pos & yb[idx] == 0) / m * w }) }
   dc <- data.frame(threshold = pt_grid,
                    clinical   = nb(pl_clin), combined = nb(pl_comb),
+                   # immune composite alone: `nb` (not `nb_cc`) — pl_imm is complete by
+                   # construction, so it shares the full-cohort denominator with the
+                   # clinical/combined arms and the three curves are directly comparable.
+                   immune     = nb(pl_imm),
                    pdl1       = nb_cc(pl_bench),
                    treat_all  = prev - (1 - prev) * (pt_grid / (1 - pt_grid)),
                    treat_none = 0)
@@ -1713,6 +1717,13 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
       R[r, ] <- c(auc_pos(pc), auc_pos(pi_), auc_pos(pk))
     }
     dlt <- R[, "combined"] - R[, "clinical"]
+    # Combined vs immune-ALONE, on the SAME shared folds (hence paired). This exists because
+    # the combined model can score BELOW the immune composite alone out-of-sample whenever the
+    # clinical baseline is near-chance: in-sample the clinical coefficients help, out-of-sample
+    # they cost, which is the ordinary overfitting price of near-null parameters at low EPV.
+    # Reporting the paired interval turns "immune alone beats the combined model" from an
+    # unanswered exposure into a quantified statement (cf. diag_43, where +0.0016 was noise).
+    dlt_i <- R[, "combined"] - R[, "immune"]
     list(method = sprintf("repeated stratified %d-fold CV, %d reps (paired folds)", k, reps),
          k = k, reps = reps,
          auc_clinical = unname(mean(R[, "clinical"])),
@@ -1720,6 +1731,8 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
          auc_combined = unname(mean(R[, "combined"])),
          delta_auc    = unname(mean(dlt)),
          delta_auc_ci = unname(stats::quantile(dlt, c(.025, .975))),
+         delta_auc_vs_immune    = unname(mean(dlt_i)),
+         delta_auc_vs_immune_ci = unname(stats::quantile(dlt_i, c(.025, .975))),
          baseline_degenerate = unname(mean(R[, "clinical"]) < 0.5),
          note = paste("Reportable discrimination. LOO values in `auc` are retained for",
                       "continuity but are artifact-prone for tied/discrete clinical predictors",
@@ -1784,12 +1797,18 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
       Patient_ID = pid, True_Group = as.character(grp),
       Composite = round(comp, 4),
       Prob_Clinical = round(pl_clin, 4), Prob_Combined = round(pl_comb, 4),
+      # Immune composite ALONE (1-df, no clinical vars). Surfaced so Fig 2 can show the
+      # arm rather than leaving it in the tables only: out-of-sample it can EXCEED the
+      # combined model when the clinical baseline is near-chance (see cv_kfold's
+      # delta_auc_vs_immune), and a figure that omits it invites a concealment reading.
+      Prob_Immune = round(pl_imm, 4),
       Prob_ClinicalComp = if (!is.null(pl_comp)) round(pl_comp, 4) else NA_real_,
       Prob_PDL1 = round(pl_bench, 4), PD_L1 = round(as.numeric(Cmat[, 1]), 4),
       Prob_PDL1_APP = round(submodel_app$PDL1, 4),
       Prob_PS_APP = round(submodel_app$PS, 4),
       Prob_PDL1PS_APP = round(submodel_app$PDL1PS, 4),
       Prob_Combined_APP = round(pa_comb, 4),
+      Prob_Immune_APP = round(pa_imm, 4),
       stringsAsFactors = FALSE)
   )
 }
