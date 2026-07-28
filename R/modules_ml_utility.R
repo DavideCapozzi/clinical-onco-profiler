@@ -986,6 +986,187 @@ build_nomogram_spec <- function(y01, X, resp_label = NULL, var_scale = NULL,
     n                = length(y01))
 }
 
+#' @title Predictive-vs-prognostic dissociation (response vs survival, rank scale)
+#' @description Tests whether the immune composite is **response-specific** rather than a
+#'   proxy for general prognosis, by scoring every predictor on BOTH endpoints with the same
+#'   rank statistic and testing the DIFFERENCE. Was `diagnostics/diag_40_dissociation.R`,
+#'   which went stale twice (the cohort AND the gate definition moved under it) because it
+#'   lived outside the pipeline; wired in here so it regenerates with every run.
+#'
+#'   Method notes that must survive any refactor:
+#'   * "significant here, not significant there" is NOT a dissociation (Gelman & Stern 2006)
+#'     — the difference is bootstrapped directly.
+#'   * Both endpoints use P(correct ordering) on the same patients: response = Mann-Whitney
+#'     AUC, survival = Harrell C. Both are 0.5 under the null, so the cells are comparable.
+#'   * Raw variables, never LOO model probabilities: sub-chance LOO AUCs are the known tie
+#'     pathology for null predictors, and rank statistics on the raw variable are immune to it.
+#'   * ORIENTATION IS PRE-SPECIFIED, NEVER INFERRED. Orienting a variable by the statistic it
+#'     is about to be scored on would manufacture the response cell. A variable with no
+#'     declared orientation is skipped and the omission is recorded.
+#' @param y Binary outcome (1 = responder).
+#' @param comp Immune composite (analysis timepoint).
+#' @param Cmat Clinical design matrix (columns = clinical variables).
+#' @param time,event Survival time and event indicator (OS is primary).
+#' @param comp_orientation +1/-1: sign making HIGHER = BETTER outcome for the composite.
+#' @param var_orientation Named +1/-1 vector for the clinical variables.
+#' @param comparator Column of \code{Cmat} designated as the PRIMARY contrast (pre-specified).
+#' @param n_boot Bootstrap resamples. @param min_events Minimum events to attempt the analysis.
+#' @param mediation_sim Simulate the OS HR a fully mediated effect would induce.
+#' @param seed RNG seed (isolated: the caller's stream is restored on exit).
+#' @return List with cells, contrasts, power bound and (optionally) the mediation check;
+#'   or a list carrying only \code{skipped} when the data cannot support it.
+run_dissociation_analysis <- function(y, comp, Cmat, time, event,
+                                      comp_orientation = -1, var_orientation = NULL,
+                                      comparator = NULL, n_boot = 2000L,
+                                      min_events = 20L, mediation_sim = TRUE,
+                                      seed = 2026L) {
+  if (!requireNamespace("survival", quietly = TRUE) ||
+      !requireNamespace("pROC", quietly = TRUE))
+    return(list(skipped = "survival/pROC unavailable"))
+  ok <- is.finite(time) & time > 0 & !is.na(event) & !is.na(y) & is.finite(comp)
+  if (sum(ok) < 20 || length(unique(y[ok])) < 2)
+    return(list(skipped = "fewer than 20 usable patients or a single outcome class"))
+  if (sum(event[ok]) < min_events)
+    return(list(skipped = sprintf("only %d events (< min_events = %d): a dissociation contrast here would be noise",
+                                  sum(event[ok]), min_events)))
+  if (exists(".Random.seed", envir = .GlobalEnv)) {
+    old_seed <- get(".Random.seed", envir = .GlobalEnv)
+    on.exit(assign(".Random.seed", old_seed, envir = .GlobalEnv), add = TRUE)
+  }
+  set.seed(seed)
+
+  d <- data.frame(y = as.integer(y[ok]), time = as.numeric(time[ok]),
+                  event = as.integer(event[ok]), comp = as.numeric(comp[ok]))
+  # Oriented predictors: composite sign is pre-specified upstream (the LMM interaction
+  # direction); clinical signs come from config. Undeclared => excluded, with a reason.
+  X <- list(immune = comp_orientation * d$comp)
+  skipped_vars <- character()
+  if (!is.null(Cmat) && ncol(Cmat)) for (v in colnames(Cmat)) {
+    s <- if (!is.null(var_orientation) && v %in% names(var_orientation))
+      as.numeric(var_orientation[[v]]) else NA_real_
+    if (!is.finite(s) || s == 0) { skipped_vars <- c(skipped_vars, v); next }
+    X[[v]] <- s * suppressWarnings(as.numeric(Cmat[ok, v]))
+  }
+
+  auc_resp <- function(x, yy) {
+    f <- is.finite(x); if (length(unique(yy[f])) < 2) return(NA_real_)
+    tryCatch(as.numeric(pROC::auc(pROC::roc(yy[f], x[f], quiet = TRUE, direction = "<"))),
+             error = function(e) NA_real_)
+  }
+  c_surv <- function(x, tt, ev) {
+    f <- is.finite(x); if (sum(ev[f]) < 3) return(NA_real_)
+    tryCatch(as.numeric(survival::concordance(
+      survival::Surv(tt[f], ev[f]) ~ x[f])$concordance), error = function(e) NA_real_)
+  }
+  cells_of <- function(idx) unlist(lapply(X, function(x)
+    c(resp = auc_resp(x[idx], d$y[idx]), surv = c_surv(x[idx], d$time[idx], d$event[idx]))))
+
+  obs <- cells_of(seq_len(nrow(d)))
+  B <- matrix(NA_real_, as.integer(n_boot), length(obs), dimnames = list(NULL, names(obs)))
+  for (b in seq_len(as.integer(n_boot))) {
+    idx <- sample(nrow(d), replace = TRUE)
+    if (length(unique(d$y[idx])) < 2 || sum(d$event[idx]) < 5) next
+    B[b, ] <- cells_of(idx)
+  }
+  B <- B[stats::complete.cases(B), , drop = FALSE]
+  qci  <- function(v) unname(stats::quantile(v, c(0.025, 0.975), na.rm = TRUE))
+  bp   <- function(v) 2 * min(mean(v <= 0, na.rm = TRUE), mean(v >= 0, na.rm = TRUE))
+  cell <- function(nm) list(estimate = unname(obs[[nm]]), ci = qci(B[, nm]))
+
+  vars <- setdiff(names(X), "immune")
+  cells <- lapply(names(X), function(v)
+    list(variable = v, response = cell(paste0(v, ".resp")), survival = cell(paste0(v, ".surv"))))
+  names(cells) <- names(X)
+
+  # Contrasts. `single` = the immune response-advantage. `crossover` = the double
+  # dissociation. `within_endpoint` compares immune vs comparator on ONE endpoint at a
+  # time — homogeneous metrics, so it answers the standing objection that the crossover
+  # subtracts an AUC from a C-index. Computed for EVERY clinical variable: reporting the
+  # whole matrix removes any incentive to pick the comparator that works.
+  d_imm <- B[, "immune.resp"] - B[, "immune.surv"]
+  contrasts <- list(single_dissociation = list(
+    estimate = unname(obs[["immune.resp"]] - obs[["immune.surv"]]),
+    ci = qci(d_imm), boot_p = bp(d_imm),
+    note = "immune: response advantage over its own survival performance"))
+  per_var <- lapply(vars, function(v) {
+    cx <- (B[, "immune.resp"] - B[, "immune.surv"]) - (B[, paste0(v, ".resp")] - B[, paste0(v, ".surv")])
+    wr <- B[, "immune.resp"] - B[, paste0(v, ".resp")]
+    ws <- B[, "immune.surv"] - B[, paste0(v, ".surv")]
+    list(comparator = v,
+         crossover = list(estimate = unname((obs[["immune.resp"]] - obs[["immune.surv"]]) -
+                                            (obs[[paste0(v, ".resp")]] - obs[[paste0(v, ".surv")]])),
+                          ci = qci(cx), boot_p = bp(cx)),
+         within_response = list(estimate = unname(obs[["immune.resp"]] - obs[[paste0(v, ".resp")]]),
+                                ci = qci(wr), boot_p = bp(wr)),
+         within_survival = list(estimate = unname(obs[["immune.surv"]] - obs[[paste0(v, ".surv")]]),
+                                ci = qci(ws), boot_p = bp(ws)))
+  })
+  names(per_var) <- vars
+  contrasts$by_comparator <- per_var
+  contrasts$primary <- if (!is.null(comparator) && comparator %in% vars) per_var[[comparator]] else NULL
+
+  # Power bound: an unadorned null cannot tell "no effect" from "underpowered".
+  fitc <- tryCatch(survival::coxph(survival::Surv(d$time, d$event) ~ d$comp), error = function(e) NULL)
+  vv   <- stats::var(d$comp); ne <- sum(d$event)
+  power <- list(
+    events = ne,
+    immune_hr = if (is.null(fitc)) NA_real_ else unname(summary(fitc)$conf.int[1, 1]),
+    immune_hr_ci = if (is.null(fitc)) c(NA_real_, NA_real_) else unname(summary(fitc)$conf.int[1, 3:4]),
+    min_detectable_hr_80 = if (is.finite(vv) && vv > 0 && ne > 0)
+      exp((stats::qnorm(0.975) + stats::qnorm(0.80)) / sqrt(ne * vv)) else NA_real_)
+
+  # Mediation: if immune->response and response->survival both hold, an immune->survival
+  # effect is INDUCED even with no direct effect. Deciding this is what separates
+  # "attenuated below detection" (honest) from "no survival relevance" (overclaim).
+  mediation <- NULL
+  if (isTRUE(mediation_sim) && !is.null(fitc)) {
+    fr <- tryCatch(stats::glm(y ~ comp, data = d, family = stats::binomial()), error = function(e) NULL)
+    br <- tryCatch(unname(coef(survival::coxph(survival::Surv(d$time, d$event) ~ d$y))[1]),
+                   error = function(e) NA_real_)
+    if (!is.null(fr) && is.finite(br)) {
+      rate <- 1 / mean(d$time[d$event == 1]); sim <- numeric(1000L)
+      pr <- stats::predict(fr, type = "response")
+      for (b in seq_len(1000L)) {
+        R  <- stats::rbinom(nrow(d), 1, pr)
+        tt <- stats::rexp(nrow(d), rate = rate * exp(br * R))
+        cc <- sample(d$time, nrow(d), replace = TRUE)
+        ti <- pmin(tt, cc); ev <- as.integer(tt <= cc)
+        sim[b] <- tryCatch(exp(coef(survival::coxph(survival::Surv(ti, ev) ~ d$comp))[1]),
+                           error = function(e) NA_real_)
+      }
+      sim <- sim[is.finite(sim)]
+      med <- stats::median(sim)
+      mediation <- list(
+        response_to_survival_hr = exp(br), induced_hr_median = med,
+        induced_hr_range = unname(stats::quantile(sim, c(0.025, 0.975))),
+        observed_hr_ci = power$immune_hr_ci,
+        consistent_with_full_mediation = isTRUE(med >= power$immune_hr_ci[1] &&
+                                                med <= power$immune_hr_ci[2]),
+        claim = NA_character_)
+      mediation$claim <- if (isTRUE(mediation$consistent_with_full_mediation))
+        paste("The survival null is CONSISTENT with a fully mediated effect attenuated below",
+              "detection. Say 'response-specific'; do NOT say 'no survival relevance'.")
+      else paste("The observed CI excludes the mediation-predicted HR: the response signal does",
+                 "not propagate to survival as mediation would predict.")
+    }
+  }
+
+  list(n = nrow(d), n_boot_valid = nrow(B), events = ne,
+       # as a list, so the names survive JSON serialisation (a bare named numeric does not)
+       orientation = c(list(immune = unname(comp_orientation)),
+                       if (is.null(var_orientation)) NULL else as.list(unlist(var_orientation))),
+       comparator = comparator,
+       skipped_variables = if (length(skipped_vars)) skipped_vars else NULL,
+       skipped_reason = if (length(skipped_vars))
+         "no pre-specified orientation declared; inferring one from the data would manufacture the result" else NULL,
+       cells = cells, contrasts = contrasts, power = power, mediation = mediation,
+       note = paste("Both endpoints scored as P(correct ordering) on the same patients",
+                    "(response = Mann-Whitney AUC, survival = Harrell C). Contrasts are",
+                    "bootstrapped DIFFERENCES, never two separate p-values. Claim wording is",
+                    "constrained: 'response-specific / not a proxy for general prognosis' —",
+                    "NOT 'predictive not prognostic' (needs a comparator arm; single-arm cohort)."))
+}
+
 run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
                                             input_file, clinical_vars,
                                             gate_provenance = "lmm-prespecified",
@@ -999,6 +1180,7 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
                                             composite_timepoint = "T0", DATA_LONG = NULL,
                                             baseline_exclude = NULL, comparator_label = NULL,
                                             nomogram_clinical_vars = NULL,
+                                            dissociation_cfg = NULL,
                                             min_n = 30L, seed = 2026L) {
   if (!requireNamespace("readxl", quietly = TRUE) ||
       !requireNamespace("pROC",   quietly = TRUE) ||
@@ -1006,6 +1188,12 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
   if (is.null(input_file) || !file.exists(input_file)) {
     message("[ML][AV] input_file missing — added-value layer skipped."); return(NULL)
   }
+  # Capture the analytic cohort BEFORE the timepoint rebuild: under Δ/T1 the rebuild
+  # drops every patient without a paired sample, and that reduction is the one the
+  # ledger has to record. Reading it afterwards would silently start from the paired
+  # subset and lose the step entirely (the Figure S1 bug, in miniature).
+  .ledger_in    <- DATA_T0$cohort_ledger
+  .ledger_ids0  <- as.character(DATA_T0$metadata$Patient_ID)
   # Re-express the cohort at the requested predictor timepoint (T0 unchanged →
   # canonical path byte-for-byte; T1/delta built from paired longitudinal data).
   if (!identical(composite_timepoint, "T0")) {
@@ -1056,6 +1244,27 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
   y    <- factor(grp, levels = c(neg_label, resp_label))
   pid  <- meta_ids[keep]
   n    <- length(yb)
+
+  # ── Cohort ledger, stage 4: composite availability at the analysis timepoint ──
+  # Under Δ/T1 this is the paired-sampling step — the single largest reduction in the
+  # study and the one the CONSORT previously hid entirely. Chained onto Step 01's
+  # ledger so the flow reconciles end to end; `n_in` is the analytic cohort the
+  # composite was computed on, NOT this layer's own n (mixing those denominators is
+  # exactly the arithmetic that produced a fictitious cohort in Figure S1).
+  cohort_ledger <- .ledger_in
+  if (!is.null(cohort_ledger) && nrow(cohort_ledger)) {
+    cohort_ledger <- ledger_add(
+      cohort_ledger,
+      if (identical(composite_timepoint, "T0")) "composite_available" else "paired_timepoint",
+      cohort_ledger$n_out[nrow(cohort_ledger)], n,
+      reason = if (identical(composite_timepoint, "T0"))
+        "immune composite not computable at T0"
+      else sprintf("no paired %s sample for the %s composite",
+                   if (identical(composite_timepoint, "delta")) "T0+T1" else composite_timepoint,
+                   composite_timepoint),
+      by_group = c(sum(1 - yb), sum(yb)),
+      dropped_ids = setdiff(.ledger_ids0, as.character(pid)))
+  }
 
   # ── Optional: drop var(s) from the FORMAL clinical baseline, keep FULL model as a
   #    display-only comparator curve. `baseline_exclude` (labels) => the formal
@@ -1323,6 +1532,57 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
            n_excluded_time_zero = n_drop_zero, n_excluded_time_zero_events = n_drop_ev)
     }
     survival <- list(OS = cox_block(os, ev_os), PFS = cox_block(pfs, ev_pfs))
+
+    # ── Predictive-vs-prognostic dissociation (OS is the defensible endpoint) ──
+    # Uses the vectors already assembled above, so it follows `composite_timepoint`
+    # automatically and can never drift from the model it describes.
+    if (!is.null(dissociation_cfg) && !isFALSE(dissociation_cfg$enabled)) {
+      # Composite orientation from the PRE-SPECIFIED LMM interaction direction, never from a
+      # statistic computed here. Derivation: a NEGATIVE Time×Group interaction means
+      # responders contract more, so responders have the LOWER Δ; "higher = better outcome"
+      # therefore requires multiplying by -1 — i.e. the multiplier IS sign(beta), not
+      # -sign(beta). (Getting this backwards mirrors every immune cell to 1-x and silently
+      # inverts the whole figure, so the derived value is recorded below for audit.)
+      .beta <- if (is.data.frame(lmm_interaction) && "Estimate_Interaction" %in% names(lmm_interaction) &&
+                   any(lmm_interaction$Marker %in% avail))
+        mean(lmm_interaction$Estimate_Interaction[lmm_interaction$Marker %in% avail], na.rm = TRUE)
+      else NA_real_
+      co <- if (!is.null(dissociation_cfg$composite_orientation))
+        as.numeric(dissociation_cfg$composite_orientation)
+      else if (is.finite(.beta) && .beta != 0) sign(.beta)
+      else -1
+      survival$dissociation <- run_dissociation_analysis(
+        y = yb, comp = comp, Cmat = Cmat, time = os, event = ev_os,
+        comp_orientation = if (is.finite(co) && co != 0) co else -1,
+        var_orientation = dissociation_cfg$orientation,
+        comparator = dissociation_cfg$comparator,
+        n_boot = if (!is.null(dissociation_cfg$n_boot)) as.integer(dissociation_cfg$n_boot) else n_boot,
+        mediation_sim = !isFALSE(dissociation_cfg$mediation_sim), seed = seed)
+      # Self-consistency on the ROW SET, which is what can silently drift. Do NOT assert
+      # equality of the two HRs: `survival$OS$immune_hr` is ADJUSTED for the clinical model
+      # while the dissociation's power bound is the UNADJUSTED composite effect (the
+      # dissociation is a marginal, rank-scale argument). They are different estimands and
+      # the earlier diag_40-vs-pipeline discrepancy (1.040 vs 1.027) was exactly this.
+      if (!is.null(survival$OS) && is.null(survival$dissociation$skipped)) {
+        if (!identical(as.integer(survival$dissociation$n), as.integer(survival$OS$n)) ||
+            !identical(as.integer(survival$dissociation$events), as.integer(survival$OS$events)))
+          warning(sprintf(paste("[ML][AV] dissociation runs on n=%d/%d events but survival$OS uses",
+                                "n=%d/%d — the two describe different patients."),
+                          survival$dissociation$n, survival$dissociation$events,
+                          survival$OS$n, survival$OS$events))
+        # Audit trail for the orientation: the one input a reader cannot re-derive from the
+        # output, and the one whose sign silently mirrors every immune cell if wrong.
+        survival$dissociation$composite_orientation_source <- list(
+          value = unname(co),
+          from = if (!is.null(dissociation_cfg$composite_orientation)) "config" else
+                 if (is.finite(.beta)) "LMM Time×Group interaction sign" else "default",
+          mean_interaction_beta = unname(.beta),
+          rule = "responders contract (beta < 0) => lower delta is responder-like => multiplier = sign(beta)")
+        survival$dissociation$power$hr_note <- paste(
+          "Unadjusted composite effect (marginal). The clinically adjusted HR is",
+          "survival$OS$immune_hr — a different estimand; do not quote them interchangeably.")
+      }
+    }
     # PFS here is a PROXY, not an observed PFS: this cohort has NO progression-date column, so the
     # event is derived as death | (alive & PFS<OS). It is also near-tautological with best response
     # (BR=PD => progression at the first scan), so it cannot independently validate a response
@@ -1753,10 +2013,18 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
     nomo$combined_cv_k   <- cv_kfold$k
   }
 
+  # Ledger validated at the point of emission: a discontinuity here means the flow the
+  # CONSORT would draw cannot be reconciled with the data, which is fatal by design.
+  # NB `n_complete_case` is deliberately NOT a ledger stage — clinical NAs are
+  # median-imputed in-fold, so nobody is dropped for them. It travels as a terminal
+  # annotation instead; recording it as an exclusion would misstate the flow.
+  if (!is.null(cohort_ledger)) ledger_validate(cohort_ledger, context = "added-value layer")
+
   list(
     clinical_vars   = as.list(clinical_vars),
     formal_vars     = as.list(colnames(Cmat)),   # vars actually in the FORMAL baseline
     nomogram        = nomo,
+    cohort_ledger   = cohort_ledger,
     cv_kfold        = cv_kfold,
     locked_model    = locked_model,
     composite_markers = avail,

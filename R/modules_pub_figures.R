@@ -297,39 +297,73 @@ pub_fig_calibration_idi <- function(av) {
 }
 
 # ── SUPP S1 — CONSORT / patient flow ──────────────────────────────────────────
-#' @param cc named list: raw_n, raw_rp, raw_sdpd, n_miss, n_out, n, n_pos, n_neg,
-#'                       n_paired, n_cc, surv_n, surv_os_ev, surv_pfs_ev, clin_label
-pub_fig_consort <- function(cc) {
-  if (is.null(cc)) return(NULL)
+# Renders the COHORT LEDGER (R/utils_io.R): one row per real filtering point, recorded
+# where the filtering happens. The previous version reconstructed the flow arithmetically
+# from mismatched denominators (analytic-cohort exclusions added to the paired-subset n)
+# and drew a starting cohort that never existed. Nothing is inferred here any more: the
+# figure only renders rows, so the number of stages is data-driven and a cohort with no
+# paired timepoint (cross-sectional) renders correctly with no code change.
+#' @param led Cohort ledger data.frame: stage, n_in, n_out, n_dropped, reason, n_resp, n_nonresp.
+#' @param terminal Optional named list of terminal ANNOTATIONS (not exclusions), e.g.
+#'   list("Complete-case PD-L1+PS" = "n = 57", "Survival follow-up" = "n = 60 (41 OS events)").
+#' @param title Optional label for the first box.
+pub_fig_consort <- function(led, terminal = NULL, title = NULL) {
+  if (is.null(led) || !nrow(led)) return(NULL)
+  k    <- nrow(led)
+  top  <- 10; step <- 2.2                       # one flow row per ledger stage
+  ys   <- top - step * seq_len(k)               # y of each post-stage box
+  grp  <- function(i) if (is.na(led$n_resp[i]) || is.na(led$n_nonresp[i])) "" else
+    sprintf("  ·  %d / %d", led$n_resp[i], led$n_nonresp[i])
+  nice <- function(s) gsub("_", " ", s)
   box <- function(x, y, w, h, lab, fill = "white") list(
     r = data.frame(xmin = x - w/2, xmax = x + w/2, ymin = y - h/2, ymax = y + h/2, fill = fill),
     t = data.frame(x = x, y = y, lab = lab))
-  seg <- function(x0, y0, x1, y1) data.frame(x = x0, y = y0, xe = x1, ye = y1)
-  b1 <- box(3, 9, 4.6, 1.5, sprintf(
-    "NSCLC anti-PD1 cohort (baseline T0)\nn = %d  ·  %d PR / %d SD-PD", cc$raw_n, cc$raw_rp, cc$raw_sdpd))
-  bX <- box(6.4, 7.6, 3.4, 1.3, sprintf(
-    "Excluded (n = %d)\n• High missingness (n = %d)\n• PCA outliers (n = %d)",
-    cc$n_miss + cc$n_out, cc$n_miss, cc$n_out), fill = "grey95")
-  b2 <- box(3, 6.2, 4.2, 1.3, sprintf(
-    "Analytic cohort, T0\nn = %d  ·  %d PR / %d SD-PD", cc$n, cc$n_pos, cc$n_neg), fill = "#DCEAF5")
-  b3 <- box(1.3, 3.3, 2.5, 1.5, sprintf("Paired T0+T1\n(LMM gate)\nn = %d", cc$n_paired))
-  b4 <- box(3.6, 3.3, 2.7, 1.5, sprintf("Complete-case\nclinical model\n(%s)\nn = %d", cc$clin_label, cc$n_cc), fill = "#DCEAF5")
-  b5 <- box(6.2, 3.3, 2.7, 1.5, sprintf("Survival follow-up\nn = %d\n(OS %d / PFS %d events)",
-                                        cc$surv_n, cc$surv_os_ev, cc$surv_pfs_ev))
-  rects <- do.call(rbind, lapply(list(b1,bX,b2,b3,b4,b5), `[[`, "r"))
-  txts  <- do.call(rbind, lapply(list(b1,bX,b2,b3,b4,b5), `[[`, "t"))
-  arr <- rbind(seg(3, 8.25, 3, 6.85), seg(3, 5.55, 3, 4.05),
-               seg(3, 4.9, 1.3, 4.05), seg(3, 4.9, 6.2, 4.05),
-               data.frame(x = 3, y = 7.6, xe = 4.7, ye = 7.6))
+
+  boxes <- list(box(3, top, 5.0, 1.2, sprintf("%s\nn = %d%s",
+                    if (is.null(title)) "Screened cohort" else title,
+                    led$n_in[1], if (k) "" else "")))
+  arrs  <- list()
+  for (i in seq_len(k)) {
+    boxes[[length(boxes) + 1]] <- box(
+      3, ys[i], 5.0, 1.2,
+      sprintf("%s\nn = %d%s", nice(led$stage[i]), led$n_out[i], grp(i)),
+      fill = if (i == k) "#DCEAF5" else "white")
+    arrs[[length(arrs) + 1]] <- data.frame(x = 3, y = (if (i == 1) top else ys[i - 1]) - 0.6,
+                                           xe = 3, ye = ys[i] + 0.6)
+    if (led$n_dropped[i] > 0) {                 # side box only when patients actually left
+      boxes[[length(boxes) + 1]] <- box(
+        7.0, (if (i == 1) top else ys[i - 1]) - step / 2, 3.6, 1.15,
+        sprintf("Excluded (n = %d)\n%s", led$n_dropped[i],
+                if (is.na(led$reason[i])) "" else strwrap_lab(led$reason[i], 34)),
+        fill = "grey95")
+      arrs[[length(arrs) + 1]] <- data.frame(x = 3, y = (if (i == 1) top else ys[i - 1]) - step / 2,
+                                             xe = 5.2, ye = (if (i == 1) top else ys[i - 1]) - step / 2)
+    }
+  }
+  # Terminal annotations describe the FINAL cohort; they are not exclusions and must never
+  # be drawn in the vertical flow (nobody is dropped for an imputed clinical value).
+  if (length(terminal)) {
+    tl <- paste(sprintf("%s: %s", names(terminal), unlist(terminal)), collapse = "\n")
+    boxes[[length(boxes) + 1]] <- box(3, ys[k] - step, 5.0, 0.5 + 0.42 * length(terminal), tl)
+    arrs[[length(arrs) + 1]] <- data.frame(x = 3, y = ys[k] - 0.6, xe = 3,
+                                           ye = ys[k] - step + 0.35 + 0.21 * length(terminal))
+  }
+  rects <- do.call(rbind, lapply(boxes, `[[`, "r"))
+  txts  <- do.call(rbind, lapply(boxes, `[[`, "t"))
+  arr   <- do.call(rbind, arrs)
   ggplot() +
     geom_rect(data = rects, aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
               fill = rects$fill, colour = "grey40", linewidth = 0.4) +
     geom_segment(data = arr, aes(x = x, y = y, xend = xe, yend = ye),
                  arrow = arrow(length = unit(1.6, "mm")), colour = "grey40", linewidth = 0.4) +
-    geom_text(data = txts, aes(x, y, label = lab), size = 2.5, lineheight = 0.92) +
-    coord_cartesian(xlim = c(-0.2, 8.2), ylim = c(2.3, 10)) +
+    geom_text(data = txts, aes(x, y, label = lab), size = 2.4, lineheight = 0.95) +
+    coord_cartesian(xlim = c(0.2, 9.0),
+                    ylim = c(min(rects$ymin) - 0.4, top + 0.9)) +
     theme_void()
 }
+
+# wrap a long exclusion reason onto <= `w`-char lines so side boxes stay inside the panel
+strwrap_lab <- function(s, w = 34) paste(strwrap(s, width = w), collapse = "\n")
 
 # ── SUPP S2 — PD-L1 context: strata bars + subgroup-AUC forest ────────────────
 pub_fig_pdl1_context <- function(sr) {
@@ -880,6 +914,64 @@ pub_fig_nomogram <- function(nomo) {
 #' threshold_default); 0.5 is also tabulated. The threshold is deliberately NOT
 #' optimised (Youden on n=49 would be optimistic). Panel A confusion matrix,
 #' Panel B precision–recall curve (combined vs clinical, no-skill = prevalence).
+# ── SUPP S13 — predictive-vs-prognostic dissociation ─────────────────────────
+# Panel A: every predictor on BOTH endpoints, same rank scale, so the crossover is read
+# directly. Panel B: the bootstrapped CONTRASTS — the actual test, because "significant
+# on one endpoint, not the other" is not a dissociation (Gelman & Stern 2006).
+#' @param ds `av$survival$dissociation` from run_dissociation_analysis().
+pub_fig_dissociation <- function(ds) {
+  if (is.null(ds) || !is.null(ds$skipped) || is.null(ds$cells)) return(NULL)
+  lab <- function(v) if (identical(v, "immune")) "Immune composite" else gsub("_", "-", v)
+  A <- do.call(rbind, lapply(ds$cells, function(c1) data.frame(
+    var = lab(c1$variable),
+    endpoint = c("Response (AUC)", "Survival (Harrell C)"),
+    est = c(c1$response$estimate, c1$survival$estimate),
+    lo  = c(c1$response$ci[1], c1$survival$ci[1]),
+    hi  = c(c1$response$ci[2], c1$survival$ci[2]), stringsAsFactors = FALSE)))
+  A <- A[is.finite(A$est), , drop = FALSE]
+  if (!nrow(A)) return(NULL)
+  A$var <- factor(A$var, levels = rev(unique(A$var)))
+  pA <- ggplot(A, aes(est, var, colour = endpoint)) +
+    geom_vline(xintercept = 0.5, linetype = "dashed", colour = pub_palette[["ref"]]) +
+    geom_errorbarh(aes(xmin = lo, xmax = hi), height = 0.14,
+                   position = position_dodge(width = 0.45), alpha = 0.75) +
+    geom_point(size = 2.6, position = position_dodge(width = 0.45)) +
+    scale_colour_manual(values = c("Response (AUC)" = unname(pub_palette[["combined"]]),
+                                   "Survival (Harrell C)" = unname(pub_palette[["unpen"]]))) +
+    labs(x = "P(correct ordering)   ·   0.5 = no information", y = NULL, colour = NULL,
+         subtitle = sprintf("Same rank scale, same %d patients (%d events)", ds$n, ds$events)) +
+    theme_publication() + theme(legend.position = "top")
+
+  rows <- list(data.frame(spec = "Immune: response - survival",
+                          est = ds$contrasts$single_dissociation$estimate,
+                          lo = ds$contrasts$single_dissociation$ci[1],
+                          hi = ds$contrasts$single_dissociation$ci[2], stringsAsFactors = FALSE))
+  for (v in names(ds$contrasts$by_comparator)) {
+    cv <- ds$contrasts$by_comparator[[v]]; star <- if (identical(v, ds$comparator)) " *" else ""
+    rows <- c(rows, list(
+      data.frame(spec = sprintf("Crossover vs %s%s", lab(v), star),
+                 est = cv$crossover$estimate, lo = cv$crossover$ci[1], hi = cv$crossover$ci[2]),
+      data.frame(spec = sprintf("Response: immune - %s", lab(v)),
+                 est = cv$within_response$estimate, lo = cv$within_response$ci[1], hi = cv$within_response$ci[2]),
+      data.frame(spec = sprintf("Survival: immune - %s", lab(v)),
+                 est = cv$within_survival$estimate, lo = cv$within_survival$ci[1], hi = cv$within_survival$ci[2])))
+  }
+  B <- do.call(rbind, rows); B <- B[is.finite(B$est), , drop = FALSE]
+  B$spec <- factor(B$spec, levels = rev(B$spec))
+  B$excl <- is.finite(B$lo) & is.finite(B$hi) & (B$lo > 0 | B$hi < 0)
+  pB <- ggplot(B, aes(est, spec, colour = excl)) +
+    geom_vline(xintercept = 0, linetype = "dashed", colour = pub_palette[["ref"]]) +
+    geom_errorbarh(aes(xmin = lo, xmax = hi), height = 0.16) +
+    geom_point(size = 2.6) +
+    scale_colour_manual(values = c(`TRUE` = unname(pub_palette[["ok"]]),
+                                   `FALSE` = unname(pub_palette[["fragile"]])), guide = "none") +
+    labs(x = "Difference in P(correct ordering)  [95% bootstrap CI]", y = NULL,
+         subtitle = if (is.null(ds$comparator)) "* = pre-specified comparator" else
+           sprintf("* = pre-specified comparator (%s)", lab(ds$comparator))) +
+    theme_publication()
+  pub_tag(pA / pB)
+}
+
 pub_fig_classification <- function(av) {
   if (is.null(av) || is.null(av$per_patient) ||
       !"Prob_Combined" %in% names(av$per_patient)) return(NULL)
@@ -1055,7 +1147,8 @@ pub_render_all <- function(objs, out_dir, project_name) {
     save_pub_figure(pub_fig_added_value(av),         pf("Figure2_AddedValue"),      PUB_W2, 120)
     # SUPP (S1–S9)
     if (!is.null(objs$consort))
-      save_pub_figure(pub_fig_consort(objs$consort), pf("FigureS1_CONSORT"),            PUB_W2, 120)
+      save_pub_figure(pub_fig_consort(objs$consort, terminal = objs$consort_terminal),
+                                                     pf("FigureS1_CONSORT"),            PUB_W2, 140)
     save_pub_figure(pub_fig_baseline_invariance(av), pf("FigureS2_BaselineInvariance"), PUB_W2, 82)
     save_pub_figure(pub_fig_specificity_null(av),    pf("FigureS3_SpecificityNull"),    PUB_W1, 95)
     if (!is.null(av$dynamics_baseline_coupling))
@@ -1065,6 +1158,11 @@ pub_render_all <- function(objs, out_dir, project_name) {
     if (!is.null(av$nomogram))
       save_pub_figure(pub_fig_nomogram(av$nomogram), pf("FigureS10_Nomogram"),          PUB_W2, 172)
     save_pub_figure(pub_fig_classification(av),      pf("FigureS11_Classification"),    PUB_W2, 120)
+    # S13 dissociation — a normal live-object figure, so unlike S9 it needs no
+    # OUT_OF_PIPELINE protection in make_manuscript_figures.R.
+    if (!is.null(av$survival$dissociation) && is.null(av$survival$dissociation$skipped))
+      save_pub_figure(pub_fig_dissociation(av$survival$dissociation),
+                                                     pf("FigureS13_Dissociation"),      PUB_W2, 150)
   }
   if (!is.null(objs$stratified_result))
     save_pub_figure(pub_fig_pdl1_context(objs$stratified_result), pf("Figure3_PDL1_context"), PUB_W2, 115)
@@ -1097,38 +1195,26 @@ pub_render_all <- function(objs, out_dir, project_name) {
   invisible(out_dir)
 }
 
-# ── helper: CONSORT counts from live objects + same-run QC report ──────────────
-pub_consort_counts <- function(config, av, gate_decomp) {
-  # downstream counts from live objects
-  cc <- list(
-    n = av$n, n_pos = av$n_pos, n_neg = av$n_neg,
-    n_cc = av$n_complete_case,
-    n_paired = if (!is.null(gate_decomp)) gate_decomp$n_paired else NA_integer_,
-    surv_n = av$survival$OS$n, surv_os_ev = av$survival$OS$events,
-    surv_pfs_ev = av$survival$PFS$events,
-    clin_label = gsub("_", "-", paste(names(av$clinical_vars), collapse = "+")),
-    n_miss = NA_integer_, n_out = NA_integer_,
-    raw_n = av$n, raw_rp = av$n_pos, raw_sdpd = av$n_neg)
-  # upstream exclusions from the same-run Step-01 standard QC report (best-effort)
-  qc <- tryCatch({
-    f <- file.path(step_dir(config, 1, create = FALSE),
-                   sprintf("QC_Filtering_Report_%s_standard.xlsx", config$project_name))
-    if (!file.exists(f)) NULL else {
-      dd <- as.data.frame(readxl::read_excel(f, sheet = "Details_Dropped", skip = 1))
-      names(dd) <- c("Patient_ID", "NA_Percent", "Reason", "Original_Source")[seq_len(ncol(dd))]
-      dd
-    }
-  }, error = function(e) NULL)
-  if (!is.null(qc) && nrow(qc)) {
-    cc$n_miss <- sum(grepl("missing", qc$Reason, ignore.case = TRUE))
-    cc$n_out  <- sum(grepl("outlier", qc$Reason, ignore.case = TRUE))
-    drp_rp    <- sum(qc$Original_Source == config$clinical$responder_label, na.rm = TRUE)
-    drp_sd    <- nrow(qc) - drp_rp
-    cc$raw_n   <- av$n + nrow(qc)
-    cc$raw_rp  <- av$n_pos + drp_rp
-    cc$raw_sdpd<- av$n_neg + drp_sd
-  } else { cc$n_miss <- 0L; cc$n_out <- 0L }
-  cc
+# ── helper: CONSORT inputs from the live cohort ledger ────────────────────────
+# Replaces pub_consort_counts(), which reconstructed the flow as
+#   raw_n = av$n + nrow(qc_dropped)
+# i.e. it added exclusions counted from the ANALYTIC cohort to the PAIRED-subset n.
+# Those are different denominators, and the result was a starting cohort that never
+# existed (69 for a 94-row file whose analytic cohort is 82). The ledger is recorded
+# at each filtering point, so there is nothing left to reconstruct: this helper only
+# assembles the TERMINAL annotations, which are properties of the final cohort and
+# explicitly not exclusions.
+pub_consort_terminal <- function(av) {
+  tl <- list()
+  if (!is.null(av$n_complete_case))
+    tl[[sprintf("Complete-case %s",
+                gsub("_", "-", paste(names(av$clinical_vars), collapse = "+")))]] <-
+      sprintf("n = %d (NAs median-imputed in-fold; nobody excluded)", av$n_complete_case)
+  if (!is.null(av$survival$OS$n))
+    tl[["Survival follow-up"]] <- sprintf("n = %d (%d OS / %s PFS events)",
+      av$survival$OS$n, av$survival$OS$events,
+      if (is.null(av$survival$PFS$events)) "-" else av$survival$PFS$events)
+  if (!length(tl)) NULL else tl
 }
 
 # ── helper: read same-run Step-04 LMM bootstrap frames for the forest ─────────

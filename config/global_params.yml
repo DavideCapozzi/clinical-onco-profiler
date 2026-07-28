@@ -184,6 +184,30 @@ experiments:
           os:    "OS"
           pfs:   "PFS"
           death: "Alive_0/Dead_1"
+        # 1e — predictive-vs-prognostic dissociation (Figure S13, co-primary claim).
+        #      Scores every predictor on BOTH endpoints with the same rank statistic and
+        #      bootstraps the DIFFERENCE ("significant here, ns there" is not a
+        #      dissociation). Was diagnostics/diag_40; in-pipeline since 2026-07-28 so it
+        #      cannot go stale when the cohort or the gate changes.
+        dissociation:
+          enabled: true
+          # PRIMARY contrast. Must be a key of clinical_model.vars. Pre-specified:
+          # PS is the archetypal PROGNOSTIC marker, which is what makes the crossover
+          # meaningful. NEVER re-point this at whichever variable gives the best contrast.
+          comparator: PS
+          # Orientation = the sign making HIGHER = BETTER outcome. MANDATORY and
+          # pre-specified from biology: a variable with no entry here is skipped, because
+          # orienting by the statistic it is about to be scored on manufactures the result.
+          #   PD-L1 higher = better response · PS higher (worse ECOG) = worse · NLR higher = worse
+          orientation:
+            PD_L1: 1
+            PS: -1
+            NLR: -1
+          # composite_orientation: null => taken from the pre-specified LMM interaction sign
+          # (responders contract the gate => lower delta is responder-like => -1).
+          composite_orientation: null
+          n_boot: 2000
+          mediation_sim: true
         # ── Publication nomograms (Figure S10) ──
         #   Two point-based nomograms are rendered in the publication set:
         #     (A) the LMM gate markers as individual predictors — per-marker display read;
