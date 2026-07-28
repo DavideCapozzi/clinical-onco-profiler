@@ -188,12 +188,79 @@ step_output_path <- function(config, step, name, ext = NULL) {
 }
 
 
+# ── Cohort ledger — the auditable patient-flow record ─────────────────────────
+# WHY THIS EXISTS. Nothing used to record *why* a patient left the cohort, so the
+# CONSORT figure reconstructed the flow by arithmetic — and every reconstruction was
+# wrong (the rendered figure said 69 patients, the docs said 91 raw; the input file has
+# 94). A ledger row is appended at each filtering point instead, and `ledger_validate()`
+# makes a discontinuity FATAL rather than something a reader discovers in review.
+# It is also how the silent outcome-eligibility leak became visible: `unmapped_values`
+# records the target-column values that matched no mapping entry.
+
+#' @title Start an empty cohort ledger
+#' @return A zero-row data.frame with the ledger schema.
+ledger_new <- function() {
+  data.frame(stage = character(), n_in = integer(), n_out = integer(),
+             n_dropped = integer(), reason = character(),
+             n_resp = integer(), n_nonresp = integer(),
+             dropped_ids = character(), unmapped_values = character(),
+             stringsAsFactors = FALSE)
+}
+
+#' @title Append one filtering point to the ledger
+#' @param led Ledger data.frame (\code{ledger_new()} or a previous result).
+#' @param stage Short machine-readable stage name, e.g. "outcome_eligibility".
+#' @param n_in,n_out Cohort size entering / leaving this stage.
+#' @param reason Human-readable exclusion reason (shown on the CONSORT panel).
+#' @param by_group Optional named counts of the surviving cohort per outcome class.
+#' @param dropped_ids Optional character vector of the patient IDs removed here.
+#' @param unmapped_values Optional raw values that matched no outcome mapping.
+ledger_add <- function(led, stage, n_in, n_out, reason = NA_character_,
+                       by_group = NULL, dropped_ids = NULL, unmapped_values = NULL) {
+  cl <- function(x) if (is.null(x) || !length(x)) NA_character_ else paste(x, collapse = ", ")
+  rbind(led, data.frame(
+    stage = as.character(stage), n_in = as.integer(n_in), n_out = as.integer(n_out),
+    n_dropped = as.integer(n_in) - as.integer(n_out), reason = as.character(reason),
+    n_resp    = if (!is.null(by_group) && length(by_group) >= 2) as.integer(by_group[[2]]) else NA_integer_,
+    n_nonresp = if (!is.null(by_group) && length(by_group) >= 1) as.integer(by_group[[1]]) else NA_integer_,
+    dropped_ids = cl(dropped_ids), unmapped_values = cl(unique(unmapped_values)),
+    stringsAsFactors = FALSE))
+}
+
+#' @title Validate that a cohort ledger reconciles
+#' @description Two invariants: each row's arithmetic closes, and consecutive stages
+#'   chain (\code{n_out[i] == n_in[i+1]}). A break means the flow diagram would be
+#'   unreconcilable with the data, so this is FATAL by design — the same posture the
+#'   Pass-0 cohort split takes.
+#' @param led Ledger data.frame.
+#' @param context Optional label included in the error message.
+#' @return The ledger, invisibly, when valid.
+ledger_validate <- function(led, context = "") {
+  if (is.null(led) || !nrow(led)) return(invisible(led))
+  bad <- which(led$n_in - led$n_dropped != led$n_out)
+  if (length(bad))
+    stop(sprintf("[FATAL] Cohort ledger %sdoes not reconcile at stage(s) %s: n_in - n_dropped != n_out.",
+                 if (nzchar(context)) paste0("(", context, ") ") else "",
+                 paste(led$stage[bad], collapse = ", ")))
+  if (nrow(led) > 1) {
+    brk <- which(led$n_out[-nrow(led)] != led$n_in[-1])
+    if (length(brk))
+      stop(sprintf("[FATAL] Cohort ledger %sis discontinuous: stage '%s' ends at n=%d but '%s' starts at n=%d.",
+                   if (nzchar(context)) paste0("(", context, ") ") else "",
+                   led$stage[brk[1]], led$n_out[brk[1]],
+                   led$stage[brk[1] + 1], led$n_in[brk[1] + 1]))
+  }
+  invisible(led)
+}
+
 #' @title Save Quality Control Report to Excel
 #' @description Generates a multi-sheet Excel report with filtering statistics, group breakdowns, and categorized marker lists.
 #' @param qc_list A list containing summary stats, dataframes of dropped items, group mappings, and optionally imputed_details.
 #' @param out_path Path to save the .xlsx file.
 #' @param config Configuration object (optional) containing 'qc_reporting' settings for marker categorization.
-save_qc_report <- function(qc_list, out_path, config = NULL) {
+#' @param ledger Optional cohort ledger (\code{ledger_new()}/\code{ledger_add()}). When supplied it
+#'   is written as its own sheet and overrides the Summary's reconstructed grand totals.
+save_qc_report <- function(qc_list, out_path, config = NULL, ledger = NULL) {
   
   wb <- createWorkbook()
   
@@ -231,8 +298,14 @@ save_qc_report <- function(qc_list, out_path, config = NULL) {
     v_fin <- if(sg %in% names(final_counts)) final_counts[[sg]] else 0
     v_qc  <- if(sg %in% names(drop_qc_counts)) drop_qc_counts[[sg]] else 0
     v_pre <- if(sg %in% names(drop_pre_counts)) drop_pre_counts[[sg]] else 0
+    # `Initial` is RECONSTRUCTED as final + dropped. That is only correct if `breakdown_final`
+    # is the true end state — it is not: run_qc_pipeline() captures it after the missingness
+    # filter, while the PCA outliers are appended to dropped_rows_detail afterwards in
+    # src/01. The result double-counts and this sheet reported Initial 96 / Final 87 for a
+    # 94-row file whose analytic cohort is 82. The ledger (see `ledger_*`) is the authority
+    # when present; the reconstruction survives only as a fallback for callers without one.
     v_init <- v_fin + v_qc + v_pre
-    
+
     subgroup_stats[[sg]] <- list(Initial = v_init, DropPre = v_pre, DropQC = v_qc, Final = v_fin)
   }
   
@@ -261,17 +334,45 @@ save_qc_report <- function(qc_list, out_path, config = NULL) {
   total_final <- grand_totals[3]
   total_pre <- sum(sapply(subgroup_stats, function(x) x$DropPre))
   total_qc  <- sum(sapply(subgroup_stats, function(x) x$DropQC))
+
+  # Ledger overrides the reconstructed grand totals: it is recorded AT each filtering
+  # point rather than inferred after the fact, so it cannot disagree with the data.
+  # NB the per-subgroup columns necessarily describe only the patients whose outcome COULD
+  # be mapped — a patient dropped for an unmappable outcome has no subgroup by definition.
+  # So the total is set to the ELIGIBLE cohort (keeping this sheet internally consistent)
+  # and the screened-vs-eligible step is reported separately below. The full flow lives in
+  # the Cohort_Ledger sheet, which is the authority.
+  n_screened <- NA_integer_
+  n_unmappable <- 0L
+  if (!is.null(ledger) && nrow(ledger)) {
+    elig <- ledger$stage == "outcome_eligibility"
+    n_screened   <- ledger$n_in[1]
+    n_unmappable <- sum(ledger$n_dropped[elig])
+    total_init   <- if (any(elig)) ledger$n_out[which(elig)[1]] else ledger$n_in[1]
+    total_final  <- ledger$n_out[nrow(ledger)]
+    total_pre    <- 0L
+    total_qc     <- total_init - total_final
+    total_dropped_combined <- -(total_pre + total_qc)
+  }
   
   # 2. Build Tables
   
   # --- Table 1: Detailed Dropped Metrics (Subgroup Level) ---
   metrics_detailed <- c("Initial Samples", "Dropped Samples (A Priori)", "Dropped Samples (QC)", "Final Samples")
   totals_vector_det <- c(total_init, -total_pre, -total_qc, total_final)
-  
+
   df_detailed <- data.frame(Metric = metrics_detailed, Total = totals_vector_det, stringsAsFactors = FALSE)
   for (sg in all_subgroups) {
     s <- subgroup_stats[[sg]]
     df_detailed[[sg]] <- c(s$Initial, -s$DropPre, -s$DropQC, s$Final)
+  }
+  # Screened -> eligible, prepended so the sheet starts where the input file starts. These
+  # patients have no subgroup (their outcome could not be mapped), hence Total-only.
+  if (is.finite(n_screened) && n_unmappable > 0) {
+    pre <- data.frame(Metric = c("Screened (input file)", "Excluded: outcome not mappable"),
+                      Total = c(n_screened, -n_unmappable), stringsAsFactors = FALSE)
+    for (sg in all_subgroups) pre[[sg]] <- c(NA_real_, NA_real_)
+    df_detailed <- rbind(pre, df_detailed)
   }
   
   # --- Table 2: By Group Dropping Metrics (Parent Level) ---
@@ -504,6 +605,16 @@ save_qc_report <- function(qc_list, out_path, config = NULL) {
     addStyle(wb, "Details_Imputed", createStyle(textDecoration = "bold"), rows = total_row_idx, cols = 1)
   }
   
+  # --- Sheet: Cohort_Ledger (authoritative patient flow, one row per filtering point) ---
+  if (!is.null(ledger) && nrow(ledger)) {
+    addWorksheet(wb, "Cohort_Ledger")
+    writeData(wb, "Cohort_Ledger",
+              "Patient flow recorded AT each filtering point (not reconstructed).", startRow = 1)
+    addStyle(wb, "Cohort_Ledger", createStyle(textDecoration = "bold"), rows = 1, cols = 1)
+    writeData(wb, "Cohort_Ledger", ledger, startRow = 3)
+    setColWidths(wb, "Cohort_Ledger", cols = seq_len(ncol(ledger)), widths = "auto")
+  }
+
   saveWorkbook(wb, out_path, overwrite = TRUE)
   message(sprintf("[IO] QC Report saved to: %s", out_path))
 }

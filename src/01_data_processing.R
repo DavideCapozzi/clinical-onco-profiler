@@ -74,11 +74,31 @@ if (!is.null(config$clinical$mapping)) {
     ))
 }
 
+.elig <- .data_ledger_eligible <- raw_data[[clin_col]] %in% c(resp_lbl, nresp_lbl)
 raw_filtered <- raw_data %>%
   dplyr::filter(.data[[clin_col]] %in% c(resp_lbl, nresp_lbl)) %>%
   dplyr::mutate(Group = factor(.data[[clin_col]], levels = c(nresp_lbl, resp_lbl)))
 
 if (nrow(raw_filtered) < 5) stop("[FATAL] Insufficient patient observations for specified clinical labels.")
+
+# ── Cohort ledger, stage 1: outcome eligibility ──────────────────────────────
+# Patients whose target value matches NO mapping entry are dropped HERE and were
+# previously dropped SILENTLY. Record the offending values verbatim: a free-text
+# outcome ("4 (PD clinica)" vs the mapped numeric 4) is a data-entry variant, not a
+# genuine ineligibility, and losing it costs real patients from the outcome class.
+cohort_ledger <- ledger_new()
+.unmapped <- unique(as.character(raw_data[[clin_col]][!.elig]))
+cohort_ledger <- ledger_add(
+  cohort_ledger, "outcome_eligibility", nrow(raw_data), nrow(raw_filtered),
+  reason = sprintf("target '%s' value not in the configured mapping", clin_col),
+  by_group = table(raw_filtered$Group),
+  dropped_ids = if ("Patient_ID" %in% names(raw_data)) raw_data$Patient_ID[!.elig] else NULL,
+  unmapped_values = .unmapped)
+if (length(.unmapped))
+  warning(sprintf(paste("[Data] %d patient(s) excluded because their '%s' value matched no mapping",
+                        "entry: %s. If these are data-entry variants of a mapped value, they are",
+                        "silently lost from the analysis — check config$clinical$mapping."),
+                  sum(!.elig), clin_col, paste(sprintf("'%s'", .unmapped), collapse = ", ")))
 
 # Dynamic Covariate Extraction
 meta_cols <- c("Patient_ID", "Sample_ID", "Timepoint", "Group")
@@ -130,6 +150,17 @@ qc_result <- run_qc_pipeline(
 mat_clean_basic  <- qc_result$data
 meta_clean_basic <- qc_result$metadata
 
+# ── Cohort ledger, stage 2: missingness ──────────────────────────────────────
+.miss_ids <- if (!is.null(qc_result$report$dropped_rows_detail))
+  qc_result$report$dropped_rows_detail$Patient_ID else NULL
+cohort_ledger <- ledger_add(
+  cohort_ledger, "missingness", nrow(mat_raw), nrow(mat_clean_basic),
+  reason = sprintf("per-patient marker missingness > %s%%",
+                   if (is.null(config$qc$max_na_row_pct)) "-" else
+                     format(100 * as.numeric(config$qc$max_na_row_pct))),
+  by_group = table(meta_clean_basic$Group), dropped_ids = .miss_ids)
+
+out_pids <- NULL   # reset per experiment: main.R loops experiments in one session
 if (isTRUE(config$qc$remove_outliers)) {
   message("   [QC-B] Generating hybrid PCA proxy for Multivariate Outlier Detection...")
   
@@ -157,12 +188,34 @@ if (isTRUE(config$qc$remove_outliers)) {
     
     mat_clean_basic  <- mat_clean_basic[!is_outlier, , drop = FALSE]
     meta_clean_basic <- meta_clean_basic[!is_outlier, , drop = FALSE]
+    # run_qc_pipeline() captured breakdown_final BEFORE this step, so without refreshing it
+    # the QC report's per-subgroup columns describe a cohort that still contains the
+    # outliers while its Total does not — the mismatch that made the sheet read
+    # "Initial 96 / Final 87" for a 94-row file with an 82-patient analytic cohort.
+    qc_result$report$breakdown_final <- table(meta_clean_basic$Group)
   }
 }
+
+# ── Cohort ledger, stage 3: multivariate outliers ────────────────────────────
+# Added unconditionally (n_dropped = 0 when the filter is off, as in the longitudinal
+# pass) so the ledger chains without gaps and the CONSORT shows the same stages in
+# every pass — a stage that silently disappears is how flows stop reconciling.
+cohort_ledger <- ledger_add(
+  cohort_ledger, "pca_outlier",
+  cohort_ledger$n_out[nrow(cohort_ledger)], nrow(mat_clean_basic),
+  reason = if (isTRUE(config$qc$remove_outliers))
+    sprintf("robust-Mahalanobis PCA outlier (conf %s)", config$qc$outlier_conf_level)
+  else "outlier removal disabled for this pass",
+  by_group = table(meta_clean_basic$Group),
+  dropped_ids = if (exists("out_pids", inherits = FALSE)) out_pids else NULL)
+ledger_validate(cohort_ledger, context = sprintf("Step 01 / %s", config$project_name))
 
 mat_raw <- mat_clean_basic
 metadata_raw <- meta_clean_basic
 message(sprintf("[QC] Final Matrix Dimensions: %d Samples x %d Markers", nrow(mat_raw), ncol(mat_raw)))
+message(sprintf("[Ledger] %s", paste(sprintf("%s %d->%d", cohort_ledger$stage,
+                                             cohort_ledger$n_in, cohort_ledger$n_out),
+                                     collapse = " | ")))
 
 # 4. Final Hybrid Transformation (Mode-Aware: Prevents BPCA Leakage)
 # ------------------------------------------------------------------------------
@@ -184,11 +237,14 @@ df_hybrid_z   <- cbind(metadata_raw, as.data.frame(mat_hybrid_z))
 
 processed_data <- list(
   metadata        = metadata_raw,
-  markers         = colnames(mat_raw),      
-  raw_matrix      = mat_raw, 
+  markers         = colnames(mat_raw),
+  raw_matrix      = mat_raw,
   hybrid_markers  = final_markers,
   hybrid_data_raw = df_hybrid_raw,
   hybrid_data_z   = df_hybrid_z,
+  # Auditable patient flow: downstream steps append their own stages and the CONSORT
+  # figure renders it, so no consumer has to reconstruct the cohort by arithmetic.
+  cohort_ledger   = cohort_ledger,
   config          = config
 )
 
@@ -196,7 +252,7 @@ out_file_data <- file.path(out_dir, sprintf("data_processed_%s_%s.rds", config$p
 out_file_qc   <- file.path(out_dir, sprintf("QC_Filtering_Report_%s_%s.xlsx", config$project_name, config$run_mode))
 
 saveRDS(processed_data, out_file_data)
-save_qc_report(qc_result$report, out_file_qc)
+save_qc_report(qc_result$report, out_file_qc, ledger = cohort_ledger)
 
 message(sprintf("   [Output] Serialized data objects saved: %s", basename(out_file_data)))
 message("=== STEP 1 COMPLETE ===\n")

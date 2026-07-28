@@ -485,7 +485,10 @@ if (lmm_robust$n_robust == 0) {
         comparator_label = if (!is.null(cm$comparator_label))
                              as.character(cm$comparator_label) else NULL,
         nomogram_clinical_vars = if (!is.null(cm$nomogram$clinical_vars))
-                                   as.character(unlist(cm$nomogram$clinical_vars)) else NULL
+                                   as.character(unlist(cm$nomogram$clinical_vars)) else NULL,
+        # Dissociation (response-specific vs prognostic). Orientation is pre-specified in
+        # config and never inferred — see run_dissociation_analysis().
+        dissociation_cfg = cm$dissociation
       ),
       error = function(e) {
         warning(sprintf("[ML] Added-value layer (timepoint=%s) failed (non-fatal): %s", tp, e$message)); NULL
@@ -1088,7 +1091,10 @@ if (lmm_robust$n_robust == 0) {
         nested_val        = nested_val,
         stratified_result = stratified_result,
         lmm_boot          = pub_read_lmm_bootstrap(config),
-        consort           = if (!is.null(clin_addval)) pub_consort_counts(config, clin_addval, gate_decomp) else NULL,
+        # Patient flow: the ledger recorded AT each filtering point (Step 01 → this layer),
+        # plus terminal annotations. Nothing is reconstructed after the fact any more.
+        consort           = if (!is.null(clin_addval)) clin_addval$cohort_ledger else NULL,
+        consort_terminal  = if (!is.null(clin_addval)) pub_consort_terminal(clin_addval) else NULL,
         df_preds          = df_preds,
         positive_label    = res_glmnet$positive_label,
         perm              = list(en = perm_glmnet$p_value, svm = perm_svm$p_value))
