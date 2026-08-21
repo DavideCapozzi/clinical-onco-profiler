@@ -152,7 +152,8 @@ pub_fig_added_value <- function(av) {
   # combined model when the clinical baseline is near-chance (the clinical coefficients are
   # near-null, so they cost more in variance than they buy in fit). Omitting the arm while
   # its AUC sits in the tables is the kind of gap a reader is entitled to read as concealment;
-  # the honest move is to plot it and quantify the gap (cv_kfold$delta_auc_vs_immune).
+  # the honest move is to plot it and quantify the gap (cv_kfold$delta_auc_vs_immune —
+  # quantified in the Figure 2 caption; see the note at the panel-A annotate() below).
   if (imm_ok) {
     ri  <- pub_roc_df(pp$Prob_Immune, y)
     li  <- sprintf("Immune composite alone (LOO AUC %.2f, n=%d)", ri$auc, nfin(pp$Prob_Immune))
@@ -178,17 +179,17 @@ pub_fig_added_value <- function(av) {
     sprintf("Reportable %d-fold CV AUC: %.2f → %.2f%s (curves = LOO)\n",
             if (isTRUE(is.finite(cv_k))) as.integer(cv_k) else 10L,
             cv_clin, cv_comb, cv_imm_lab) else ""
-  dvi    <- suppressWarnings(as.numeric(cv$delta_auc_vs_immune)[1])
-  dvi_ci <- suppressWarnings(as.numeric(cv$delta_auc_vs_immune_ci))
-  dvi_lab <- if (length(dvi) && isTRUE(is.finite(dvi)) && length(dvi_ci) == 2L &&
-                 all(is.finite(dvi_ci)))
-    sprintf("combined − immune alone: %+.3f [%+.3f, %+.3f]\n", dvi, dvi_ci[1], dvi_ci[2])
-  else ""
+  # The paired combined−immune interval (cv_kfold$delta_auc_vs_immune) is NOT annotated
+  # on the panel: the on-plot text block ran to three lines and the two curves already sit
+  # visibly on top of each other, so the panel makes the point without the number. It is
+  # NOT dropped — it travels in the Figure 2 caption (manuscript/figure_captions.md), the
+  # JSON and the Excel. Do not remove the immune-alone CURVE to match: the arm being
+  # visible is what keeps this a presentation choice rather than a concealment (guardrail 2).
   pA <- ggplot(roc, aes(FPR, TPR, colour = M, linetype = M)) +
     geom_abline(slope = 1, intercept = 0, linetype = "dotted", colour = pub_palette[["ref"]]) +
     geom_path(linewidth = 0.8) +
     annotate("text", x = 0.97, y = 0.06, hjust = 1, vjust = 0, size = 2.7,
-             label = sprintf("%s%sLRT p %s (perm %s)", cv_lab, dvi_lab,
+             label = sprintf("%sLRT p %s (perm %s)", cv_lab,
                              op_p(inc$lrt_p), val_p(inc$lrt_perm_p))) +
     scale_colour_manual(values = setNames(cols, lev)) +
     scale_linetype_manual(values = setNames(lts, lev)) +
