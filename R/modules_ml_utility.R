@@ -902,8 +902,15 @@ nomo_tick_label <- function(v, conv, scale_type) {
 #'                   conversion (see `nomo_tick_label()`). Relabels ticks only: the fit,
 #'                   the points and the tick POSITIONS are untouched.
 #' @param points_max points assigned to the widest-range predictor (default 100).
+#' @param axis_rule  "robust" (default; Figure S9): continuous axes span the 5th–95th
+#'                   percentile. "hybrid" (display-only; Figure S9b): same points scale, but a
+#'                   continuous axis extends to its full observed range when that still fits in
+#'                   0..`points_max` points; otherwise it keeps the 5–95% range with open ends
+#'                   ("≤"/"≥"). Adds `axis_rule` + `axis_info` to the spec; "robust" adds nothing.
 build_nomogram_spec <- function(y01, X, resp_label = NULL, var_scale = NULL,
-                                var_convert = NULL, points_max = 100) {
+                                var_convert = NULL, points_max = 100,
+                                axis_rule = c("robust", "hybrid")) {
+  axis_rule <- match.arg(axis_rule)
   X    <- as.data.frame(X)
   disp <- colnames(X)
   cn   <- make.names(disp, unique = TRUE)
@@ -931,6 +938,33 @@ build_nomogram_spec <- function(y01, X, resp_label = NULL, var_scale = NULL,
   ranges    <- vapply(info, function(z) z$range, numeric(1))
   max_range <- max(ranges); if (!is.finite(max_range) || max_range <= 0) max_range <- 1
   scale     <- points_max / max_range
+
+  # Hybrid axis rule (display-only; S9b). The points-per-logit `scale` above stays the
+  # robust one, so every axis keeps its S9 weight. A continuous axis then extends to the
+  # full observed range if that still fits in 0..points_max points; otherwise it keeps
+  # its 5–95% range and its ends are drawn open ("≤"/"≥"). cmin, ranges and base_lp are
+  # recomputed from the final ranges, so points stay (beta*v - cmin)*scale and a patient
+  # on the axes reads exactly the model's apparent probability.
+  axis_info <- NULL
+  if (identical(axis_rule, "hybrid")) {
+    axis_info <- do.call(rbind, lapply(seq_along(cn), function(j) {
+      v  <- X[[cn[j]]]; v <- v[is.finite(v)]; z <- info[[j]]
+      flo <- min(v); fhi <- max(v)
+      cont <- length(unique(v)) > 6
+      ext  <- cont && abs(z$beta) * (fhi - flo) * scale <= points_max
+      lo <- if (ext) flo else z$lo; hi <- if (ext) fhi else z$hi
+      data.frame(display = disp[j], robust_lo = z$lo, robust_hi = z$hi,
+                 full_lo = flo, full_hi = fhi, lo = lo, hi = hi, extended = ext,
+                 open_lo = cont && flo < lo, open_hi = cont && fhi > hi,
+                 n_beyond = sum(v < lo | v > hi), stringsAsFactors = FALSE)
+    }))
+    info <- lapply(seq_along(cn), function(j) {
+      z <- info[[j]]; z$lo <- axis_info$lo[j]; z$hi <- axis_info$hi[j]
+      z$cmin <- min(z$beta * z$lo, z$beta * z$hi); z$range <- abs(z$beta) * (z$hi - z$lo)
+      z
+    })
+    ranges <- vapply(info, function(z) z$range, numeric(1))
+  }
   base_lp   <- b0 + sum(vapply(info, function(z) z$cmin, numeric(1)))
 
   # Per-predictor tick tables (value -> points), on the shared 0..points_max scale.
@@ -945,13 +979,20 @@ build_nomogram_spec <- function(y01, X, resp_label = NULL, var_scale = NULL,
     ntick <- if (mp < 8) 2L else if (mp < 25) 3L else 5L
     ticks <- if (length(uq) <= 6) uq else pretty(c(z$lo, z$hi), n = ntick)
     ticks <- ticks[ticks >= z$lo - 1e-9 & ticks <= z$hi + 1e-9]
+    # Hybrid: tick the axis ENDS so the drawn ruler spans the whole axis range.
+    if (!is.null(axis_info) && length(uq) > 6) ticks <- sort(unique(c(z$lo, ticks, z$hi)))
     if (length(ticks) < 2) ticks <- unique(c(z$lo, z$hi))
     if (mp < 8 && length(ticks) > 2) ticks <- range(ticks)   # collapsed axis → endpoints only
     st <- if (!is.null(var_scale)   && disp[j] %in% names(var_scale))   var_scale[[disp[j]]]   else "raw"
     cv <- if (!is.null(var_convert) && disp[j] %in% names(var_convert)) var_convert[[disp[j]]] else NULL
+    lab <- nomo_tick_label(ticks, cv, st)
+    if (!is.null(axis_info)) {                  # open ends: values beyond read at the end
+      if (axis_info$open_lo[j]) lab[ticks == z$lo] <- paste0("≤", lab[ticks == z$lo])
+      if (axis_info$open_hi[j]) lab[ticks == z$hi] <- paste0("≥", lab[ticks == z$hi])
+    }
     data.frame(display    = disp[j],
                value      = ticks,                            # model scale (positions ticks)
-               label      = nomo_tick_label(ticks, cv, st),   # display scale (printed)
+               label      = lab,                              # display scale (printed)
                points     = (z$beta * ticks - z$cmin) * scale,
                scale_type = st,
                max_points = z$range * scale,
@@ -970,7 +1011,7 @@ build_nomogram_spec <- function(y01, X, resp_label = NULL, var_scale = NULL,
   tp_ticks  <- pretty(c(0, total_max), n = 6)
   tp_ticks  <- tp_ticks[tp_ticks >= 0 & tp_ticks <= total_max]
 
-  list(
+  out <- list(
     predictors       = preds,
     points_max       = points_max,
     total_max_points = total_max,
@@ -984,6 +1025,8 @@ build_nomogram_spec <- function(y01, X, resp_label = NULL, var_scale = NULL,
                           y01, as.numeric(predict(fit, type = "response")),
                           direction = "<", quiet = TRUE))), error = function(e) NA_real_),
     n                = length(y01))
+  if (!is.null(axis_info)) { out$axis_rule <- axis_rule; out$axis_info <- axis_info }
+  out
 }
 
 #' @title Predictive-vs-prognostic dissociation (response vs survival, rank scale)
@@ -1924,13 +1967,25 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
         var_convert = if (is_delta) setNames(list(list(type = "fc", sigma = 1)),
                                              COMPOSITE_DISPLAY) else NULL)
     }
+    # S9b: the same inputs as B under the full-range ("hybrid") axis rule. Display-only, and
+    # in its OWN tryCatch so a failure here can never remove the S9 spec above.
+    spec_ci_hyb <- if (!is.null(spec_ci)) tryCatch(
+      build_nomogram_spec(
+        yb, d_ci, resp_label = resp_label,
+        var_scale   = c(setNames(if (is_delta) "fc" else "z", COMPOSITE_DISPLAY),
+                        setNames(rep("raw", length(clin_sel)), clin_sel)),
+        var_convert = if (is_delta) setNames(list(list(type = "fc", sigma = 1)),
+                                             COMPOSITE_DISPLAY) else NULL,
+        axis_rule   = "hybrid"),
+      error = function(e) { message(sprintf("[ML][AV] hybrid nomogram spec failed (non-fatal): %s", e$message)); NULL })
     list(timepoint = composite_timepoint, positive_label = resp_label,
          gate_markers = avail, clinical_vars = clin_sel,
          composite_display = COMPOSITE_DISPLAY,
          # Panel B is the formal model → report its LEAKAGE-FREE LOO AUC (already
          # computed by this layer), never the apparent one it is drawn from.
          combined_loo_auc = auc$combined[["loo"]],
-         immune = spec_imm, clinical_immune = spec_ci)
+         immune = spec_imm, clinical_immune = spec_ci,
+         clinical_immune_hybrid = spec_ci_hyb)
   }, error = function(e) { message(sprintf("[ML][AV] nomogram spec failed (non-fatal): %s", e$message)); NULL })
 
   # ── Repeated stratified k-fold CV (additive; the REPORTABLE discrimination) ───────────────

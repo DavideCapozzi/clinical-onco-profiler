@@ -1083,7 +1083,7 @@ if (lmm_robust$n_robust == 0) {
     tryCatch({
       # Bundle the live objects the figures need; persist them so figure
       # sizes/styling can be re-rendered fast WITHOUT re-running the analysis
-      # (manuscript/figures/make_manuscript_figures.R), all via pub_render_all().
+      # (tools/render_pub_figures.R), all via pub_render_all().
       pub_objs <- list(
         clin_addval       = clin_addval,
         clin_addval_secondary = clin_addval_secondary,   # per-timepoint added-value nodes (e.g. T0 reference)
@@ -1091,6 +1091,7 @@ if (lmm_robust$n_robust == 0) {
         nested_val        = nested_val,
         stratified_result = stratified_result,
         lmm_boot          = pub_read_lmm_bootstrap(config),
+        lmm_frame         = pub_read_lmm_frame(config),   # CONSORT: the 90-patient selection frame
         # Patient flow: the ledger recorded AT each filtering point (Step 01 → this layer),
         # plus terminal annotations. Nothing is reconstructed after the fact any more.
         consort           = if (!is.null(clin_addval)) clin_addval$cohort_ledger else NULL,

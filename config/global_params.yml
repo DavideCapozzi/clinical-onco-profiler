@@ -184,7 +184,7 @@ experiments:
           os:    "OS"
           pfs:   "PFS"
           death: "Alive_0/Dead_1"
-        # 1e — predictive-vs-prognostic dissociation (Figure S13, co-primary claim).
+        # 1e — predictive-vs-prognostic dissociation (Figure S12, co-primary claim).
         #      Scores every predictor on BOTH endpoints with the same rank statistic and
         #      bootstraps the DIFFERENCE ("significant here, ns there" is not a
         #      dissociation). Was diagnostics/diag_40; in-pipeline since 2026-07-28 so it
@@ -208,7 +208,7 @@ experiments:
           composite_orientation: null
           n_boot: 2000
           mediation_sim: true
-        # ── Publication nomograms (Figure S10) ──
+        # ── Publication nomograms (Figure S9) ──
         #   Two point-based nomograms are rendered in the publication set:
         #     (A) the LMM gate markers as individual predictors — per-marker display read;
         #     (B) the 1-df immune composite + clinical vars = the FORMAL model, so its

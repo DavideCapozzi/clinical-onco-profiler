@@ -9,26 +9,24 @@
 #
 # Narrative (rebalanced 2026-06-24 toward immunology, 3 main): MAIN Fig1 biology
 # (gate-marker cell frequencies T0/T1×group, log-y + LMM forest) / Fig2 added-value
-# (LRT-led) / Fig3 PD-L1 context. The gate-signal decomposition and the
-# selection-aware circularity nulls are DEFENSE figures (statistical / invariance ⇒
-# weak main-figure payoff) → SUPP (promote S9 to main only for a Trustworthy-AI
-# venue). SUPP S1 CONSORT / S2 baseline-invariance / S3 specificity-null / S4
-# standalone / S5 coupling / S6 robustness / S7 calibration / S8 gate-signal
-# decomposition / S9 selection-aware circularity nulls (pub_fig_selection_aware:
-# the Δ-headline anti-circularity evidence — replays the WHOLE gate selection under
-# permuted labels; A = naive→selection-honest p ladder, B = increment/LRT null,
-# C = nested-AUC null. Built OUT-OF-PIPELINE by manuscript/figures/render_selection_aware.R
-# from the persisted diag_39b / diag_44 nulls — NOT pub_render_all) /
-# S10 nomograms (pub_fig_nomogram, per timepoint; panel A = 3 gate markers individual, apparent
-# display-only; panel B = immune composite + THIS run's clinical vars = the formal model, so
-# include_nlr drives it — reported with its leakage-free LOO AUC. Immune axes are relabelled
-# onto their exact clinical scale: Δ = fold change in the Ki67+:Ki67− ratio, T0 = % of parent
-# gate; a bijection of the model scale, so nothing fitted changes — see nomo_tick_label()) /
-# S11 classification performance (pub_fig_classification: confusion matrix + precision-recall from
+# (LRT-led) / Fig3 PD-L1 context. SUPP (contiguous since 2026-09-11) S1 CONSORT /
+# S2 baseline-invariance / S3 specificity-null / S4 standalone / S5 coupling /
+# S6 robustness / S7 calibration / S8 gate-signal decomposition /
+# S9 nomogram (pub_fig_nomogram: the formal model only — immune composite + THIS run's
+# clinical vars, so include_nlr drives it. Immune axes are relabelled onto their exact
+# clinical scale: Δ = fold change in the Ki67+:Ki67− ratio, T0 = % of parent gate; a
+# bijection of the model scale, so nothing fitted changes — see nomo_tick_label()) /
+# S10 classification performance (pub_fig_classification: confusion matrix + precision-recall from
 # the combined model's leakage-free LOO probs at the pre-specified prevalence threshold; NOT Youden) /
-# S12 raw fold-change of the gate markers (pub_fig_foldchange: clinician-facing, computed directly
-# from raw cell % — responders halve Ki67+ subsets, non-responders rise ~20%; descriptive, formal
-# test stays the Step-04 LMM; agrees with the logit-scale model at r=0.999 for these small fractions).
+# S11 raw fold-change of the gate markers (pub_fig_foldchange: clinician-facing, computed directly
+# from raw cell %; descriptive, formal test stays the Step-04 LMM) /
+# S12 predictive-vs-prognostic dissociation.
+# The selection-aware circularity nulls (pub_fig_selection_aware) have NO render path and no
+# number: they need the never-computed fully-nested AUC null (diag_39b). Wiring them in would
+# insert a supplementary figure and shift the numbering above.
+# Display names (markers, groups, clinical vars) come from modules_pub_style.R lookups;
+# statistics belong in the figure legends — only the reportable set is printed on a panel.
+# Re-render an existing run without re-running the analysis: tools/render_pub_figures.R.
 # ==============================================================================
 
 suppressMessages({ library(ggplot2); library(patchwork) })
@@ -36,7 +34,7 @@ suppressMessages({ library(ggplot2); library(patchwork) })
 # ── MAIN Fig 1 — LMM Ki67 forest (pre-specified gate) ─────────────────────────
 #' @param boot_df data.frame: Marker, Median_Beta_Boot, CI_Lower_2.5, CI_Upper_97.5, Pct_FDR_Significant
 #' @param obs_df  data.frame: Marker, Estimate_Interaction
-pub_fig_lmm_forest <- function(boot_df, obs_df = NULL, markers = NULL) {
+pub_fig_lmm_forest <- function(boot_df, obs_df = NULL, markers = NULL, ref_label = NULL) {
   if (is.null(boot_df) || !nrow(boot_df)) return(NULL)
   d <- boot_df
   if (!is.null(markers)) d <- d[d$Marker %in% markers, , drop = FALSE]
@@ -44,7 +42,14 @@ pub_fig_lmm_forest <- function(boot_df, obs_df = NULL, markers = NULL) {
   if (!is.null(obs_df) && all(c("Marker", "Estimate_Interaction") %in% names(obs_df))) {
     d <- merge(d, obs_df[, c("Marker", "Estimate_Interaction")], by = "Marker", all.x = TRUE)
   } else d$Estimate_Interaction <- d$Median_Beta_Boot
+  d$Marker <- pub_relabel_marker(d$Marker)
   d$Marker <- factor(d$Marker, levels = d$Marker[order(d$Estimate_Interaction)])
+  # The % label is a stability read-out, not a p-value: say so on the panel.
+  n_boot <- if ("N_Valid_Iterations" %in% names(d)) max(d$N_Valid_Iterations, na.rm = TRUE) else NA
+  pct_note <- sprintf("%% = share of %sbootstrap resamples\nwith FDR < 0.05 (stability)",
+                      if (is.finite(n_boot)) sprintf("%d ", as.integer(n_boot)) else "")
+  x_lab <- sprintf("Time×Group β\n(logit scale%s)",
+                   if (!is.null(ref_label)) sprintf("; ref. %s", ref_label) else "")
   # Single point estimate (observed β) + bootstrap 95% CI — standard forest layout.
   # The bootstrap median overlaps the observed β whenever bias ≈ 0 (the normal case),
   # so it is omitted; bootstrap robustness is conveyed by the % FDR label instead.
@@ -56,9 +61,11 @@ pub_fig_lmm_forest <- function(boot_df, obs_df = NULL, markers = NULL) {
     geom_text(aes(x = CI_Upper_97.5, label = sprintf(" %.0f%%", Pct_FDR_Significant)),
               hjust = 0, size = 2.5, colour = "grey30") +
     scale_x_continuous(expand = expansion(mult = c(0.05, 0.12))) +
-    labs(x = "Time×Group β", y = NULL) +
+    labs(x = x_lab, y = NULL, caption = pct_note) +
     coord_cartesian(clip = "off") +
-    theme_publication() + theme(plot.margin = margin(6, 14, 6, 6))
+    theme_publication() +
+    theme(plot.margin = margin(6, 14, 6, 6),
+          plot.caption = element_text(size = 7, colour = "grey40", hjust = 0))
 }
 
 # ── MAIN Fig 1 (biology) — gate-marker cell frequencies (T0/T1 × group) + forest ─
@@ -71,16 +78,20 @@ pub_fig_lmm_forest <- function(boot_df, obs_df = NULL, markers = NULL) {
 #' @param boot_df,obs_df LMM bootstrap-CI and observed-interaction frames (forest)
 pub_fig_biology <- function(gate_decomp, boot_df, obs_df = NULL, resp_label = NULL) {
   ppv <- if (!is.null(gate_decomp)) gate_decomp$per_patient_values else NULL
-  forest <- pub_fig_lmm_forest(boot_df, obs_df,
-                               markers = if (!is.null(ppv)) unique(ppv$Marker) else NULL)
-  yvar <- if (!is.null(ppv) && "Value_pct" %in% names(ppv)) "Value_pct" else "Value_raw"
-  if (is.null(ppv) || !nrow(ppv) || all(is.na(ppv[[yvar]]))) return(forest)
-
   # Responder = primary blue (consistent with the positive/combined class elsewhere),
   # non-responder = vermillion; responder column first. Display-relabel group codes
   # (RP→PR, SD_PD→SD/PD) before faceting so strips/keys read in RECIST English.
-  ppv$Group <- pub_relabel_group(ppv$Group)
   resp_disp <- if (!is.null(resp_label)) pub_relabel_group(resp_label) else NULL
+  ref_disp  <- if (!is.null(ppv) && !is.null(resp_disp))
+    setdiff(unique(pub_relabel_group(ppv$Group)), resp_disp) else NULL
+  forest <- pub_fig_lmm_forest(boot_df, obs_df,
+                               markers = if (!is.null(ppv)) unique(ppv$Marker) else NULL,
+                               ref_label = if (length(ref_disp) == 1) ref_disp else NULL)
+  yvar <- if (!is.null(ppv) && "Value_pct" %in% names(ppv)) "Value_pct" else "Value_raw"
+  if (is.null(ppv) || !nrow(ppv) || all(is.na(ppv[[yvar]]))) return(forest)
+
+  ppv$Group  <- pub_relabel_group(ppv$Group)
+  ppv$Marker <- pub_relabel_marker(ppv$Marker)
   grps <- unique(as.character(ppv$Group))
   if (!is.null(resp_disp) && resp_disp %in% grps) {
     ord <- c(resp_disp, setdiff(grps, resp_disp))
@@ -109,42 +120,38 @@ pub_fig_added_value <- function(av) {
   if (is.null(av) || is.null(av$per_patient)) return(NULL)
   pp  <- av$per_patient; pos <- av$positive_label
   y   <- as.integer(pp$True_Group == pos)
-  inc <- av$increment
   PDL1_RED <- "#B2182B"; COMP_COL <- "#CC79A7"      # PD-L1 dark red; comparator reddish-purple
   clab <- if (!is.null(av$comparator$label)) av$comparator$label else "Clinical + immune + NLR"
   # Name the base clinical model by its constituents (e.g. "Clinical (PD-L1+PS)") so the
   # reader sees what 'clinical' contains; downstream curves build on it verbally.
   clin_str <- if (!is.null(av$formal_vars) && length(av$formal_vars))
-                gsub("_", "-", paste(unlist(av$formal_vars), collapse = "+")) else NULL
+                pub_relabel_var(paste(unlist(av$formal_vars), collapse = "+")) else NULL
   clin_nm  <- if (!is.null(clin_str)) sprintf("Clinical (%s)", clin_str) else "Clinical"
-  nfin <- function(v) sum(is.finite(v))
-  # honest p formatting (avoid 'p = 0.000' on asymptotic underflow)
-  op_p  <- function(p) if (is.null(p) || !is.finite(p)) "= NA" else if (p < 0.001) "< 0.001" else sprintf("= %.3f", p)
-  val_p <- function(p) if (is.null(p) || !is.finite(p)) "NA"   else if (p < 1e-4)  "< 1e-4"  else sprintf("%.4f", p)
+  IMM_NM   <- "Immune composite alone"
   pdl1_ok  <- "Prob_PDL1" %in% names(pp) && any(is.finite(pp$Prob_PDL1))
   imm_ok   <- "Prob_Immune" %in% names(pp) && any(is.finite(pp$Prob_Immune))
   comp_ok  <- "Prob_ClinicalComp" %in% names(pp) && any(is.finite(pp$Prob_ClinicalComp))
-  # NB every Prob_* column here is a LEAVE-ONE-OUT prediction (pl_* upstream), so
-  # every curve — and every AUC in the legend — is LOO. Labelled as such because
-  # LOO is NOT the reportable discrimination: for tied/discrete clinical vars it is
-  # tie-artifact-prone (PS has 44% tied pairs) and under-reports the clinical arm,
-  # which would INFLATE the visually-read increment. The reportable repeated
-  # stratified 10-fold pair is annotated on the panel (see cv_lab below).
+  # NB every Prob_* column here is a LEAVE-ONE-OUT prediction (pl_* upstream), so every
+  # curve is LOO. LOO is NOT the reportable discrimination: for tied/discrete clinical vars
+  # it is tie-artifact-prone (PS has 44% tied pairs) and under-reports the clinical arm,
+  # which would INFLATE the visually-read increment. The key therefore carries model NAMES
+  # only — printing LOO AUCs there put a second, non-reportable AUC set on the figure — and
+  # the reportable repeated stratified k-fold set is the only one annotated (cv_lab below).
   rc  <- pub_roc_df(pp$Prob_Clinical, y); ro <- pub_roc_df(pp$Prob_Combined, y)
-  lc  <- sprintf("%s (LOO AUC %.2f, n=%d)", clin_nm, rc$auc, nfin(pp$Prob_Clinical))
-  lk  <- sprintf("Clinical + immune (LOO AUC %.2f, n=%d)", ro$auc, nfin(pp$Prob_Combined))
+  lc  <- clin_nm
+  lk  <- "Clinical + immune"
   roc_l <- list(data.frame(rc$df, M = lc), data.frame(ro$df, M = lk))
   lev   <- c(lc, lk); cols <- c(pub_palette[["clinical"]], pub_palette[["combined"]]); lts <- c(2, 1)
   if (comp_ok) {                                # display-only 'clinical + NLR' comparator
     rcmp <- pub_roc_df(pp$Prob_ClinicalComp, y)
-    lm_  <- sprintf("%s (LOO AUC %.2f, n=%d)", clab, rcmp$auc, nfin(pp$Prob_ClinicalComp))
+    lm_  <- clab
     roc_l <- c(roc_l, list(data.frame(rcmp$df, M = lm_)))
     lev <- c(lev, lm_); cols <- c(cols, COMP_COL); lts <- c(lts, 5)
   }
   if (pdl1_ok) {
     fin <- is.finite(pp$Prob_PDL1)              # complete-case only (PD-L1 missingness)
     rp <- pub_roc_df(pp$Prob_PDL1[fin], y[fin])
-    lp <- sprintf("PD-L1 alone (LOO AUC %.2f, n=%d)", rp$auc, sum(fin))
+    lp <- "PD-L1 alone"
     roc_l <- c(list(data.frame(rp$df, M = lp)), roc_l)
     lev <- c(lp, lev); cols <- c(PDL1_RED, cols); lts <- c(4, lts)
   }
@@ -152,45 +159,38 @@ pub_fig_added_value <- function(av) {
   # combined model when the clinical baseline is near-chance (the clinical coefficients are
   # near-null, so they cost more in variance than they buy in fit). Omitting the arm while
   # its AUC sits in the tables is the kind of gap a reader is entitled to read as concealment;
-  # the honest move is to plot it and quantify the gap (cv_kfold$delta_auc_vs_immune —
-  # quantified in the Figure 2 caption; see the note at the panel-A annotate() below).
+  # the honest move is to plot it and quantify the gap in the Figure 2 legend.
   if (imm_ok) {
     ri  <- pub_roc_df(pp$Prob_Immune, y)
-    li  <- sprintf("Immune composite alone (LOO AUC %.2f, n=%d)", ri$auc, nfin(pp$Prob_Immune))
-    roc_l <- c(roc_l, list(data.frame(ri$df, M = li)))
-    lev <- c(lev, li); cols <- c(cols, pub_palette[["immune"]]); lts <- c(lts, 6)
+    roc_l <- c(roc_l, list(data.frame(ri$df, M = IMM_NM)))
+    lev <- c(lev, IMM_NM); cols <- c(cols, pub_palette[["immune"]]); lts <- c(lts, 6)
   }
   roc <- do.call(rbind, roc_l); roc$M <- factor(roc$M, levels = lev)
   # Reportable discrimination = repeated stratified k-fold; the curves above are LOO.
   # Stated on the panel so the reader never reads the increment off the LOO curves.
-  # Guarded: runs / persisted rds predating the cv_kfold node simply omit the line.
+  # Guarded: runs / persisted rds predating the cv_kfold node simply omit the block.
+  # Short lines, right-aligned in the empty lower-right triangle: a single long line ran
+  # past the panel's left edge and was clipped. No p-value is printed: the on-plot LRT p
+  # used to be the naive / gate-fixed one, which selection inflates 64-134x — the
+  # selection-aware p belongs in the legend, next to the test it describes.
   cv      <- av$cv_kfold
-  cv_clin <- suppressWarnings(as.numeric(cv$auc_clinical)[1])
-  cv_comb <- suppressWarnings(as.numeric(cv$auc_combined)[1])
-  cv_imm  <- suppressWarnings(as.numeric(cv$auc_immune)[1])
-  cv_k    <- suppressWarnings(as.numeric(cv$k)[1])
-  # Immune-alone is stated next to the pair, not hidden behind it: when the clinical arm is
-  # near-chance the combined model can fall slightly BELOW it, and the paired delta (same
-  # folds) is what tells the reader whether that ordering is signal or noise.
-  cv_imm_lab <- if (length(cv_imm) && isTRUE(is.finite(cv_imm)))
-    sprintf(", immune alone %.2f", cv_imm) else ""
-  cv_lab  <- if (length(cv_clin) && length(cv_comb) &&
-                 isTRUE(is.finite(cv_clin)) && isTRUE(is.finite(cv_comb)))
-    sprintf("Reportable %d-fold CV AUC: %.2f → %.2f%s (curves = LOO)\n",
+  cv_num  <- function(x) suppressWarnings(as.numeric(x)[1])
+  cv_clin <- cv_num(cv$auc_clinical); cv_comb <- cv_num(cv$auc_combined)
+  cv_imm  <- cv_num(cv$auc_immune);   cv_k    <- cv_num(cv$k); cv_r <- cv_num(cv$reps)
+  cv_lab  <- if (isTRUE(is.finite(cv_clin)) && isTRUE(is.finite(cv_comb)))
+    sprintf("Reported AUC: %d-fold CV%s, n = %d\nclinical %.2f · combined %.2f%s\ncurves: leave-one-out predictions",
             if (isTRUE(is.finite(cv_k))) as.integer(cv_k) else 10L,
-            cv_clin, cv_comb, cv_imm_lab) else ""
-  # The paired combined−immune interval (cv_kfold$delta_auc_vs_immune) is NOT annotated
-  # on the panel: the on-plot text block ran to three lines and the two curves already sit
-  # visibly on top of each other, so the panel makes the point without the number. It is
-  # NOT dropped — it travels in the Figure 2 caption (manuscript/figure_captions.md), the
-  # JSON and the Excel. Do not remove the immune-alone CURVE to match: the arm being
-  # visible is what keeps this a presentation choice rather than a concealment (guardrail 2).
+            if (isTRUE(is.finite(cv_r))) sprintf(" × %d", as.integer(cv_r)) else "",
+            as.integer(av$n), cv_clin, cv_comb,
+            if (isTRUE(is.finite(cv_imm))) sprintf(" · immune %.2f", cv_imm) else "") else NULL
   pA <- ggplot(roc, aes(FPR, TPR, colour = M, linetype = M)) +
     geom_abline(slope = 1, intercept = 0, linetype = "dotted", colour = pub_palette[["ref"]]) +
-    geom_path(linewidth = 0.8) +
-    annotate("text", x = 0.97, y = 0.06, hjust = 1, vjust = 0, size = 2.7,
-             label = sprintf("%sLRT p %s (perm %s)", cv_lab,
-                             op_p(inc$lrt_p), val_p(inc$lrt_perm_p))) +
+    geom_path(linewidth = 0.8)
+  if (!is.null(cv_lab))
+    pA <- pA + annotate("label", x = 0.98, y = 0.03, hjust = 1, vjust = 0, size = 2.5,
+                        lineheight = 0.95, label = cv_lab, fill = "white",
+                        label.size = 0, label.padding = unit(0.8, "mm"))
+  pA <- pA +
     scale_colour_manual(values = setNames(cols, lev)) +
     scale_linetype_manual(values = setNames(lts, lev)) +
     coord_equal(xlim = c(0, 1), ylim = c(0, 1), expand = FALSE) +
@@ -213,9 +213,9 @@ pub_fig_added_value <- function(av) {
   # Immune alone on the decision curve too — DCA is co-primary with the LRT, so the arm that
   # may dominate on net benefit has to be visible here, not only on the ROC.
   if (!is.null(cur$immune)) {
-    nb_l <- c(nb_l, list(data.frame(t = cur$threshold, nb = cur$immune, s = "Immune alone")))
-    b_cols <- c(b_cols, "Immune alone" = pub_palette[["immune"]])
-    b_lts  <- c(b_lts, "Immune alone" = 6)
+    nb_l <- c(nb_l, list(data.frame(t = cur$threshold, nb = cur$immune, s = IMM_NM)))
+    b_cols <- c(b_cols, setNames(pub_palette[["immune"]], IMM_NM))
+    b_lts  <- c(b_lts, setNames(6, IMM_NM))
   }
   nb_l <- c(nb_l, list(data.frame(t = cur$threshold, nb = cur$treat_all,  s = "Treat all"),
                        data.frame(t = cur$threshold, nb = cur$treat_none, s = "Treat none")))
@@ -225,7 +225,7 @@ pub_fig_added_value <- function(av) {
   nb$s <- factor(nb$s, levels = c(clin_nm, "Clinical + immune",
                                   if (!is.null(cur$comparator)) clab,
                                   if (!is.null(cur$pdl1)) "PD-L1 alone",
-                                  if (!is.null(cur$immune)) "Immune alone",
+                                  if (!is.null(cur$immune)) IMM_NM,
                                   "Treat all", "Treat none"))
   pB <- ggplot(nb, aes(t, nb, colour = s, linetype = s)) +
     geom_line(linewidth = 0.8) +
@@ -246,7 +246,7 @@ pub_fig_added_value <- function(av) {
   pub_tag(pA | pB)
 }
 
-# ── MAIN Fig 3 — Calibration (unpenalized vs ridge) + IDI fragility ───────────
+# ── SUPP S7 — Calibration (unpenalized vs ridge) + IDI fragility ──────────────
 pub_fig_calibration_idi <- function(av) {
   if (is.null(av) || is.null(av$per_patient)) return(NULL)
   pp <- av$per_patient; pos <- av$positive_label
@@ -304,69 +304,147 @@ pub_fig_calibration_idi <- function(av) {
 # and drew a starting cohort that never existed. Nothing is inferred here any more: the
 # figure only renders rows, so the number of stages is data-driven and a cohort with no
 # paired timepoint (cross-sectional) renders correctly with no code change.
+# Display-only labels: a post-stage box names the cohort it leaves, not the filter; the
+# eligibility reason would otherwise print the raw target-column name.
+CONSORT_STAGE_LABELS <- c(
+  outcome_eligibility = "Evaluable best response",
+  missingness         = "Marker missingness ≤ 40%",
+  pca_outlier         = "Baseline (T0) analysis set",
+  paired_timepoint    = "Paired Δ (T1−T0) analysis set")
+CONSORT_REASON_LABELS <- c(
+  outcome_eligibility = "response value outside the endpoint mapping")
 #' @param led Cohort ledger data.frame: stage, n_in, n_out, n_dropped, reason, n_resp, n_nonresp.
 #' @param terminal Optional named list of terminal ANNOTATIONS (not exclusions), e.g.
 #'   list("Complete-case PD-L1+PS" = "n = 57", "Survival follow-up" = "n = 60 (41 OS events)").
 #' @param title Optional label for the first box.
-pub_fig_consort <- function(led, terminal = NULL, title = NULL) {
+#' @param inflow Optional named list (by stage) of list(n, reason): patients who ENTER at a
+#'   stage — see pub_consort_inflow(). `n_dropped = n_in - n_out` is net, so at a stage that
+#'   also admits patients it understates the exclusions (the paired stage read 22 while 27
+#'   were dropped and 5 re-admitted); exclusions are therefore counted from `dropped_ids`.
+#' @param lmm_frame Optional list from pub_read_lmm_frame(): the longitudinal LMM (marker
+#'   selection) frame, drawn as a free-standing box — it is NOT a subset of the screened
+#'   T0 cohort (it includes T1-only patients absent from the T0 file).
+#' @param grp_labels Optional c(positive, negative) display labels for the "a / b" counts.
+pub_fig_consort <- function(led, terminal = NULL, title = NULL, inflow = NULL,
+                            lmm_frame = NULL, grp_labels = NULL) {
   if (is.null(led) || !nrow(led)) return(NULL)
   k    <- nrow(led)
   top  <- 10; step <- 2.2                       # one flow row per ledger stage
   ys   <- top - step * seq_len(k)               # y of each post-stage box
+  XM <- 3; WM <- 4.2                            # main column
+  XE <- 7.35; WE <- 3.9                         # exclusions (right)
+  XI <- -1.3; WI <- 3.4                         # inflow + LMM frame (left)
   grp  <- function(i) if (is.na(led$n_resp[i]) || is.na(led$n_nonresp[i])) "" else
     sprintf("  ·  %d / %d", led$n_resp[i], led$n_nonresp[i])
-  nice <- function(s) gsub("_", " ", s)
-  box <- function(x, y, w, h, lab, fill = "white") list(
-    r = data.frame(xmin = x - w/2, xmax = x + w/2, ymin = y - h/2, ymax = y + h/2, fill = fill),
+  nice <- function(s) if (s %in% names(CONSORT_STAGE_LABELS)) CONSORT_STAGE_LABELS[[s]] else gsub("_", " ", s)
+  why_out <- function(i) {
+    r <- if (led$stage[i] %in% names(CONSORT_REASON_LABELS)) CONSORT_REASON_LABELS[[led$stage[i]]] else led$reason[i]
+    uv <- if ("unmapped_values" %in% names(led)) led$unmapped_values[i] else NA
+    if (!is.na(uv) && nzchar(uv)) r <- sprintf("%s (“%s”)", r, uv)
+    if (is.na(r)) "" else strwrap_lab(r, 36)
+  }
+  n_excl <- vapply(seq_len(k), function(i) {
+    ids <- if ("dropped_ids" %in% names(led)) led$dropped_ids[i] else NA
+    if (is.na(ids) || !nzchar(ids)) led$n_dropped[i] else length(strsplit(ids, ",\\s*")[[1]])
+  }, numeric(1))
+  n_add <- led$n_out - (led$n_in - n_excl)
+  box <- function(x, y, w, h, lab, fill = "white", lty = "solid") list(
+    r = data.frame(xmin = x - w/2, xmax = x + w/2, ymin = y - h/2, ymax = y + h/2, fill = fill, lty = lty),
     t = data.frame(x = x, y = y, lab = lab))
 
-  boxes <- list(box(3, top, 5.0, 1.2, sprintf("%s\nn = %d%s",
-                    if (is.null(title)) "Screened cohort" else title,
-                    led$n_in[1], if (k) "" else "")))
+  boxes <- list(box(XM, top, WM, 1.2, sprintf("%s\nn = %d",
+                    if (is.null(title)) "Screened cohort (T0 file)" else title, led$n_in[1])))
   arrs  <- list()
   for (i in seq_len(k)) {
+    ymid <- (if (i == 1) top else ys[i - 1]) - step / 2
+    # A stage that both drops and admits: exclusion leaves ABOVE the admission, so the
+    # two arrows never share a line (which read as the re-admitted flowing into Excluded).
+    both <- n_excl[i] > 0 && n_add[i] > 0
+    y_out <- if (both) ymid + 0.25 else ymid
+    y_in  <- if (both) ymid - 0.25 else ymid
     boxes[[length(boxes) + 1]] <- box(
-      3, ys[i], 5.0, 1.2,
+      XM, ys[i], WM, 1.2,
       sprintf("%s\nn = %d%s", nice(led$stage[i]), led$n_out[i], grp(i)),
       fill = if (i == k) "#DCEAF5" else "white")
-    arrs[[length(arrs) + 1]] <- data.frame(x = 3, y = (if (i == 1) top else ys[i - 1]) - 0.6,
-                                           xe = 3, ye = ys[i] + 0.6)
-    if (led$n_dropped[i] > 0) {                 # side box only when patients actually left
-      boxes[[length(boxes) + 1]] <- box(
-        7.0, (if (i == 1) top else ys[i - 1]) - step / 2, 3.6, 1.15,
-        sprintf("Excluded (n = %d)\n%s", led$n_dropped[i],
-                if (is.na(led$reason[i])) "" else strwrap_lab(led$reason[i], 34)),
-        fill = "grey95")
-      arrs[[length(arrs) + 1]] <- data.frame(x = 3, y = (if (i == 1) top else ys[i - 1]) - step / 2,
-                                             xe = 5.2, ye = (if (i == 1) top else ys[i - 1]) - step / 2)
+    arrs[[length(arrs) + 1]] <- data.frame(x = XM, y = (if (i == 1) top else ys[i - 1]) - 0.6,
+                                           xe = XM, ye = ys[i] + 0.6)
+    if (n_excl[i] > 0) {                        # side box only when patients actually left
+      boxes[[length(boxes) + 1]] <- box(XE, y_out, WE, 1.05,
+        sprintf("Excluded (n = %d)\n%s", n_excl[i], why_out(i)), fill = "grey95")
+      arrs[[length(arrs) + 1]] <- data.frame(x = XM, y = y_out, xe = XE - WE / 2, ye = y_out)
     }
+    if (n_add[i] > 0) {                         # patients ENTERING at this stage
+      fl  <- inflow[[led$stage[i]]]
+      why <- if (!is.null(fl$reason)) fl$reason else "entered at this stage"
+      boxes[[length(boxes) + 1]] <- box(XI, y_in, WI, 1.6,
+        sprintf("Re-admitted (n = %d)\n%s", n_add[i], strwrap_lab(why, 32)), fill = "#EAF3EA")
+      arrs[[length(arrs) + 1]] <- data.frame(x = XI + WI / 2, y = y_in, xe = XM - 0.03, ye = y_in)
+    }
+  }
+  # The LMM selection frame: a parallel cohort (T0 + T1 samples), so no arrow joins it to
+  # the T0 flow — drawing one would claim it is a subset of the screened T0 file.
+  if (!is.null(lmm_frame) && !is.null(lmm_frame$n_patients)) {
+    boxes[[length(boxes) + 1]] <- box(
+      XI, top - 0.25, WI, 1.75,
+      sprintf("Longitudinal LMM frame\n(marker selection, T0 + T1 files)\nn = %d patients · %d samples\n%d paired · %d T0-only · %d T1-only",
+              lmm_frame$n_patients, lmm_frame$n_observations, lmm_frame$n_paired,
+              lmm_frame$n_only_T0, lmm_frame$n_only_T1),
+      fill = "#FFF6E0", lty = "dashed")
   }
   # Terminal annotations describe the FINAL cohort; they are not exclusions and must never
   # be drawn in the vertical flow (nobody is dropped for an imputed clinical value).
+  y_end <- ys[k] - 0.6
   if (length(terminal)) {
-    tl <- paste(sprintf("%s: %s", names(terminal), unlist(terminal)), collapse = "\n")
-    boxes[[length(boxes) + 1]] <- box(3, ys[k] - step, 5.0, 0.5 + 0.42 * length(terminal), tl)
-    arrs[[length(arrs) + 1]] <- data.frame(x = 3, y = ys[k] - 0.6, xe = 3,
-                                           ye = ys[k] - step + 0.35 + 0.21 * length(terminal))
+    tl <- paste(vapply(sprintf("%s: %s", names(terminal), unlist(terminal)),
+                       strwrap_lab, "", w = 50), collapse = "\n")
+    nl <- length(strsplit(tl, "\n")[[1]])
+    h  <- 0.3 + 0.3 * nl
+    boxes[[length(boxes) + 1]] <- box(XM, ys[k] - 1.0 - h / 2, WM + 0.8, h, tl)
+    arrs[[length(arrs) + 1]] <- data.frame(x = XM, y = ys[k] - 0.6, xe = XM, ye = ys[k] - 1.0)
+    y_end <- ys[k] - 1.0 - h
   }
   rects <- do.call(rbind, lapply(boxes, `[[`, "r"))
   txts  <- do.call(rbind, lapply(boxes, `[[`, "t"))
   arr   <- do.call(rbind, arrs)
-  ggplot() +
+  p <- ggplot() +
     geom_rect(data = rects, aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
-              fill = rects$fill, colour = "grey40", linewidth = 0.4) +
+              fill = rects$fill, linetype = rects$lty, colour = "grey40", linewidth = 0.4) +
     geom_segment(data = arr, aes(x = x, y = y, xend = xe, yend = ye),
                  arrow = arrow(length = unit(1.6, "mm")), colour = "grey40", linewidth = 0.4) +
-    geom_text(data = txts, aes(x, y, label = lab), size = 2.4, lineheight = 0.95) +
-    coord_cartesian(xlim = c(0.2, 9.0),
-                    ylim = c(min(rects$ymin) - 0.4, top + 0.9)) +
+    geom_text(data = txts, aes(x, y, label = lab), size = 2.4, lineheight = 0.95)
+  if (length(grp_labels) == 2 && any(nzchar(vapply(seq_len(k), grp, ""))))
+    p <- p + annotate("text", x = min(rects$xmin), y = y_end - 0.35, hjust = 0, vjust = 1,
+                      size = 2.2, colour = "grey35",
+                      label = sprintf("n = patients  ·  %s / %s", grp_labels[1], grp_labels[2]))
+  p + coord_cartesian(xlim = c(min(rects$xmin) - 0.1, max(rects$xmax) + 0.1),
+                      ylim = c(y_end - 0.9, top + 0.9)) +
     theme_void()
+}
+
+# ── helper: patients ENTERING the flow at a stage (CONSORT inflow) ────────────
+# A stage can admit as well as drop: the delta layer's paired set includes patients
+# excluded earlier from the T0 analysis set (PCA outliers) because the longitudinal pass
+# keeps outliers to preserve pairing. They are identified, not inferred: final analysed
+# IDs (`av$per_patient$Patient_ID`) that appear in an EARLIER stage's `dropped_ids`.
+pub_consort_inflow <- function(led, av) {
+  if (is.null(led) || !nrow(led) || !"dropped_ids" %in% names(led) ||
+      is.null(av$per_patient$Patient_ID)) return(NULL)
+  k    <- nrow(led)
+  ids  <- lapply(led$dropped_ids, function(s) if (is.na(s) || !nzchar(s)) character(0) else strsplit(s, ",\\s*")[[1]])
+  back <- as.character(av$per_patient$Patient_ID)
+  src  <- Filter(length, lapply(seq_len(k - 1), function(i) intersect(back, ids[[i]])))
+  if (!length(src)) return(NULL)
+  from <- led$stage[vapply(seq_len(k - 1), function(i) length(intersect(back, ids[[i]])) > 0, logical(1))]
+  why  <- if (identical(from, "pca_outlier"))
+    "PCA outliers with paired T0+T1 samples (outlier removal is off in the longitudinal pass to preserve pairing)"
+  else sprintf("previously excluded at: %s", paste(gsub("_", " ", from), collapse = ", "))
+  setNames(list(list(n = length(unlist(src)), ids = unlist(src), reason = why)), led$stage[k])
 }
 
 # wrap a long exclusion reason onto <= `w`-char lines so side boxes stay inside the panel
 strwrap_lab <- function(s, w = 34) paste(strwrap(s, width = w), collapse = "\n")
 
-# ── SUPP S2 — PD-L1 context: strata bars + subgroup-AUC forest ────────────────
+# ── MAIN Fig 3 — PD-L1 context: strata bars + subgroup-AUC forest ─────────────
 pub_fig_pdl1_context <- function(sr) {
   if (is.null(sr)) return(NULL)
   bins <- sr$bin_crosstab
@@ -384,19 +462,36 @@ pub_fig_pdl1_context <- function(sr) {
       sub("(", "\n(", gsub(">=", "≥", v, fixed = TRUE), fixed = TRUE)) +
     labs(x = sr$label, y = "Responder rate") + theme_publication()
   sl <- sr$subgroup_low; sh <- sr$subgroup_high
+  # Honour the upstream `inverted_auc` flag instead of plotting an AUC < 0.5 as if it were
+  # an estimate: a flagged point is drawn hollow/grey and labelled as uninformative, and a
+  # degenerate operating point (everyone assigned to one class) is named on the label.
+  flag_lab <- function(s) {
+    f <- character(0)
+    if (isTRUE(s$inverted_auc)) f <- c(f, "inverted (AUC < 0.5)")
+    if (isTRUE(s$sensitivity %in% c(0, 1) && s$specificity %in% c(0, 1)))
+      f <- c(f, sprintf("sens %.2f / spec %.2f", s$sensitivity, s$specificity))
+    if (length(f)) paste0("\n", paste(f, collapse = " · ")) else ""
+  }
   fo <- data.frame(
     grp = c(sprintf("PD-L1 < %g\n(n=%d)", sr$binary_cut$threshold, sl$n),
             sprintf("PD-L1 ≥ %g\n(n=%d)", sr$binary_cut$threshold, sh$n)),
     est = c(sl$auc, sh$auc),
     lo  = c(sl$auc_ci[1], sh$auc_ci[1]),
-    hi  = c(sl$auc_ci[3], sh$auc_ci[3]))
+    hi  = c(sl$auc_ci[3], sh$auc_ci[3]),
+    flagged = c(isTRUE(sl$inverted_auc), isTRUE(sh$inverted_auc)),
+    note = c(flag_lab(sl), flag_lab(sh)))
   fo$grp <- factor(fo$grp, levels = rev(fo$grp))
   pB <- ggplot(fo, aes(est, grp)) +
     geom_vline(xintercept = 0.5, linetype = "dashed", colour = pub_palette[["ref"]]) +
-    geom_errorbarh(aes(xmin = lo, xmax = hi), height = 0.16, colour = "grey35") +
-    geom_point(size = 2.8, colour = pub_palette[["combined"]]) +
-    geom_text(aes(label = sprintf("%.2f [%.2f, %.2f]", est, lo, hi)),
-              vjust = -1.5, size = 2.5, colour = "grey20") +
+    geom_errorbarh(aes(xmin = lo, xmax = hi, colour = flagged), height = 0.16) +
+    geom_point(aes(colour = flagged, shape = flagged), size = 2.8, stroke = 0.9, fill = "white") +
+    # Left-anchored at the CI's lower end: centred on the point, a label near AUC 0 ran
+    # off the panel into the y-axis text.
+    geom_text(aes(x = lo, label = sprintf("%.2f [%.2f, %.2f]%s", est, lo, hi, note), colour = flagged),
+              hjust = 0, vjust = -0.8, size = 2.5, lineheight = 0.9) +
+    scale_colour_manual(values = c(`FALSE` = unname(pub_palette[["combined"]]), `TRUE` = "grey45"),
+                        guide = "none") +
+    scale_shape_manual(values = c(`FALSE` = 19, `TRUE` = 21), guide = "none") +
     scale_y_discrete(expand = expansion(add = c(0.6, 1.0))) +
     coord_cartesian(xlim = c(0, 1), clip = "off") +
     labs(x = "AUC within PD-L1 subgroup", y = NULL) +
@@ -508,6 +603,7 @@ pub_fig_selection_aware <- function(nested_null, lrt_null) {
 pub_fig_gate_signal <- function(gd) {
   if (is.null(gd) || is.null(gd$marker_decomp)) return(NULL)
   d <- gd$marker_decomp; d <- d[!is.na(d$AUC), ]
+  d$Marker <- pub_relabel_marker(d$Marker)
   d$Timepoint <- factor(d$Timepoint, levels = c("T0", "T1", "Delta (T1-T0)"))
   ggplot(d, aes(Timepoint, AUC, colour = Timepoint)) +
     geom_hline(yintercept = 0.5, linetype = "dotted", colour = pub_palette[["ref"]]) +
@@ -572,7 +668,7 @@ pub_fig_specificity_null <- function(av) {
              label = sprintf("Ki67 gate ΔAUC=%.3f\nspec-p(LRT)=%.3f; %.0f%% random LRT<0.05",
                              sn$gate_delta_auc_apparent, sn$spec_p_lrt, 100 * sn$frac_sig_lrt)) +
     scale_x_continuous(expand = expansion(mult = c(0.05, 0.10))) +
-    labs(x = sprintf("Null ΔAUC across %d random %d-marker composites", sn$n_random, sn$k_markers),
+    labs(x = sprintf("Null ΔAUC across %d random\n%d-marker composites", sn$n_random, sn$k_markers),
          y = "Null percentile") +
     theme_publication()
 }
@@ -602,7 +698,7 @@ pub_fig_standalone <- function(preds_df, positive_label, perm = NULL, auc = NULL
     theme_publication() + theme(legend.direction = "vertical")
 }
 
-# ── SUPP S7 — Dynamics<->baseline coupling (gate rationale; Blocco G) ─────────
+# ── SUPP S5 — Dynamics<->baseline coupling (gate rationale; Blocco G) ─────────
 #' Across the marker panel: LMM Timepoint×Group interaction strength (|t|) vs each
 #' marker's standalone baseline (T0) AUC. Positive correlation = convergent validity
 #' (why a dynamically-selected gate predicts at baseline). Gate markers highlighted;
@@ -613,17 +709,25 @@ pub_fig_coupling <- function(av) {
   d <- cpl$per_marker
   d$grp <- ifelse(d$is_gate, "Immune gate", "Other panel marker")
   lab_top <- d$Marker[order(d$rank_T0)][1:min(2L, nrow(d))]   # top non-/gate T0 markers
-  d$lab <- ifelse(d$is_gate | d$Marker %in% lab_top, d$Marker, "")
+  d$lab <- ifelse(d$is_gate | d$Marker %in% lab_top, pub_relabel_marker(d$Marker), "")
   yr <- range(d$T0_AUC); xr <- range(d$absT)
+  # Stats block goes in a corner the fitted trend leaves empty (bottom-left for r < 0,
+  # top-left for r > 0); a fixed top-left position sat on the labelled points. p printed
+  # as "<0.001", never a literal "p=0.000".
+  neg  <- isTRUE(cpl$pearson_r < 0)
+  p_tx <- if (isTRUE(cpl$pearson_p < 0.001)) "p<0.001" else sprintf("p=%.3f", cpl$pearson_p)
   ggplot(d, aes(absT, T0_AUC)) +
     geom_hline(yintercept = 0.5, linetype = "dotted", colour = pub_palette[["ref"]]) +
     geom_smooth(method = "lm", formula = y ~ x, se = TRUE,
                 colour = "grey55", fill = "grey85", linewidth = 0.6) +
     geom_point(aes(colour = grp, size = grp)) +
-    geom_text(aes(label = lab), vjust = -0.8, hjust = 0.5, size = 2.4, colour = "grey20") +
-    annotate("text", x = xr[1], y = yr[2], hjust = 0, vjust = 1, size = 2.7, colour = "grey20",
-             label = sprintf("Pearson r=%+.2f [%.2f, %.2f], p=%.3f\nexcl. gate r=%+.2f; Spearman rho=%+.2f",
-                             cpl$pearson_r, cpl$pearson_ci[1], cpl$pearson_ci[2], cpl$pearson_p,
+    ggrepel::geom_text_repel(data = d[nzchar(d$lab), , drop = FALSE], aes(label = lab),
+                             size = 2.4, colour = "grey20", seed = 1, box.padding = 0.4,
+                             min.segment.length = 0, segment.colour = "grey60") +
+    annotate("text", x = xr[1], y = if (neg) yr[1] else yr[2], hjust = 0,
+             vjust = if (neg) 0 else 1, size = 2.7, colour = "grey20",
+             label = sprintf("Pearson r=%+.2f [%.2f, %.2f], %s\nexcl. gate r=%+.2f; Spearman rho=%+.2f",
+                             cpl$pearson_r, cpl$pearson_ci[1], cpl$pearson_ci[2], p_tx,
                              cpl$pearson_r_excl_gate, cpl$spearman_rho)) +
     scale_colour_manual(values = c("Immune gate" = pub_palette[["combined"]],
                                    "Other panel marker" = "grey60"), name = NULL) +
@@ -788,7 +892,7 @@ pub_nomo_panel <- function(s, header = NULL) {
     } else {
       add_ticks(y, d$points / s$points_max, tick_labels(d), col)
     }
-    add_rowlab(y, d$display[1], bullet = col)
+    add_rowlab(y, pub_relabel_var(d$display[1]), bullet = col)
   }
 
   # Total points ruler (0..total_max → [0,1])
@@ -854,58 +958,40 @@ pub_nomo_panel <- function(s, header = NULL) {
   p
 }
 
-#' Two-panel nomogram figure: (A) LMM gate markers, (B) immune composite + clinical.
-#' Panel A = per-marker display read (apparent fit on individual markers). Panel B = the
-#' run's FORMAL model (1-df immune composite + that run's clinical vars, so `include_nlr`
-#' drives it) — drawn from the apparent fit but reported with its leakage-free LOO AUC.
-#' Immune axes are relabelled onto their exact clinical scale (see `nomo_tick_label()`):
-#' a bijection of the model scale, so nothing fitted changes.
-pub_fig_nomogram <- function(nomo) {
-  if (is.null(nomo)) return(NULL)
+#' Nomogram of the run's FORMAL model: the 1-df immune composite + that run's clinical vars
+#' (so `include_nlr` drives it), drawn from its apparent fit. Immune axes are relabelled onto
+#' their exact clinical scale (see `nomo_tick_label()`): a bijection of the model scale, so
+#' nothing fitted changes.
+#' The per-marker panel (`nomo$immune`: the gate markers as SEPARATE predictors) is no longer
+#' drawn: that model was never tested, the markers are collinear (r = 0.73 at Δ), and next to
+#' the formal model it read as a validated signature. It stays in the spec/JSON.
+#' The reading instructions, the axis-range rule and the reportable CV AUC belong in the
+#' figure legend, not in an in-figure footnote that duplicated (and drifted from) it.
+#' @param header_suffix,compact_header used only by `pub_fig_nomogram_hybrid()`: the longer
+#'   S9b header does not fit the 190 mm band with the full scale phrase. Defaults = S9.
+pub_fig_nomogram <- function(nomo, header_suffix = "", compact_header = FALSE) {
+  if (is.null(nomo) || is.null(nomo$clinical_immune)) return(NULL)
   tp  <- if (!is.null(nomo$timepoint)) nomo$timepoint else "T0"
   tpl <- switch(tp, delta = "Δ (T1−T0)", T1 = "T1", "T0")
   # Δ  -> exp(Δlogit) = EXACT fold change in the positive:negative cell ratio.
-  # T0 -> the cell fraction (%) itself. Clinical vars (panel B) stay on their raw scale.
-  is_delta  <- identical(tp, "delta")
-  imm_scale <- if (is_delta) "fold change, Ki67+:Ki67− ratio" else "% of parent gate"
-  pA  <- pub_nomo_panel(nomo$immune,
-           header = sprintf("A   Immune gate markers  [%s; %s]", tpl, imm_scale))
-  clab <- if (!is.null(nomo$clinical_vars)) gsub("_", "-", paste(nomo$clinical_vars, collapse = " + ")) else "clinical"
-  pB  <- if (!is.null(nomo$clinical_immune))
-           pub_nomo_panel(nomo$clinical_immune,
-             header = sprintf("B   Immune composite [%s] + %s  =  formal model", tpl, clab)) else NULL
-  if (is.null(pA) && is.null(pB)) return(NULL)
-  if (is.null(pB)) return(pA)
-  if (is.null(pA)) return(pB)
-  nA <- length(nomo$immune$predictors) + 3
-  nB <- length(nomo$clinical_immune$predictors) + 3
-  # Keep every caption line under ~110 characters: at size 7.6 on PUB_W2 (190 mm) a
-  # longer line is silently clipped at the panel edge rather than wrapped.
-  # Panel B is the formal model → report its REPORTABLE discrimination (repeated
-  # stratified k-fold). LOO is the retired, tie-artifact-prone quantity (diag_41) and is
-  # used only as a fallback for publication_data rds persisted before combined_cv_auc.
-  cvauc <- nomo$combined_cv_auc
-  loo   <- nomo$combined_loo_auc
-  auc_txt <- if (!is.null(cvauc) && is.finite(cvauc))
-    sprintf(" (%d-fold CV AUC %.3f)", if (!is.null(nomo$combined_cv_k)) nomo$combined_cv_k else 10L, cvauc)
-  else if (!is.null(loo) && is.finite(loo)) sprintf(" (LOO AUC %.3f)", loo)
-  else ""
-  foot <- paste0(
-    "Sum each predictor's Points → Total points → Predicted probability of response.\n",
-    "A: apparent fit, per-marker display only. B: the formal model", auc_txt,
-    " — axis positions from its apparent fit.\n",
-    "Continuous axes span the central 90% (5th–95th percentile) of observed values.\n",
-    if (is_delta)
-      paste0("Immune axes = exp(Δlogit) = fold change in the Ki67+:Ki67− (proliferating:resting) ",
-             "cell ratio — exact;\ncomposite = weighted geometric mean of the three. ")
-    else
-      "Immune axes = cell fraction (% of parent gate) — exact; composite is an index (z).\n",
-    "Clinical axes on raw scale.")
-  (pA / pB + patchwork::plot_layout(heights = c(nA, nB))) +
-    patchwork::plot_annotation(
-      caption = foot,
-      theme = ggplot2::theme(plot.caption = ggplot2::element_text(
-        size = 7.6, colour = "#222222", family = "sans", hjust = 0)))   # +20% & charcoal for scaled-down legibility
+  # T0 -> the cell fraction (%) itself. Clinical vars stay on their raw scale.
+  imm_scale <- if (!identical(tp, "delta")) "% of parent gate"
+               else if (compact_header) "Ki67⁺:Ki67⁻ ratio fold change"
+               else "fold change of the Ki67⁺:Ki67⁻ ratio"
+  clab <- if (!is.null(nomo$clinical_vars)) pub_relabel_var(paste(nomo$clinical_vars, collapse = " + ")) else "clinical"
+  pub_nomo_panel(nomo$clinical_immune,
+                 header = paste0(sprintf("Immune composite [%s; %s] + %s", tpl, imm_scale, clab),
+                                 header_suffix))
+}
+
+#' Figure S9b: the same formal-model nomogram under the full-range ("hybrid") axis rule of
+#' `build_nomogram_spec()` — same points scale and coefficients as S9; PD-L1 reaches its
+#' observed maximum; the composite keeps its 5–95% range with open "≤"/"≥" ends. NULL for
+#' runs persisted before `clinical_immune_hybrid` existed (render_pub_figures then skips it).
+pub_fig_nomogram_hybrid <- function(nomo) {
+  if (is.null(nomo) || is.null(nomo$clinical_immune_hybrid)) return(NULL)
+  n2 <- nomo; n2$clinical_immune <- nomo$clinical_immune_hybrid   # not modifyList: it merges data.frames
+  pub_fig_nomogram(n2, header_suffix = " — full range", compact_header = TRUE)
 }
 
 # ── SUPP — classification performance (confusion matrix + precision/recall) ────
@@ -915,7 +1001,7 @@ pub_fig_nomogram <- function(nomo) {
 #' threshold_default); 0.5 is also tabulated. The threshold is deliberately NOT
 #' optimised (Youden on n=49 would be optimistic). Panel A confusion matrix,
 #' Panel B precision–recall curve (combined vs clinical, no-skill = prevalence).
-# ── SUPP S13 — predictive-vs-prognostic dissociation ─────────────────────────
+# ── SUPP S12 — predictive-vs-prognostic dissociation ─────────────────────────
 # Panel A: every predictor on BOTH endpoints, same rank scale, so the crossover is read
 # directly. Panel B: the bootstrapped CONTRASTS — the actual test, because "significant
 # on one endpoint, not the other" is not a dissociation (Gelman & Stern 2006).
@@ -1086,6 +1172,7 @@ pub_fig_foldchange <- function(gate_decomp, resp_label = NULL) {
   ord  <- if (!is.null(resp_disp) && resp_disp %in% grps) c(resp_disp, setdiff(grps, resp_disp)) else sort(grps)
   w$Group  <- factor(w$Group, levels = ord)
   grp_cols <- setNames(c(pub_palette[["combined"]], pub_palette[["unpen"]])[seq_along(ord)], ord)
+  w$Marker <- pub_relabel_marker(w$Marker)
   w$Marker <- factor(w$Marker, levels = unique(w$Marker))
 
   # descriptive between-group Wilcoxon on log2FC (per marker)
@@ -1108,7 +1195,8 @@ pub_fig_foldchange <- function(gate_decomp, resp_label = NULL) {
               size = 2.2, colour = "grey35") +
     scale_colour_manual(values = grp_cols) +
     scale_y_continuous(sec.axis = sec_axis(~ 2^., name = "fold-change (T1/T0)",
-                                           breaks = c(0.125, 0.25, 0.5, 1, 2, 4))) +
+                                           breaks = c(0.125, 0.25, 0.5, 1, 2, 4),
+                                           labels = c("0.125", "0.25", "0.5", "1", "2", "4"))) +
     guides(colour = "none") +                       # shared legend comes from panel B
     labs(x = NULL, y = expression(log[2]~"fold-change (T1/T0)"),
          caption = "dashed line = no change (×1)") +
@@ -1135,51 +1223,59 @@ pub_fig_foldchange <- function(gate_decomp, resp_label = NULL) {
 pub_render_all <- function(objs, out_dir, project_name) {
   dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
   pf <- function(n) file.path(out_dir, sprintf("%s_%s.pdf", n, project_name))
+  # Every attempted figure is logged: save_pub_figure() no-ops on a NULL plot, so
+  # without this a builder that bails out simply leaves a figure missing.
+  log <- list()
+  sv  <- function(plot, name, w, h)
+    log[[length(log) + 1]] <<- data.frame(figure = name,
+                                          saved = !is.null(save_pub_figure(plot, pf(name), w, h)))
   av <- objs$clin_addval
   # MAIN (3) — Fig1 biology (cells + forest) / Fig2 added-value / Fig3 PD-L1 context.
-  # SUPP (S1–S9) — S1 CONSORT, S2 baseline-inv, S3 specificity, S4 standalone,
+  # SUPP (S1–S12, contiguous) — S1 CONSORT, S2 baseline-inv, S3 specificity, S4 standalone,
   #        S5 coupling, S6 robustness, S7 calibration, S8 gate-signal decomposition,
-  #        S9 nested-selection validation. Defense figures kept out of main.
+  #        S9 nomogram, S10 classification, S11 fold-change, S12 dissociation.
+  #        S9b = S9 with full-range axes (display-only companion; not a new number, so
+  #        S10–S12 keep theirs; skipped for runs whose rds predates it).
+  #        The selection-aware nulls (pub_fig_selection_aware) have no render path and
+  #        are not numbered; wiring them in would insert a figure and shift S9–S12.
   if (!is.null(objs$lmm_boot) || !is.null(objs$gate_decomp))
-    save_pub_figure(pub_fig_biology(objs$gate_decomp, objs$lmm_boot$boot, objs$lmm_boot$obs,
-                                    resp_label = objs$positive_label),
-                    pf("Figure1_Biology"), PUB_W2, 120)
+    sv(pub_fig_biology(objs$gate_decomp, objs$lmm_boot$boot, objs$lmm_boot$obs,
+                       resp_label = objs$positive_label),      "Figure1_Biology",             PUB_W2, 120)
   if (!is.null(av)) {
-    save_pub_figure(pub_fig_added_value(av),         pf("Figure2_AddedValue"),      PUB_W2, 120)
-    # SUPP (S1–S9)
+    sv(pub_fig_added_value(av),                                "Figure2_AddedValue",          PUB_W2, 120)
     if (!is.null(objs$consort))
-      save_pub_figure(pub_fig_consort(objs$consort, terminal = objs$consort_terminal),
-                                                     pf("FigureS1_CONSORT"),            PUB_W2, 140)
-    save_pub_figure(pub_fig_baseline_invariance(av), pf("FigureS2_BaselineInvariance"), PUB_W2, 82)
-    save_pub_figure(pub_fig_specificity_null(av),    pf("FigureS3_SpecificityNull"),    PUB_W1, 95)
+      sv(pub_fig_consort(objs$consort, terminal = objs$consort_terminal,
+                         inflow = pub_consort_inflow(objs$consort, av),
+                         lmm_frame = objs$lmm_frame,
+                         grp_labels = pub_relabel_group(c(av$positive_label, av$negative_label))),
+                                                               "FigureS1_CONSORT",            PUB_W2, 140)
+    sv(pub_fig_baseline_invariance(av),                        "FigureS2_BaselineInvariance", PUB_W2, 82)
+    sv(pub_fig_specificity_null(av),                           "FigureS3_SpecificityNull",    PUB_W1, 95)
     if (!is.null(av$dynamics_baseline_coupling))
-      save_pub_figure(pub_fig_coupling(av),          pf("FigureS5_Coupling"),           PUB_W1, 95)
-    save_pub_figure(pub_fig_robustness(av),          pf("FigureS6_Robustness"),         PUB_W2, 95)
-    save_pub_figure(pub_fig_calibration_idi(av),     pf("FigureS7_Calibration_IDI"),    PUB_W2, 120)
+      sv(pub_fig_coupling(av),                                 "FigureS5_Coupling",           PUB_W1, 95)
+    sv(pub_fig_robustness(av),                                 "FigureS6_Robustness",         PUB_W2, 95)
+    sv(pub_fig_calibration_idi(av),                            "FigureS7_Calibration_IDI",    PUB_W2, 120)
     if (!is.null(av$nomogram))
-      save_pub_figure(pub_fig_nomogram(av$nomogram), pf("FigureS10_Nomogram"),          PUB_W2, 172)
-    save_pub_figure(pub_fig_classification(av),      pf("FigureS11_Classification"),    PUB_W2, 120)
-    # S13 dissociation — a normal live-object figure, so unlike S9 it needs no
-    # OUT_OF_PIPELINE protection in make_manuscript_figures.R.
+      sv(pub_fig_nomogram(av$nomogram),                        "FigureS9_Nomogram",           PUB_W2, 100)
+    if (!is.null(av$nomogram$clinical_immune_hybrid))
+      sv(pub_fig_nomogram_hybrid(av$nomogram),                 "FigureS9b_Nomogram_FullRangeAxes", PUB_W2, 100)
+    sv(pub_fig_classification(av),                             "FigureS10_Classification",    PUB_W2, 120)
     if (!is.null(av$survival$dissociation) && is.null(av$survival$dissociation$skipped))
-      save_pub_figure(pub_fig_dissociation(av$survival$dissociation),
-                                                     pf("FigureS13_Dissociation"),      PUB_W2, 150)
+      sv(pub_fig_dissociation(av$survival$dissociation),       "FigureS12_Dissociation",      PUB_W2, 150)
   }
   if (!is.null(objs$stratified_result))
-    save_pub_figure(pub_fig_pdl1_context(objs$stratified_result), pf("Figure3_PDL1_context"), PUB_W2, 115)
+    sv(pub_fig_pdl1_context(objs$stratified_result),           "Figure3_PDL1_context",        PUB_W2, 115)
   if (!is.null(objs$df_preds))
-    save_pub_figure(pub_fig_standalone(objs$df_preds, objs$positive_label, perm = objs$perm),
-                    pf("FigureS4_StandaloneClassifier"), PUB_W1, 120)
-  # S8 gate-signal decomposition (demoted from main). S9 is NOT rendered here: the
-  # selection-aware nulls are one-time computations, not per-run live objects — see
-  # manuscript/figures/render_selection_aware.R. objs$nested_val is still computed
+    sv(pub_fig_standalone(objs$df_preds, objs$positive_label, perm = objs$perm),
+                                                               "FigureS4_StandaloneClassifier", PUB_W1, 120)
+  # S8 gate-signal decomposition (demoted from main). objs$nested_val is still computed
   # and lives in the JSON as the in-pipeline anti-circularity record.
   if (!is.null(objs$gate_decomp))
-    save_pub_figure(pub_fig_gate_signal(objs$gate_decomp),         pf("FigureS8_GateSignal"),     PUB_W2, 110)
-  # S12 raw fold-change of the gate markers (clinician-facing biology; computed from raw %)
+    sv(pub_fig_gate_signal(objs$gate_decomp),                  "FigureS8_GateSignal",         PUB_W2, 110)
+  # S11 raw fold-change of the gate markers (clinician-facing biology; computed from raw %)
   if (!is.null(objs$gate_decomp))
-    save_pub_figure(pub_fig_foldchange(objs$gate_decomp, resp_label = objs$positive_label),
-                    pf("FigureS12_FoldChange"), PUB_W2, 100)
+    sv(pub_fig_foldchange(objs$gate_decomp, resp_label = objs$positive_label),
+                                                               "FigureS11_FoldChange",        PUB_W2, 100)
   # Secondary-timepoint added-value artifacts (e.g. T0 reference when delta is primary,
   # or delta when T0 is primary). Builders are timepoint-agnostic → render per node so
   # the publication/ dir always reflects every analyzed timepoint.
@@ -1187,13 +1283,15 @@ pub_render_all <- function(objs, out_dir, project_name) {
     for (tp in names(objs$clin_addval_secondary)) {
       av_tp <- objs$clin_addval_secondary[[tp]]
       if (is.null(av_tp)) next
-      save_pub_figure(pub_fig_added_value(av_tp),           pf(paste0("Figure2_AddedValue_", tp)), PUB_W2, 120)
+      sv(pub_fig_added_value(av_tp),               paste0("Figure2_AddedValue_", tp),       PUB_W2, 120)
       if (!is.null(av_tp$nomogram))
-        save_pub_figure(pub_fig_nomogram(av_tp$nomogram),   pf(paste0("FigureS10_Nomogram_", tp)), PUB_W2, 172)
-      save_pub_figure(pub_fig_classification(av_tp),        pf(paste0("FigureS11_Classification_", tp)), PUB_W2, 120)
+        sv(pub_fig_nomogram(av_tp$nomogram),       paste0("FigureS9_Nomogram_", tp),        PUB_W2, 100)
+      if (!is.null(av_tp$nomogram$clinical_immune_hybrid))
+        sv(pub_fig_nomogram_hybrid(av_tp$nomogram), paste0("FigureS9b_Nomogram_FullRangeAxes_", tp), PUB_W2, 100)
+      sv(pub_fig_classification(av_tp),           paste0("FigureS10_Classification_", tp), PUB_W2, 120)
     }
   }
-  invisible(out_dir)
+  invisible(do.call(rbind, log))
 }
 
 # ── helper: CONSORT inputs from the live cohort ledger ────────────────────────
@@ -1231,5 +1329,19 @@ pub_read_lmm_bootstrap <- function(config) {
       as.data.frame(readxl::read_excel(f, sheet = "LMM_Interaction_Results"))[, c("Marker", "Estimate_Interaction")]
     else NULL
     list(boot = boot, obs = obs)
+  }, error = function(e) NULL)
+}
+
+# ── helper: same-run Step-04 LMM frame (CONSORT's marker-selection box) ───────
+# The selection frame counts PATIENTS (the longitudinal ledger counts samples, so no
+# ledger row can show it); Step 04 records it in its metrics JSON.
+pub_read_lmm_frame <- function(config) {
+  tryCatch({
+    f <- step_output_path(config, 4, sprintf("Machine_Metrics_LMM_%s", config$project_name), "json")
+    if (!file.exists(f)) return(NULL)
+    j <- jsonlite::fromJSON(f, simplifyVector = TRUE)
+    keys <- c("n_patients", "n_observations", "n_paired", "n_only_T0", "n_only_T1")
+    if (!all(keys %in% names(j))) return(NULL)
+    lapply(setNames(keys, keys), function(k) as.integer(j[[k]]))
   }, error = function(e) NULL)
 }
