@@ -61,10 +61,18 @@ pub_tag <- function(p) p + patchwork::plot_annotation(tag_levels = "A") &
   theme(plot.tag = element_text(size = 11, face = "bold"))
 
 #' Save a publication figure as embedded-font vector PDF at an exact mm size.
+#' Set options(pub_fig.preview_dir = DIR) to also write a PNG preview of every figure
+#' (visual checks without a PDF viewer); unset = PDF only.
 save_pub_figure <- function(plot, path, width_mm, height_mm) {
   if (is.null(plot)) return(invisible(NULL))
   ggsave(path, plot, device = grDevices::cairo_pdf,
          width = width_mm, height = height_mm, units = "mm")
+  prev <- getOption("pub_fig.preview_dir")
+  if (!is.null(prev) && requireNamespace("ragg", quietly = TRUE)) {
+    dir.create(prev, showWarnings = FALSE, recursive = TRUE)
+    ggsave(file.path(prev, sub("\\.pdf$", ".png", basename(path))), plot, device = ragg::agg_png,
+           width = width_mm, height = height_mm, units = "mm", dpi = 200)
+  }
   message(sprintf("   [PubFig] %s  (%.0f x %.0f mm)", basename(path), width_mm, height_mm))
   invisible(path)
 }
@@ -84,6 +92,18 @@ pub_relabel_group <- function(x) {
   x[hit] <- PUB_GROUP_LABELS[x[hit]]
   x
 }
+
+# Display-only marker names, matching the manuscript text (config/data codes unchanged).
+# Same named-lookup-with-passthrough contract as pub_relabel_group(): unmapped markers
+# keep their code. Clinical variables only need the underscore code artefact removed.
+PUB_MARKER_LABELS <- c("KI67NAIVE" = "Ki67⁺NAÏVE", "CD28KI67" = "CD28⁺Ki67⁺")
+pub_relabel_marker <- function(x) {
+  x  <- as.character(x)
+  hit <- x %in% names(PUB_MARKER_LABELS)
+  x[hit] <- PUB_MARKER_LABELS[x[hit]]
+  x
+}
+pub_relabel_var <- function(x) gsub("_", "-", as.character(x), fixed = TRUE)
 
 #' ROC data.frame + AUC from a probability vector and a 0/1 positive indicator.
 pub_roc_df <- function(prob, y_pos) {
