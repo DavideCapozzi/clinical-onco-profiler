@@ -31,3 +31,6 @@ explore_added_value.md
 
 # Archived dated records (closed decisions) — local only
 docs/archive/
+
+# presentation workspace (pptx build, node_modules, figure PNGs)
+deck/
