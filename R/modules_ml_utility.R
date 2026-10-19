@@ -2013,6 +2013,25 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
     k    <- min(10L, max(3L, floor(min(sum(yb), sum(1 - yb)) / 2)))
     reps <- 50L
     R <- matrix(NA_real_, reps, 3, dimnames = list(NULL, c("clinical", "immune", "combined")))
+    # Fig 2 curves from THIS CV, so the drawn curve and the printed AUC are the same estimate.
+    # ROC = vertical average of the per-rep curves (Fawcett 2006): its area IS mean(R[, arm]).
+    # NOT the ROC of per-patient averaged out-of-fold probabilities: the tie bias above is
+    # systematic per patient, so averaging probabilities keeps it (PD-L1 alone: 0.388 vs 0.464)
+    # while averaging curves does not. Net benefit is linear in counts, so it is averaged
+    # per rep too. Deterministic (no RNG) => the AUCs above are unchanged.
+    fpr_grid <- seq(0, 1, by = 0.002)
+    roc_on_grid <- function(p) {
+      r  <- pROC::roc(yb, p, levels = c(0, 1), direction = "<", quiet = TRUE)
+      f  <- 1 - r$specificities; t <- r$sensitivities
+      xs <- sort(unique(f))
+      lo <- as.numeric(tapply(t, f, min)[as.character(xs)])
+      hi <- as.numeric(tapply(t, f, max)[as.character(xs)])
+      i  <- findInterval(fpr_grid, xs); i1 <- pmin(i + 1L, length(xs))
+      w  <- ifelse(i1 > i, (fpr_grid - xs[i]) / (xs[i1] - xs[i]), 0)
+      hi[i] + w * (lo[i1] - hi[i])     # top of each vertical step -> bottom of the next
+    }
+    roc_sum <- matrix(0, length(fpr_grid), 3, dimnames = list(NULL, colnames(R)))
+    nb_sum  <- matrix(0, length(pt_grid),  3, dimnames = list(NULL, colnames(R)))
     for (r in seq_len(reps)) {
       fold <- integer(n)
       for (cl in unique(yb)) {                       # stratified fold assignment
@@ -2030,6 +2049,8 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
         pi_[te] <- as.numeric(predict(fi, newdata = di[te, , drop = FALSE], type = "response"))
       }
       R[r, ] <- c(auc_pos(pc), auc_pos(pi_), auc_pos(pk))
+      roc_sum <- roc_sum + cbind(roc_on_grid(pc), roc_on_grid(pi_), roc_on_grid(pk))
+      nb_sum  <- nb_sum  + cbind(nb(pc), nb(pi_), nb(pk))
     }
     dlt <- R[, "combined"] - R[, "clinical"]
     # Combined vs immune-ALONE, on the SAME shared folds (hence paired). This exists because
@@ -2049,6 +2070,8 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
          delta_auc_vs_immune    = unname(mean(dlt_i)),
          delta_auc_vs_immune_ci = unname(stats::quantile(dlt_i, c(.025, .975))),
          baseline_degenerate = unname(mean(R[, "clinical"]) < 0.5),
+         curves = list(roc = data.frame(fpr = fpr_grid, roc_sum / reps),
+                       net_benefit = as.data.frame(nb_sum / reps)),
          note = paste("Reportable discrimination. LOO values in `auc` are retained for",
                       "continuity but are artifact-prone for tied/discrete clinical predictors",
                       "(see diag_41); a sub-chance LOO AUC is a CV pathology, not anti-prediction.",
@@ -2056,6 +2079,14 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
   }, error = function(e) {
     message(sprintf("[ML][AV] k-fold CV block failed (non-fatal): %s", e$message)); NULL
   })
+  # Curves travel outside cv_kfold (which is serialised to JSON); dc_cv keeps the LOO-free
+  # columns of `dc` (PD-L1 complete-case, comparator, treat-all/none) and swaps in the CV arms.
+  roc_cv <- dc_cv <- NULL
+  if (!is.null(cv_kfold$curves)) {
+    roc_cv <- cv_kfold$curves$roc
+    dc_cv  <- dc; dc_cv[c("clinical", "immune", "combined")] <- cv_kfold$curves$net_benefit
+    cv_kfold$curves <- NULL
+  }
 
   # Panel B of the nomogram IS the formal model, so it must be labelled with the
   # REPORTABLE discrimination (repeated stratified k-fold), not the LOO AUC: the latter
@@ -2114,7 +2145,8 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
     baseline_sensitivity = baseline_sensitivity,
     specificity_null     = specificity_null,
     dynamics_baseline_coupling = dynamics_baseline_coupling,
-    decision_curve = list(prevalence = prev, curve = dc),
+    decision_curve = list(prevalence = prev, curve = dc, curve_cv = dc_cv),
+    roc_cv = roc_cv,
     survival = survival,
     per_patient = data.frame(
       Patient_ID = pid, True_Group = as.character(grp),
@@ -2141,7 +2173,9 @@ clinical_immune_json <- function(av) {
   if (is.null(av)) return(NULL)
   av$per_patient <- NULL
   av$decision_curve$curve <- NULL
-  av$locked_model <- NULL          # serialized separately via write_locked_model()
+  av$decision_curve$curve_cv <- NULL
+  av$roc_cv <- NULL
+  av$locked_model <- NULL         # serialized separately via write_locked_model()
   av$nomogram     <- NULL          # figure/RDS artifact only (kept out of the JSON contract)
   av
 }
