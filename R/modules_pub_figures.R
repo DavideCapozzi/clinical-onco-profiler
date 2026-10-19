@@ -116,7 +116,8 @@ pub_fig_biology <- function(gate_decomp, boot_df, obs_df = NULL, resp_label = NU
 }
 
 # ── MAIN Fig 2 — Added value (LRT-led): ROC + decision curve ──────────────────
-pub_fig_added_value <- function(av) {
+pub_fig_added_value <- function(av, curves = c("loo", "cv")) {
+  curves <- match.arg(curves)
   if (is.null(av) || is.null(av$per_patient)) return(NULL)
   pp  <- av$per_patient; pos <- av$positive_label
   y   <- as.integer(pp$True_Group == pos)
@@ -128,16 +129,26 @@ pub_fig_added_value <- function(av) {
                 pub_relabel_var(paste(unlist(av$formal_vars), collapse = "+")) else NULL
   clin_nm  <- if (!is.null(clin_str)) sprintf("Clinical (%s)", clin_str) else "Clinical"
   IMM_NM   <- "Immune composite alone"
-  pdl1_ok  <- "Prob_PDL1" %in% names(pp) && any(is.finite(pp$Prob_PDL1))
+  # The PD-L1 benchmark is the 1st clinical var, so a 1-var clinical model IS the benchmark:
+  # drawing both would put two near-identical PD-L1 curves on each panel (no-PS run).
+  pdl1_dup <- length(unlist(av$formal_vars)) == 1L
+  pdl1_ok  <- "Prob_PDL1" %in% names(pp) && any(is.finite(pp$Prob_PDL1)) && !pdl1_dup
   imm_ok   <- "Prob_Immune" %in% names(pp) && any(is.finite(pp$Prob_Immune))
   comp_ok  <- "Prob_ClinicalComp" %in% names(pp) && any(is.finite(pp$Prob_ClinicalComp))
+  # curves = "cv" (runs carrying `roc_cv` only) draws the clinical / combined / immune curves
+  # and their net benefit from the repeated k-fold CV itself — the vertical average of the
+  # per-rep ROC curves, whose area is the annotated AUC — so curve and number are one estimate.
+  # Rendered as the companion Figure2b; the default stays the LOO curves described below.
+  cv_curves <- identical(curves, "cv") && !is.null(av$roc_cv)
+  cv_df <- function(col) list(df = data.frame(FPR = av$roc_cv$fpr, TPR = av$roc_cv[[col]]))
   # NB every Prob_* column here is a LEAVE-ONE-OUT prediction (pl_* upstream), so every
   # curve is LOO. LOO is NOT the reportable discrimination: for tied/discrete clinical vars
   # it is tie-artifact-prone (PS has 44% tied pairs) and under-reports the clinical arm,
   # which would INFLATE the visually-read increment. The key therefore carries model NAMES
   # only — printing LOO AUCs there put a second, non-reportable AUC set on the figure — and
   # the reportable repeated stratified k-fold set is the only one annotated (cv_lab below).
-  rc  <- pub_roc_df(pp$Prob_Clinical, y); ro <- pub_roc_df(pp$Prob_Combined, y)
+  rc  <- if (cv_curves) cv_df("clinical") else pub_roc_df(pp$Prob_Clinical, y)
+  ro  <- if (cv_curves) cv_df("combined") else pub_roc_df(pp$Prob_Combined, y)
   lc  <- clin_nm
   lk  <- "Clinical + immune"
   roc_l <- list(data.frame(rc$df, M = lc), data.frame(ro$df, M = lk))
@@ -161,7 +172,7 @@ pub_fig_added_value <- function(av) {
   # its AUC sits in the tables is the kind of gap a reader is entitled to read as concealment;
   # the honest move is to plot it and quantify the gap in the Figure 2 legend.
   if (imm_ok) {
-    ri  <- pub_roc_df(pp$Prob_Immune, y)
+    ri  <- if (cv_curves) cv_df("immune") else pub_roc_df(pp$Prob_Immune, y)
     roc_l <- c(roc_l, list(data.frame(ri$df, M = IMM_NM)))
     lev <- c(lev, IMM_NM); cols <- c(cols, pub_palette[["immune"]]); lts <- c(lts, 6)
   }
@@ -178,17 +189,18 @@ pub_fig_added_value <- function(av) {
   cv_clin <- cv_num(cv$auc_clinical); cv_comb <- cv_num(cv$auc_combined)
   cv_imm  <- cv_num(cv$auc_immune);   cv_k    <- cv_num(cv$k); cv_r <- cv_num(cv$reps)
   cv_lab  <- if (isTRUE(is.finite(cv_clin)) && isTRUE(is.finite(cv_comb)))
-    sprintf("Reported AUC: %d-fold CV%s, n = %d\nclinical %.2f · combined %.2f%s\ncurves: leave-one-out predictions",
+    sprintf("Reported AUC: %d-fold CV%s, n = %d\nclinical %.2f · combined %.2f%s\ncurves: %s",
             if (isTRUE(is.finite(cv_k))) as.integer(cv_k) else 10L,
             if (isTRUE(is.finite(cv_r))) sprintf(" × %d", as.integer(cv_r)) else "",
             as.integer(av$n), cv_clin, cv_comb,
-            if (isTRUE(is.finite(cv_imm))) sprintf(" · immune %.2f", cv_imm) else "") else NULL
+            if (isTRUE(is.finite(cv_imm))) sprintf(" · immune %.2f", cv_imm) else "",
+            if (cv_curves) "mean of the CV ROC curves" else "leave-one-out predictions") else NULL
   pA <- ggplot(roc, aes(FPR, TPR, colour = M, linetype = M)) +
     geom_abline(slope = 1, intercept = 0, linetype = "dotted", colour = pub_palette[["ref"]]) +
     geom_path(linewidth = 0.8)
   if (!is.null(cv_lab))
     pA <- pA + annotate("label", x = 0.98, y = 0.03, hjust = 1, vjust = 0, size = 2.5,
-                        lineheight = 0.95, label = cv_lab, fill = "white",
+                        lineheight = 0.95, label = cv_lab, fill = scales::alpha("white", 0.6),
                         label.size = 0, label.padding = unit(0.8, "mm"))
   pA <- pA +
     scale_colour_manual(values = setNames(cols, lev)) +
@@ -197,7 +209,8 @@ pub_fig_added_value <- function(av) {
     labs(x = "1 - Specificity", y = "Sensitivity") +
     theme_publication() + theme(legend.direction = "vertical")
 
-  cur <- av$decision_curve$curve
+  cur <- if (cv_curves && !is.null(av$decision_curve$curve_cv)) av$decision_curve$curve_cv
+         else av$decision_curve$curve
   nb_l <- list(data.frame(t = cur$threshold, nb = cur$clinical, s = clin_nm),
                data.frame(t = cur$threshold, nb = cur$combined, s = "Clinical + immune"))
   b_cols <- setNames(c(pub_palette[["clinical"]], pub_palette[["combined"]]), c(clin_nm, "Clinical + immune"))
@@ -206,7 +219,7 @@ pub_fig_added_value <- function(av) {
     nb_l <- c(nb_l, list(data.frame(t = cur$threshold, nb = cur$comparator, s = clab)))
     b_cols <- c(b_cols, setNames(COMP_COL, clab)); b_lts <- c(b_lts, setNames(5, clab))
   }
-  if (!is.null(cur$pdl1)) {
+  if (!is.null(cur$pdl1) && !pdl1_dup) {
     nb_l <- c(nb_l, list(data.frame(t = cur$threshold, nb = cur$pdl1, s = "PD-L1 alone")))
     b_cols <- c(b_cols, "PD-L1 alone" = PDL1_RED); b_lts <- c(b_lts, "PD-L1 alone" = 4)
   }
@@ -224,7 +237,7 @@ pub_fig_added_value <- function(av) {
   nb <- do.call(rbind, nb_l)
   nb$s <- factor(nb$s, levels = c(clin_nm, "Clinical + immune",
                                   if (!is.null(cur$comparator)) clab,
-                                  if (!is.null(cur$pdl1)) "PD-L1 alone",
+                                  if (!is.null(cur$pdl1) && !pdl1_dup) "PD-L1 alone",
                                   if (!is.null(cur$immune)) IMM_NM,
                                   "Treat all", "Treat none"))
   pB <- ggplot(nb, aes(t, nb, colour = s, linetype = s)) +
@@ -240,7 +253,8 @@ pub_fig_added_value <- function(av) {
     # clinical reference arm carries the same tie artifact — disclosed on-panel
     # rather than left for the caption, since the curve is read directly.
     annotate("text", x = -Inf, y = -Inf, hjust = -0.04, vjust = -0.8, size = 2.3,
-             colour = "grey30", label = "Net benefit from LOO probabilities") +
+             colour = "grey30", label = if (cv_curves) "Net benefit: mean over CV repetitions"
+                                       else "Net benefit from LOO probabilities") +
     labs(x = "Threshold probability", y = "Net benefit") +
     theme_publication() + theme(legend.direction = "vertical")
   pub_tag(pA | pB)
@@ -1243,6 +1257,8 @@ pub_render_all <- function(objs, out_dir, project_name) {
                        resp_label = objs$positive_label),      "Figure1_Biology",             PUB_W2, 120)
   if (!is.null(av)) {
     sv(pub_fig_added_value(av),                                "Figure2_AddedValue",          PUB_W2, 120)
+    if (!is.null(av$roc_cv))                                  # same panel, CV-averaged curves
+      sv(pub_fig_added_value(av, curves = "cv"),               "Figure2b_AddedValue_CVcurves", PUB_W2, 120)
     if (!is.null(objs$consort))
       sv(pub_fig_consort(objs$consort, terminal = objs$consort_terminal,
                          inflow = pub_consort_inflow(objs$consort, av),
