@@ -701,9 +701,9 @@ run_clinical_utility <- function(DATA_T0, gate_markers, resp_label,
   yj <- as.numeric(yj_df[1, c("threshold", "sensitivity", "specificity")])
 
   provenance_note <- if (gate_provenance == "lmm-prespecified") {
-    paste("Composite pre-specified from the Step 04 LMM gate (longitudinal data,",
-          "disjoint from this T0 classifier): optimism correction is a genuine",
-          "stability property, not an in-sample artefact.")
+    paste("Composite fixed by the Step 04 LMM gate (longitudinal data). NOT disjoint from",
+          "this T0 classifier: the LMM frame includes these patients' T0 samples, so the",
+          "optimism correction does not price the gate selection.")
   } else {
     paste("Composite built from markers selected on these same T0 data",
           "(univariate gate): EXPLORATORY / conditional-on-selection — the",
@@ -1842,8 +1842,10 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
   }
 
   provenance_note <- if (gate_provenance == "lmm-prespecified")
-    paste("Immune composite pre-specified from the Step-04 LMM gate (disjoint from this T0",
-          "model). Clinical baseline pre-specified from NSCLC-ICI literature; not data-selected.")
+    paste("Immune composite fixed by the Step-04 LMM gate before this model is fitted. NOT",
+          "disjoint: the LMM frame contains these patients, so selection is priced by the",
+          "selection-aware LRT null, not by this fit. Clinical baseline =",
+          paste(cl_names, collapse = " + "), "(config clinical_model.vars).")
   else
     paste("Immune composite selected on these T0 data (univariate/screen) — added value is",
           "EXPLORATORY / conditional-on-selection; treat IDI and DeLong p as a lower bound.")
@@ -2105,6 +2107,9 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
   # median-imputed in-fold, so nobody is dropped for them. It travels as a terminal
   # annotation instead; recording it as an exclusion would misstate the flow.
   if (!is.null(cohort_ledger)) ledger_validate(cohort_ledger, context = "added-value layer")
+  # PS sub-model columns are all-NA when PS is not a clinical var — leave them out of the export.
+  drop_ps_cols <- function(d) if ("PS" %in% cl_names) d else
+    d[setdiff(names(d), c("Prob_PS_APP", "Prob_PDL1PS_APP"))]
 
   list(
     clinical_vars   = as.list(clinical_vars),
@@ -2148,7 +2153,7 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
     decision_curve = list(prevalence = prev, curve = dc, curve_cv = dc_cv),
     roc_cv = roc_cv,
     survival = survival,
-    per_patient = data.frame(
+    per_patient = drop_ps_cols(data.frame(
       Patient_ID = pid, True_Group = as.character(grp),
       Composite = round(comp, 4),
       Prob_Clinical = round(pl_clin, 4), Prob_Combined = round(pl_comb, 4),
@@ -2164,7 +2169,7 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
       Prob_PDL1PS_APP = round(submodel_app$PDL1PS, 4),
       Prob_Combined_APP = round(pa_comb, 4),
       Prob_Immune_APP = round(pa_imm, 4),
-      stringsAsFactors = FALSE)
+      stringsAsFactors = FALSE))
   )
 }
 
