@@ -530,16 +530,6 @@ run_combined_benchmark_model <- function(DATA, X_main, y, positive_label,
     note = sprintf(
       "Apparent (in-sample) logistic: %s alone vs %s + %d gate marker(s). IDI/cNRI estimated with patient-level bootstrap (B=%d) that refits both models per resample.",
       benchmark_label, benchmark_label, ncol(X_sub), n_boot
-    ),
-    plot_data = list(
-      y_bin                      = y_bin,
-      positive_label             = pos,
-      p_bench_logistic           = p_bench,
-      p_combined_logistic        = p_comb,
-      p_svm_features_only        = res_only$predicted_probs,
-      p_svm_features_with_bench  = res_with$predicted_probs,
-      auc_svm_features_only      = round(m_only$auc, 4),
-      auc_svm_features_with_bench= round(m_with$auc, 4)
     )
   )
 }
