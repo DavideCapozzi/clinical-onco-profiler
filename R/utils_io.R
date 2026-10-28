@@ -124,9 +124,11 @@ collect_frame_ns <- function(exp_root, exp_name) {
 #'   of passes executed.
 #' @param config_path Path of the YAML config the run read.
 #' @param experiments_cfg Named list of the per-experiment config blocks (inputs).
+#' @param failed_passes Character vector of passes that logged a FATAL ERROR (empty = clean run).
 #' @return Invisibly, the manifest path.
 write_run_manifest <- function(path, run_id, config, experiments_meta,
-                               config_path = NULL, experiments_cfg = NULL) {
+                               config_path = NULL, experiments_cfg = NULL,
+                               failed_passes = character(0)) {
   git_out <- function(args) tryCatch(
     system2("git", args, stdout = TRUE, stderr = FALSE),
     error = function(e) character(0), warning = function(w) character(0))
@@ -171,6 +173,7 @@ write_run_manifest <- function(path, run_id, config, experiments_meta,
       therapy             = pc$therapy$seed)),
     seed        = if (!is.null(config$stats$seed)) as.integer(config$stats$seed) else NULL,
     run_label   = if (!is.null(config$run_label)) config$run_label else NULL,
+    failed_passes = as.list(failed_passes),
     experiments = exps
   )
 

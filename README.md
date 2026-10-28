@@ -54,10 +54,10 @@ RUN_NAME=my_run CONFIG_PATH=/path/to/alt_config.yml EXPERIMENTS=BestResponse_2v3
 The run directory is `<output_root>/<RUN_NAME>` (without `RUN_NAME`, a timestamped name). `main.R` refuses to
 write into an existing run directory unless `FORCE=1`. Each experiment runs Pass 1 standard (`01→02→03`), Pass 2
 longitudinal (`01→04`), Pass 3 ML (`06`) and Pass 4 post hoc (`07`); then `publication/` is collected and
-`run_manifest.yml` (git sha, config and input md5, seeds, N per frame) is written.
+`run_manifest.yml` (git sha, config and input md5, seeds, N per frame, failed passes) is written.
 
-**A failed pass logs `[FATAL ERROR]` but the process still exits 0**: always
-`grep -l "FATAL ERROR" <run>/*/log_*.txt` instead of trusting the exit code.
+A failed pass logs `[FATAL ERROR]` and the remaining passes still run; at the end `main.R` exits with
+status 1 and lists the failed passes. `grep -l "FATAL ERROR" <run>/*/log_*.txt` shows which log to read.
 
 The pipeline auto-detects whether the config is **nested multi-experiment** (has an `experiments:` key) or **flat single-cohort**. At startup `validate_config()` checks that each enabled experiment's outcome and clinical-model columns exist in its input Excel, so a misconfigured cohort fails fast. Set `enabled: false` on an experiment block to skip it without deleting it.
 

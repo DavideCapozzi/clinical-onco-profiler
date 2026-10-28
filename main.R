@@ -83,6 +83,7 @@ if (!dir.exists(run_root)) dir.create(run_root, recursive = TRUE)
 message(sprintf("[System] Run ID: %s  ->  %s", run_id, run_root))
 
 run_passes <- list()  # experiment -> passes executed (for the run manifest)
+failed_passes <- character(0)  # "<experiment>: <pass>" for every pass that hit a FATAL ERROR
 
 # 2. Pipeline Execution Loop
 # ------------------------------------------------------------------------------
@@ -185,6 +186,7 @@ for (exp_name in names(experiments_list)) {
       warning = function(w) cat(paste0("WARNING: ", conditionMessage(w)), file = log_file_std, append = TRUE, sep = "\n"))
     }, error = function(e) {
       err_msg <- paste0("\n[FATAL ERROR] Standard Pipeline stopped: ", e$message)
+      failed_passes <<- c(failed_passes, paste0(exp_name, ": standard"))
       cat(err_msg, file = log_file_std, append = TRUE, sep = "\n")
       message(err_msg)
     })
@@ -215,6 +217,7 @@ for (exp_name in names(experiments_list)) {
       warning = function(w) cat(paste0("WARNING: ", conditionMessage(w)), file = log_file_long, append = TRUE, sep = "\n"))
     }, error = function(e) {
       err_msg <- paste0("\n[FATAL ERROR] Longitudinal Pipeline stopped: ", e$message)
+      failed_passes <<- c(failed_passes, paste0(exp_name, ": longitudinal"))
       cat(err_msg, file = log_file_long, append = TRUE, sep = "\n")
       message(err_msg)
     })
@@ -243,6 +246,7 @@ for (exp_name in names(experiments_list)) {
       warning = function(w) cat(paste0("WARNING: ", conditionMessage(w)), file = log_file_ml, append = TRUE, sep = "\n"))
     }, error = function(e) {
       err_msg <- paste0("\n[FATAL ERROR] Machine Learning Pipeline stopped: ", e$message)
+      failed_passes <<- c(failed_passes, paste0(exp_name, ": machine_learning"))
       cat(err_msg, file = log_file_ml, append = TRUE, sep = "\n")
       message(err_msg)
     })
@@ -270,6 +274,7 @@ for (exp_name in names(experiments_list)) {
       warning = function(w) cat(paste0("WARNING: ", conditionMessage(w)), file = log_file_ph, append = TRUE, sep = "\n"))
     }, error = function(e) {
       err_msg <- paste0("\n[FATAL ERROR] Post Hoc Pipeline stopped: ", e$message)
+      failed_passes <<- c(failed_passes, paste0(exp_name, ": post_hoc"))
       cat(err_msg, file = log_file_ph, append = TRUE, sep = "\n")
       message(err_msg)
     })
@@ -287,6 +292,7 @@ if (!is.null(base_config$publication)) {
       warning = function(w) cat(paste0("WARNING: ", conditionMessage(w)), file = log_file_pub, append = TRUE, sep = "\n")),
     error = function(e) {
       err_msg <- paste0("\n[FATAL ERROR] Publication collector stopped: ", e$message)
+      failed_passes <<- c(failed_passes, "publication")
       cat(err_msg, file = log_file_pub, append = TRUE, sep = "\n")
       message(err_msg)
     })
@@ -294,7 +300,14 @@ if (!is.null(base_config$publication)) {
 
 # Publish provenance once all experiments have run.
 write_run_manifest(file.path(run_root, "run_manifest.yml"), run_id, base_config, run_passes,
-                   config_path = base_config_path, experiments_cfg = experiments_list)
+                   config_path = base_config_path, experiments_cfg = experiments_list,
+                   failed_passes = failed_passes)
 
 options(crayon.enabled = TRUE)
+
+# A failed pass is logged and the remaining passes still run, but the process must
+# not exit 0: stop() at top level makes Rscript exit with status 1.
+if (length(failed_passes) > 0)
+  stop(sprintf("[FATAL ERROR] %d failed pass(es) in run %s: %s",
+               length(failed_passes), run_id, paste(failed_passes, collapse = "; ")), call. = FALSE)
 message(sprintf("\n=== ALL EXPERIMENT BLOCKS COMPLETED (run: %s) ===", run_id))
