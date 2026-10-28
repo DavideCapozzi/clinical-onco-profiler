@@ -115,6 +115,21 @@ extract_run_metrics <- function(exp_root, experiment = basename(exp_root)) {
         auc_combined_loo = auc_comb_loo
       )
     }
+
+    # Selection-aware LRT (step 06, 12e): the REPORTABLE p of the immune increment. It is
+    # reported next to the verdict, never used as a criterion (see publishability_verdict).
+    sa <- ml$selection_aware_lrt
+    if (!is.null(sa))
+      out$ml$selection_aware <- list(
+        p          = .or_else(sa$p_selection_aware, NA_real_),
+        rule       = .or_else(sa$rule, NA_character_),
+        k          = .or_else(sa$topk, NA_real_),
+        B          = .or_else(sa$B_valid, NA_real_),
+        n_ge_obs   = .or_else(sa$n_null_ge_obs, NA_real_),
+        lr_obs     = .or_else(sa$lr_obs, NA_real_),
+        null_q95   = .or_else(sa$null_q95, NA_real_),
+        p_mc_ci_lo = if (!is.null(sa$p_mc_ci)) sa$p_mc_ci[[1]] else NA_real_,
+        p_mc_ci_hi = if (!is.null(sa$p_mc_ci)) sa$p_mc_ci[[2]] else NA_real_)
   }
 
   # --- Step 04: longitudinal LMM (FDR count) -------------------------------
@@ -143,6 +158,7 @@ flatten_run_metrics <- function(m) {
   # $added_value is kept intact — publishability_verdict() reads it by name.
   if (!is.null(out$added_value))
     for (f in names(out$added_value)) out[[paste0("av_", f)]] <- out$added_value[[f]]
+  if (!is.null(out$selection_aware)) out$sa_p <- out$selection_aware$p
   out
 }
 
@@ -173,8 +189,9 @@ list_run_experiments <- function(run_root) {
 #' @param thresholds Named list overriding the defaults (lrt_p, perm_p,
 #'   nested_loo_auc, n_sig_fdr).
 #' @return A list with \code{experiment}, \code{primary_method},
-#'   \code{publishable} (logical, NA when ML did not run) and a \code{criteria}
-#'   list (each: metric, value, op, threshold, pass).
+#'   \code{publishable} (logical, NA when ML did not run), a \code{criteria}
+#'   list (each: metric, value, op, threshold, pass) and \code{reported}: the
+#'   selection-aware LRT (the p to quote), shown next to the verdict but never a criterion.
 publishability_verdict <- function(m,
                                    thresholds = list(lrt_p = 0.05,
                                                      perm_p = 0.05,
@@ -199,19 +216,13 @@ publishability_verdict <- function(m,
   # --- Added-value angle (NSCLC): gate on the immune increment, not the classifier
   if (!is.null(ml$added_value)) {
     av <- ml$added_value
-    # KNOWN LIMITATION, DELIBERATELY NOT "FIXED" (reviewed 2026-07-27; next_steps.md §6.8).
+    # KNOWN LIMITATION, DELIBERATELY NOT "FIXED" (reviewed 2026-07-27).
     # `lrt_perm_p` is the GATE-FIXED permutation p: it shuffles labels while holding the
     # pre-specified composite constant, so it tests the COEFFICIENT, not the SELECTION
-    # PROCEDURE. The selection-aware companions live out-of-pipeline in diag_44
-    # (re-select the FDR gate inside every permutation).
-    #
-    # Left as-is on purpose, for two reasons:
-    #   (1) it changes no verdict — on 20260724_124451_no_nlr the gate-fixed p is 0.0015 and
-    #       the selection-aware values are 0.0100 (FDR rule) / 0.0310 (top-3); all clear 0.05;
-    #   (2) this verdict is PRE-SPECIFIED. Re-pointing it after seeing results is the same
-    #       post-hoc move we already have to disclose for diag_39's stop rule — doing it twice,
-    #       for no change in outcome, spends pre-specification credibility to buy nothing.
-    # Re-pointing would also make a pipeline verdict depend on a manually-run diagnostic.
+    # PROCEDURE. The selection-aware LRT (step 06, `selection_aware_lrt` node: top-K
+    # re-selection inside every permutation) is the p to quote; it is REPORTED next to
+    # the verdict (`reported`) but is not a criterion, because this verdict rule is
+    # PRE-SPECIFIED and re-pointing it after seeing results would be a post-hoc change.
     # If it is ever re-pointed, say so explicitly; do not substitute quietly.
     criteria <- c(list(
       lrt_perm_p = mk("LRT perm p (immune increment)", av$lrt_perm_p, "<",
@@ -223,7 +234,8 @@ publishability_verdict <- function(m,
       experiment     = m$experiment,
       primary_method = "clinical+immune added-value",
       publishable    = all(vapply(criteria, function(c) isTRUE(c$pass), logical(1))),
-      criteria       = criteria))
+      criteria       = criteria,
+      reported       = ml$selection_aware))
   }
 
   # --- Fallback: standalone classifier (cross-sectional / univariate path)
@@ -270,7 +282,7 @@ compare_runs <- function(run_base, run_new, experiments = NULL, tol = 5e-4) {
                   "av_auc_clinical", "av_auc_combined", "av_auc_immune",
                   "av_delta_auc_vs_immune",
                   "av_lrt_p", "av_lrt_perm_p", "av_idi", "av_idi_ci_lo",
-                  "av_auc_clinical_loo", "av_auc_combined_loo")
+                  "av_auc_clinical_loo", "av_auc_combined_loo", "sa_p")
   chr_fields <- c("primary_method", "gate_method")
 
   fmt <- function(x) if (is.null(x) || length(x) == 0) "—"
