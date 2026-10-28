@@ -421,7 +421,8 @@ if (lmm_robust$n_robust == 0) {
         gate_markers    = lmm_robust$markers,
         resp_label      = config$clinical$responder_label,
         gate_provenance = "lmm-prespecified",
-        n_boot          = if (!is.null(cu_cfg$n_boot)) as.integer(cu_cfg$n_boot) else 2000L
+        n_boot          = if (!is.null(cu_cfg$n_boot)) as.integer(cu_cfg$n_boot) else 2000L,
+        seed            = if (!is.null(config$stats$seed)) as.integer(config$stats$seed) else 2026L
       ),
       error = function(e) {
         warning(sprintf("[ML] Clinical-utility layer failed (non-fatal): %s", e$message)); NULL
@@ -488,7 +489,8 @@ if (lmm_robust$n_robust == 0) {
                                    as.character(unlist(cm$nomogram$clinical_vars)) else NULL,
         # Dissociation (response-specific vs prognostic). Orientation is pre-specified in
         # config and never inferred — see run_dissociation_analysis().
-        dissociation_cfg = cm$dissociation
+        dissociation_cfg = cm$dissociation,
+        seed             = if (!is.null(config$stats$seed)) as.integer(config$stats$seed) else 2026L
       ),
       error = function(e) {
         warning(sprintf("[ML] Added-value layer (timepoint=%s) failed (non-fatal): %s", tp, e$message)); NULL

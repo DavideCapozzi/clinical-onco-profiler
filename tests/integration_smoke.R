@@ -115,7 +115,7 @@ status <- system2(
   rscript, args = here("main.R"),
   env = c(sprintf("CONFIG_PATH=%s", cfg_path),
           "EXPERIMENTS=Synthetic",
-          "RUN_LABEL=smoke"),
+          "RUN_NAME=smoke"),
   stdout = file.path(work, "run.log"), stderr = file.path(work, "run.log")
 )
 
@@ -130,8 +130,7 @@ fail <- function(msg) {
 if (status != 0) fail(sprintf("main.R exited with status %d", status))
 
 # --- Assert expected artifacts exist (structure, not numbers) ---
-run_id  <- readLines(file.path(cfg$output_root, "latest_run.txt"), warn = FALSE)[1]
-exp_dir <- file.path(cfg$output_root, run_id, "Synthetic")
+exp_dir <- file.path(cfg$output_root, "smoke", "Synthetic")
 
 expected <- c(
   proc = list.files(file.path(exp_dir, "01_data_processing"), pattern = "\\.rds$", full.names = TRUE)[1],

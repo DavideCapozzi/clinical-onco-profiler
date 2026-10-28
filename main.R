@@ -61,8 +61,8 @@ validate_config(base_config)
 
 # NLR toggle: single switch selecting whether the clinical model includes NLR.
 # Env INCLUDE_NLR overrides the config default; run the with-/without-NLR variants
-# as SEPARATE invocations. The run dir is auto-labeled with_nlr / no_nlr so each
-# configuration lands in its own self-describing directory. Applied in Step 06
+# as SEPARATE invocations. A timestamped run dir (no RUN_NAME) is auto-labeled
+# with_nlr / no_nlr so each configuration lands in its own self-describing directory. Applied in Step 06
 # (drops the NLR clinical var when false); reaches every pass via base_config.
 include_nlr <- resolve_include_nlr(base_config)   # R/utils_io.R — shared with prepare_pass_config()
 base_config$include_nlr <- include_nlr
@@ -72,11 +72,13 @@ base_config$run_label <- if (!is.null(base_config$run_label) && nzchar(base_conf
 message(sprintf("[System] include_nlr = %s (clinical model %s NLR)",
                 include_nlr, if (include_nlr) "includes" else "excludes"))
 
-# Isolate this invocation in one immutable, timestamped run directory. Every
-# pass routes its output_root under run_root, so all cross-step artifacts of a
-# single main.R call stay self-contained and reproducible.
-run_id   <- make_run_id(base_config$run_label)
-run_root <- file.path(base_config$output_root, run_id)
+# Isolate this invocation in one run directory: <output_root>/<RUN_NAME> when
+# RUN_NAME is set (refuses an existing dir unless FORCE=1), else a timestamped id.
+# Every pass routes its output_root under run_root, so all cross-step artifacts of
+# a single main.R call stay self-contained and reproducible.
+.run     <- resolve_run_dir(base_config$output_root, base_config$run_label)
+run_id   <- .run$run_id
+run_root <- .run$run_root
 if (!dir.exists(run_root)) dir.create(run_root, recursive = TRUE)
 message(sprintf("[System] Run ID: %s  ->  %s", run_id, run_root))
 
@@ -254,9 +256,9 @@ for (exp_name in names(experiments_list)) {
   }
 }
 
-# Publish provenance + the `latest` pointer once all experiments have run.
-write_run_manifest(file.path(run_root, "run_manifest.yml"), run_id, base_config, run_passes)
-update_latest_pointer(base_config$output_root, run_id)
+# Publish provenance once all experiments have run.
+write_run_manifest(file.path(run_root, "run_manifest.yml"), run_id, base_config, run_passes,
+                   config_path = base_config_path, experiments_cfg = experiments_list)
 
 options(crayon.enabled = TRUE)
 message(sprintf("\n=== ALL EXPERIMENT BLOCKS COMPLETED (run: %s) ===", run_id))
