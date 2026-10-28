@@ -58,8 +58,6 @@ if (lmm_robust$n_robust == 0) {
 
   out_dir <- step_dir(config, 6, create = TRUE)
 
-  colors_viz <- get_clinical_colors(config)
-
   # 4. Build Feature Matrix
   # ------------------------------------------------------------------------------
   include_interactions <- if (!is.null(ml_cfg$include_interactions)) {
@@ -637,11 +635,7 @@ if (lmm_robust$n_robust == 0) {
       }
       sr_json
     } else NULL,
-    benchmark_combined   = if (!is.null(combined_result)) {
-      cr_json <- combined_result
-      cr_json$plot_data <- NULL
-      cr_json
-    } else NULL,
+    benchmark_combined   = combined_result,
     nested_loocv_validation = if (!is.null(nested_validation)) {
       nv_m <- nested_validation$metrics
       list(
@@ -936,147 +930,9 @@ if (lmm_robust$n_robust == 0) {
   openxlsx::saveWorkbook(wb, excel_path, overwrite = TRUE)
   message(sprintf("   [Output] Classification report saved: %s", basename(excel_path)))
 
-  # 11. PDF Visualizations
-  # ------------------------------------------------------------------------------
-  results_list_plot <- list(
-    `Elastic Net` = res_glmnet,
-    `SVM-RBF`     = res_svm
-  )
-
-  pdf(file.path(out_dir, sprintf("ROC_ML_%s.pdf", config$project_name)), width = 8, height = 7)
-  tryCatch({
-    p_roc <- plot_ml_roc(
-      results_list   = results_list_plot,
-      colors_viz     = colors_viz,
-      title          = sprintf("Nested-LOOCV ROC: %s vs %s\n(%s)",
-                               config$clinical$responder_label,
-                               config$clinical$non_responder_label,
-                               config$project_name),
-      benchmark_list = if (!is.null(benchmark_result)) list(benchmark_result) else NULL
-    )
-    if (!is.null(p_roc)) print(p_roc)
-  }, error = function(e) warning(paste("ROC plot failed:", e$message)))
-  dev.off()
-
-  pdf(file.path(out_dir, sprintf("Predictions_ML_%s.pdf", config$project_name)), width = 10, height = 6)
-  tryCatch({
-    df_preds_plot <- df_preds %>%
-      dplyr::mutate(Group = factor(True_Group, levels = levels(y)))
-    p_pred <- plot_ml_predictions(
-      predictions_df = df_preds_plot,
-      colors_viz     = colors_viz,
-      title          = sprintf("Out-of-Fold Predicted Probabilities: %s", config$project_name)
-    )
-    if (!is.null(p_pred)) print(p_pred)
-  }, error = function(e) warning(paste("Predictions plot failed:", e$message)))
-  dev.off()
-
-  pdf(file.path(out_dir, sprintf("Univariate_ML_%s.pdf", config$project_name)), width = 8, height = 7)
-  tryCatch({
-    p_uni <- plot_univariate_roc(
-      X_main         = X_main,
-      y              = y,
-      positive_label = res_glmnet$positive_label,
-      univariate_df  = uni_auc_df,
-      colors_viz     = colors_viz,
-      title          = sprintf("Univariate ROC: %s vs %s\n(%s)",
-                               config$clinical$responder_label,
-                               config$clinical$non_responder_label,
-                               config$project_name)
-    )
-    if (!is.null(p_uni)) print(p_uni)
-  }, error = function(e) warning(paste("Univariate ROC plot failed:", e$message)))
-  dev.off()
-
-  # Clinical-utility figure (calibration + decision curve)
-  if (!is.null(clin_util)) {
-    pdf(file.path(out_dir, sprintf("ClinicalUtility_%s.pdf", config$project_name)),
-        width = 11, height = 5)
-    tryCatch({
-      p_cu <- viz_plot_clinical_utility(clin_util, colors_viz, title_prefix = config$project_name)
-      if (!is.null(p_cu)) print(p_cu)
-    }, error = function(e) warning(paste("Clinical-utility figure failed:", e$message)))
-    dev.off()
-  }
-
-  # Clinical + cytometric added-value figure (decision curve: clinical vs combined)
-  if (!is.null(clin_addval)) {
-    pdf(file.path(out_dir, sprintf("ClinicalImmune_AddedValue_%s.pdf", config$project_name)),
-        width = 11, height = 5)
-    tryCatch({
-      p_av <- viz_plot_added_value(clin_addval, colors_viz, title_prefix = config$project_name)
-      if (!is.null(p_av)) print(p_av)
-    }, error = function(e) warning(paste("Added-value figure failed:", e$message)))
-    dev.off()
-  }
-
-  # Benchmark-stratified figure (clinical-strata + subgroup ROC)
-  if (!is.null(stratified_result)) {
-    pdf(file.path(out_dir, sprintf("Benchmark_Stratified_%s.pdf", config$project_name)),
-        width = 13, height = 6)
-    tryCatch({
-      p_strat <- plot_benchmark_stratified(
-        stratified_result = stratified_result,
-        colors_viz        = colors_viz,
-        positive_label    = res_glmnet$positive_label,
-        title             = sprintf("%s strata and gate-model subgroup performance (%s)",
-                                    stratified_result$label, config$project_name)
-      )
-      if (!is.null(p_strat)) print(p_strat)
-    }, error = function(e) warning(paste("Stratified figure failed:", e$message)))
-    dev.off()
-  }
-
-  # Combined-model information-gain figure (3-ROC overlay + IDI/cNRI forest)
-  if (!is.null(combined_result)) {
-    pdf(file.path(out_dir, sprintf("InformationGain_%s.pdf", config$project_name)),
-        width = 13, height = 6)
-    tryCatch({
-      p_ig <- plot_combined_information_gain(
-        combined_result = combined_result,
-        title           = sprintf("Information gain over %s (%s)",
-                                  combined_result$label, config$project_name)
-      )
-      if (!is.null(p_ig)) print(p_ig)
-    }, error = function(e) warning(paste("InformationGain figure failed:", e$message)))
-    dev.off()
-  }
-
-  if (!is.null(gate_decomp)) {
-    pdf(file.path(out_dir, sprintf("GateSignal_T0Delta_%s.pdf", config$project_name)),
-        width = 10, height = 4)
-    tryCatch({
-      gd        <- gate_decomp$marker_decomp
-      gd$Timepoint <- factor(gd$Timepoint, levels = c("T0", "T1", "Delta (T1-T0)"))
-      gd$Marker    <- factor(gd$Marker, levels = unique(gd$Marker))
-      p_gd <- ggplot2::ggplot(gd[!is.na(gd$AUC), ],
-                               ggplot2::aes(x = Timepoint, y = AUC,
-                                            colour = Timepoint, group = Marker)) +
-        ggplot2::geom_point(size = 3) +
-        ggplot2::geom_line(colour = "grey60", linetype = "dashed") +
-        ggplot2::geom_errorbar(ggplot2::aes(ymin = AUC_CI_Lo, ymax = AUC_CI_Hi),
-                                width = 0.15) +
-        ggplot2::geom_hline(yintercept = 0.5, linetype = "dotted", colour = "grey40") +
-        ggplot2::facet_wrap(~Marker) +
-        ggplot2::scale_colour_manual(
-          values = c("T0" = "#1f78b4", "T1" = "#33a02c", "Delta (T1-T0)" = "#e31a1c")
-        ) +
-        ggplot2::labs(
-          title    = sprintf("Gate signal decomposition: T0 / T1 / Delta - %s", config$project_name),
-          subtitle = sprintf("n_paired=%d | %s", gate_decomp$n_paired, gate_decomp$scenario),
-          y        = "Univariate AUC (DeLong 95% CI)",
-          x        = NULL
-        ) +
-        ggplot2::theme_bw(base_size = 11) +
-        ggplot2::theme(legend.position = "none")
-      print(p_gd)
-    }, error = function(e) warning(paste("GateSignal plot failed:", e$message)))
-    dev.off()
-  }
-
   # 11b. Publication figure set (additive; driven by the live result objects so
   #      it always reflects the current analysis). Frontiers-styled, captions
-  #      external. Legacy QC figures above are left untouched.
+  #      external. These are the only figures step 06 writes.
   if (isTRUE(config$run_publication_figures)) {
     pub_dir <- file.path(out_dir, "publication")
     dir.create(pub_dir, showWarnings = FALSE)
