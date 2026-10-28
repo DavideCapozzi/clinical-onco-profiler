@@ -79,3 +79,14 @@ retired before the refactor; their manifest was `diagnostics/archive/README.md`
   `ki67_reconstructed/`, `ki67_PI_regated/`, `grouping_sensitivity/`, `final_PIregated/`, `nlr_v2/`,
   `data_integrity_audit/`, `latest`, `latest_run.txt`. Deleted: `diagnostics/` (including `diagnostics/out/`).
   Everything deleted is in the backup above.
+
+## After the canonical runs (2026-10-28, no effect on any number)
+
+- `main.R` exits with status 1 when any pass or the publication collector logs a `[FATAL ERROR]` (the other passes
+  still run first) and `run_manifest.yml` lists them under `failed_passes` (empty list = clean run). Before this, a
+  failed run exited 0 and only the log grep caught it.
+- Header and inline comments of `config/global_params.yml` and `config/nlr_v2_cc50.yml` rewritten: superseded numbers
+  (with-PS era AUCs and naive LRT p), ECOG PS wording and pointers to deleted diagnostics removed. The parsed YAML is
+  identical, but the file md5 changed: `global_params.yml` b5293bcd… → 2a6c0943…, `nlr_v2_cc50.yml` 4f09a9d9… →
+  f260b393…. The `config_md5` in the two canonical `run_manifest.yml` files is the pre-edit md5; the old files are
+  `git show 03fcb81:config/<file>`.
