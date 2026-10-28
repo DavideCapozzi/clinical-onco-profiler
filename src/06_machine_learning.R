@@ -503,7 +503,7 @@ if (lmm_robust$n_robust == 0) {
   # 12c. Locked-model export — freeze the pre-specified scorer NOW so incoming patients can be
   # scored WITHOUT refitting (prospective/temporal validation, TRIPOD 2b/3 — the only tier-
   # lifter). The model object carries development-cohort coefficients + preprocessing constants;
-  # here we attach the transform recipe (from config) and run provenance. See diagnostics/run_validation.R.
+  # here we attach the transform recipe (from config) and run provenance.
   if (!is.null(clin_addval) && !is.null(clin_addval$locked_model) &&
       !isFALSE(ml_cfg$clinical_model$export_locked_model)) {
     tr       <- config$transformation
@@ -524,7 +524,7 @@ if (lmm_robust$n_robust == 0) {
         created       = format(Sys.time(), "%Y-%m-%d %H:%M:%S %Z"),
         input_file_t0 = config$input_file_t0,
         # Only meaningful for a Δ/T1 scorer (composite_timepoint != "T0"), which needs a
-        # paired T1 draw — diagnostics/run_validation.R uses it for --self-test.
+        # paired T1 draw.
         input_file_t1 = config$input_file_t1,
         n = clin_addval$n, n_pos = clin_addval$n_pos, n_neg = clin_addval$n_neg))
     write_locked_model(
