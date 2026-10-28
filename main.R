@@ -91,8 +91,7 @@ for (exp_name in names(experiments_list)) {
   exp_cfg <- experiments_list[[exp_name]]
 
   # Skip experiments explicitly disabled in config (e.g. closed NO-GO endpoints
-  # retained for record). Absence of the key means enabled, so untouched blocks
-  # (BestResponse_2v3_4, HNSCC_Response) run as before. Mirrors validation_split.enabled.
+  # retained for record). Absence of the key means enabled. Mirrors validation_split.enabled.
   if (!is.null(exp_cfg$enabled) && !isTRUE(exp_cfg$enabled)) {
     message(sprintf("[System] Skipping disabled experiment: %s", exp_name))
     next
@@ -101,13 +100,11 @@ for (exp_name in names(experiments_list)) {
   # Inherit boolean flags with safety fallbacks
   run_standard        <- if (!is.null(exp_cfg$run_standard))         as.logical(exp_cfg$run_standard)         else TRUE
   run_longitudinal    <- if (!is.null(exp_cfg$is_longitudinal))      as.logical(exp_cfg$is_longitudinal)      else FALSE
-  run_network         <- if (!is.null(exp_cfg$run_network))          as.logical(exp_cfg$run_network)          else FALSE
   # ML is a global flag (base_config), not per-experiment — Step 06 self-gates on LOO-robust feature availability
   run_machine_learning <- if (!is.null(base_config$run_machine_learning)) as.logical(base_config$run_machine_learning) else FALSE
 
   run_passes[[exp_name]] <- c(
     if (run_standard)         "standard",
-    if (run_network)          "network",
     if (run_longitudinal)     "longitudinal",
     if (run_machine_learning) "machine_learning"
   )
@@ -158,9 +155,7 @@ for (exp_name in names(experiments_list)) {
   message(sprintf("========================================================\n"))
   
   # ============================================================================
-  # PASS 1: STANDARD CROSS-SECTIONAL PIPELINE (01, 02, 03[, 05])
-  # Note: step 05 (network) runs here, before pass 2 step 04 (longitudinal).
-  #       The two steps belong to independent analytical passes and different data modalities.
+  # PASS 1: STANDARD CROSS-SECTIONAL PIPELINE (01, 02, 03)
   # ============================================================================
   if (run_standard) {
     # Isolate configuration state for this pass (see prepare_pass_config in utils_io.R)
@@ -181,11 +176,6 @@ for (exp_name in names(experiments_list)) {
 
         message("\n>>> RUNNING PHASE 3: STATISTICAL ANALYSIS & REPORTING <<<")
         source(here("src/03_statistical_analysis.R"), echo = FALSE, local = FALSE)
-
-        if (run_network) {
-          message("\n>>> RUNNING PHASE 5: DIFFERENTIAL NETWORK ANALYSIS <<<")
-          source(here("src/05_network_analysis.R"), echo = FALSE, local = FALSE)
-        }
 
         message(sprintf("\n[SUCCESS] Standard Pipeline completed for: %s", exp_name))
       }, message = function(m) cat(conditionMessage(m), file = log_file_std, append = TRUE, sep = "\n"),
