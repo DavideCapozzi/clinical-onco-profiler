@@ -60,21 +60,23 @@ theme_publication <- function(base = 11) {
 pub_tag <- function(p) p + patchwork::plot_annotation(tag_levels = "A") &
   theme(plot.tag = element_text(size = 11, face = "bold"))
 
-#' Save a publication figure as embedded-font vector PDF at an exact mm size.
+#' Save a publication figure at an exact mm size through save_figure() (formats and
+#' dpi from config$figures; default embedded-font cairo PDF only).
 #' Set options(pub_fig.preview_dir = DIR) to also write a PNG preview of every figure
-#' (visual checks without a PDF viewer); unset = PDF only.
-save_pub_figure <- function(plot, path, width_mm, height_mm) {
+#' (visual checks without a PDF viewer).
+#' @param path Output path; a format extension (e.g. ".pdf") is stripped to the stem.
+#' @param config Pass config or its \code{figures} block (NULL = defaults).
+#' @return Invisibly, the primary output file, or NULL when \code{plot} is NULL.
+save_pub_figure <- function(plot, path, width_mm, height_mm, config = NULL) {
   if (is.null(plot)) return(invisible(NULL))
-  ggsave(path, plot, device = grDevices::cairo_pdf,
-         width = width_mm, height = height_mm, units = "mm")
+  files <- save_figure(plot, path, width_mm, height_mm, units = "mm", config = config)
   prev <- getOption("pub_fig.preview_dir")
   if (!is.null(prev) && requireNamespace("ragg", quietly = TRUE)) {
-    dir.create(prev, showWarnings = FALSE, recursive = TRUE)
-    ggsave(file.path(prev, sub("\\.pdf$", ".png", basename(path))), plot, device = ragg::agg_png,
-           width = width_mm, height = height_mm, units = "mm", dpi = 200)
+    save_figure(plot, file.path(prev, basename(path)), width_mm, height_mm, units = "mm",
+                config = list(formats = "png", dpi = 200))
   }
-  message(sprintf("   [PubFig] %s  (%.0f x %.0f mm)", basename(path), width_mm, height_mm))
-  invisible(path)
+  message(sprintf("   [PubFig] %s  (%.0f x %.0f mm)", basename(files[1]), width_mm, height_mm))
+  invisible(files[1])
 }
 
 # ---- small numeric helpers ---------------------------------------------------

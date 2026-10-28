@@ -530,16 +530,6 @@ run_combined_benchmark_model <- function(DATA, X_main, y, positive_label,
     note = sprintf(
       "Apparent (in-sample) logistic: %s alone vs %s + %d gate marker(s). IDI/cNRI estimated with patient-level bootstrap (B=%d) that refits both models per resample.",
       benchmark_label, benchmark_label, ncol(X_sub), n_boot
-    ),
-    plot_data = list(
-      y_bin                      = y_bin,
-      positive_label             = pos,
-      p_bench_logistic           = p_bench,
-      p_combined_logistic        = p_comb,
-      p_svm_features_only        = res_only$predicted_probs,
-      p_svm_features_with_bench  = res_with$predicted_probs,
-      auc_svm_features_only      = round(m_only$auc, 4),
-      auc_svm_features_with_bench= round(m_with$auc, 4)
     )
   )
 }
@@ -1857,7 +1847,7 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
   # exact same transform. The immune side reverses Step 01's pipeline: logit/log2 (frozen
   # epsilon, attached by the caller) -> z with FROZEN per-marker center/scale (recovered from
   # `hybrid_data_raw`, the pre-z transformed matrix) -> median-impute on the z scale. The
-  # clinical side stores per-variable medians (raw scale). See diagnostics/run_validation.R.
+  # clinical side stores per-variable medians (raw scale).
   #
   # Constants MUST come from the same rows Step 01's scale() saw, because it discards
   # `scaled:center`/`scaled:scale` (modules_coda.R:276-277) and recomputing from raw is the
@@ -2398,3 +2388,215 @@ nested_validation_json <- function(nv) {
        gate_freq = as.list(round(nv$gate_freq / nv$n_folds, 3)))
 }
 
+
+# ==============================================================================
+# ADDED-VALUE FRAME HELPERS (shared by the LRT leave-one-out, the selection-aware
+# LRT and the patient bootstrap)
+# Ported verbatim from the former diagnostics harness (diagnostics/_av_common.R):
+# they rebuild the exact comp / Cmat / yb / y objects run_clinical_immune_added_value()
+# builds internally, so a caller can vary ONE thing at a time (marker set, bootstrap
+# resample, permuted labels) without re-implementing the composite or the CV.
+# av_verify_frame() asserts that the rebuilt frame reproduces the step-06 cv_kfold
+# and LRT; if it fails every quantity built on the frame is invalid (FATAL).
+# ==============================================================================
+
+#' @title Build the added-value context for the frame helpers
+#' @param DATA_T0 Step-01 standard object; @param DATA_LONG Step-01 longitudinal object.
+#' @param resp_label Responder label; @param input_file T0 Excel (clinical columns).
+#' @param clinical_vars Named clinical-model columns (after the NLR toggle).
+#' @return List consumed by \code{av_assemble()}.
+av_context <- function(DATA_T0, DATA_LONG, resp_label, input_file, clinical_vars) {
+  list(DATA = DATA_T0, DATA_LONG = DATA_LONG, resp_label = resp_label,
+       input_file = input_file, clinical_vars = unlist(clinical_vars))
+}
+
+#' @title Assemble comp / Cmat / yb / y for a marker set at a timepoint
+#' @description Mirrors run_clinical_immune_added_value(): median-imputed mean z of the
+#'   markers, clinical columns read from the T0 Excel, responder vs the single other label.
+av_assemble <- function(R, gate_markers, timepoint = "delta") {
+  D <- if (identical(timepoint, "T0")) R$DATA
+       else build_timepoint_composite_data(R$DATA, R$DATA_LONG, timepoint)
+  stopifnot(!is.null(D))
+
+  z     <- as.data.frame(D$hybrid_data_z)
+  avail <- intersect(gate_markers, colnames(z))
+  stopifnot(length(avail) > 0)
+  group     <- D$metadata$Group
+  resp      <- R$resp_label
+  neg_label <- setdiff(unique(group), resp)
+  stopifnot(length(neg_label) == 1)
+
+  Zc <- z[, avail, drop = FALSE]
+  Zc[] <- lapply(Zc, function(x) { x <- as.numeric(x); x[is.na(x)] <- median(x, na.rm = TRUE); x })
+  composite <- rowMeans(Zc)
+
+  raw <- as.data.frame(readxl::read_excel(R$input_file, sheet = 1))
+  names(raw) <- trimws(names(raw))
+  raw$Patient_ID <- as.character(raw$Patient_ID)
+  meta_ids <- as.character(D$metadata$Patient_ID)
+  ridx <- match(meta_ids, raw$Patient_ID)
+  cv_ <- R$clinical_vars
+  Cmat <- sapply(cv_, function(col) suppressWarnings(as.numeric(raw[[col]][ridx])))
+  Cmat <- matrix(Cmat, nrow = length(meta_ids), dimnames = list(NULL, names(cv_)))
+
+  keep <- group %in% c(resp, neg_label) & !is.na(composite)
+  list(comp = composite[keep],
+       Cmat = Cmat[keep, , drop = FALSE],
+       yb   = as.integer(group[keep] == resp),
+       y    = factor(group[keep], levels = c(neg_label, resp)),
+       pid  = meta_ids[keep],
+       markers = avail, timepoint = timepoint,
+       resp_label = resp, neg_label = neg_label)
+}
+
+av_impute_median <- function(M, train_rows) {
+  med <- apply(M[train_rows, , drop = FALSE], 2, median, na.rm = TRUE)
+  med[!is.finite(med)] <- 0
+  for (j in seq_len(ncol(M))) M[is.na(M[, j]), j] <- med[j]
+  M
+}
+
+av_fit_predict <- function(Cm, cv, yb, train_rows, test_rows, use_immune) {
+  Ci  <- av_impute_median(Cm, train_rows)
+  dat <- data.frame(yb = yb, Ci, comp = cv, check.names = TRUE)
+  cn  <- make.names(colnames(Cm), unique = TRUE)
+  colnames(dat)[2:(1 + length(cn))] <- cn
+  rhs <- if (use_immune) c(cn, "comp") else cn
+  fit <- suppressWarnings(glm(reformulate(rhs, "yb"),
+                              data = dat[train_rows, , drop = FALSE], family = binomial()))
+  as.numeric(predict(fit, newdata = dat[test_rows, , drop = FALSE], type = "response"))
+}
+
+av_auc_pos <- function(p, y, neg_label, resp_label) {
+  as.numeric(pROC::auc(pROC::roc(y, p, levels = c(neg_label, resp_label),
+                                 direction = "<", quiet = TRUE)))
+}
+
+#' @title Repeated stratified k-fold CV of the three arms (the cv_kfold block)
+#' @description Same folds, models and AUC as run_clinical_immune_added_value()'s
+#'   cv_kfold. Pins Mersenne-Twister and restores the caller's RNG kind and state.
+#' @return Mean AUCs per arm, the deltas and the per-repetition matrix R.
+av_cv_kfold <- function(A, reps = 50L, seed = 2026L + 977L) {
+  yb <- A$yb; comp <- A$comp; Cmat <- A$Cmat; y <- A$y
+  n  <- length(yb)
+  if (length(unique(yb)) < 2) return(NULL)
+  .old_kind <- RNGkind()[1]
+  .had_seed <- exists(".Random.seed", envir = .GlobalEnv)
+  if (.had_seed) .old_seed <- get(".Random.seed", envir = .GlobalEnv)
+  on.exit({
+    suppressWarnings(RNGkind(.old_kind))
+    if (.had_seed) assign(".Random.seed", .old_seed, envir = .GlobalEnv)
+  }, add = TRUE)
+  suppressWarnings(RNGkind("Mersenne-Twister"))
+  set.seed(seed)
+  k <- min(10L, max(3L, floor(min(sum(yb), sum(1 - yb)) / 2)))
+  R <- matrix(NA_real_, reps, 3, dimnames = list(NULL, c("clinical", "immune", "combined")))
+  for (r in seq_len(reps)) {
+    fold <- integer(n)
+    for (cl in unique(yb)) {
+      ix <- which(yb == cl)
+      fold[ix] <- sample(rep(seq_len(k), length.out = length(ix)))
+    }
+    pc <- pk <- pi_ <- numeric(n)
+    for (f in seq_len(k)) {
+      te <- which(fold == f); tr <- which(fold != f)
+      if (length(unique(yb[tr])) < 2) { pc[te] <- pk[te] <- pi_[te] <- mean(yb[tr]); next }
+      pc[te] <- av_fit_predict(Cmat, comp, yb, tr, te, FALSE)
+      pk[te] <- av_fit_predict(Cmat, comp, yb, tr, te, TRUE)
+      di <- data.frame(yb = yb, comp = comp)
+      fi <- suppressWarnings(glm(yb ~ comp, data = di[tr, , drop = FALSE], family = binomial()))
+      pi_[te] <- as.numeric(predict(fi, newdata = di[te, , drop = FALSE], type = "response"))
+    }
+    ap <- function(p) av_auc_pos(p, y, A$neg_label, A$resp_label)
+    R[r, ] <- c(ap(pc), ap(pi_), ap(pk))
+  }
+  list(k = k, reps = reps, R = R,
+       auc_clinical = unname(mean(R[, "clinical"])),
+       auc_immune   = unname(mean(R[, "immune"])),
+       auc_combined = unname(mean(R[, "combined"])),
+       delta_auc    = unname(mean(R[, "combined"] - R[, "clinical"])),
+       delta_auc_vs_immune = unname(mean(R[, "combined"] - R[, "immune"])))
+}
+
+#' @title Apparent nested LRT of the immune increment (clinical vs clinical + composite)
+av_lrt <- function(A) {
+  n   <- length(A$yb)
+  Ci  <- av_impute_median(A$Cmat, seq_len(n))
+  cn  <- make.names(colnames(A$Cmat), unique = TRUE)
+  dat <- data.frame(yb = A$yb, Ci, comp = A$comp, check.names = TRUE)
+  colnames(dat)[2:(1 + length(cn))] <- cn
+  fc <- suppressWarnings(glm(reformulate(cn, "yb"), data = dat, family = binomial()))
+  fk <- suppressWarnings(glm(reformulate(c(cn, "comp"), "yb"), data = dat, family = binomial()))
+  aov <- anova(fc, fk, test = "Chisq")
+  list(stat = aov$Deviance[2], p = aov$`Pr(>Chi)`[2], fc = fc, fk = fk)
+}
+
+#' @title Assert that a rebuilt frame reproduces the step-06 added-value node
+#' @description The rebuilt cv_kfold AUCs and LRT p must equal the in-memory step-06
+#'   values (same code, same seed: equal to floating point). FATAL otherwise.
+#' @param A Output of \code{av_assemble()} for the published gate.
+#' @param av The step-06 \code{clin_addval} object.
+#' @param seed stats.seed (the cv_kfold block uses seed + 977).
+#' @param tol Absolute tolerance.
+#' @return Invisibly, the rebuilt cv and LRT.
+av_verify_frame <- function(A, av, seed, tol = 1e-9) {
+  if (length(A$yb) != av$n || sum(A$yb) != av$n_pos)
+    stop(sprintf("[FATAL] added-value frame rebuild: n %d / pos %d != step-06 n %d / pos %d",
+                 length(A$yb), sum(A$yb), av$n, av$n_pos))
+  cv <- av_cv_kfold(A, seed = seed + 977L)
+  tgt <- av$cv_kfold
+  chk <- c(auc_clinical = cv$auc_clinical - tgt$auc_clinical,
+           auc_immune   = cv$auc_immune   - tgt$auc_immune,
+           auc_combined = cv$auc_combined - tgt$auc_combined,
+           delta_auc    = cv$delta_auc    - tgt$delta_auc,
+           delta_auc_vs_immune = cv$delta_auc_vs_immune - tgt$delta_auc_vs_immune)
+  lr <- av_lrt(A)
+  chk <- c(chk, lrt_p = (lr$p - av$increment$lrt_p) / max(av$increment$lrt_p, 1e-300))
+  bad <- names(chk)[!is.finite(chk) | abs(chk) > tol]
+  if (length(bad))
+    stop(sprintf("[FATAL] added-value frame rebuild does not reproduce step 06 (%s): %s",
+                 paste(bad, collapse = ", "),
+                 paste(sprintf("%s diff %.3g", names(chk), chk), collapse = "; ")))
+  message(sprintf("   [AV-frame] rebuild verified: cv_kfold AUCs and LRT reproduce step 06 (n=%d, LR=%.4f)",
+                  length(A$yb), lr$stat))
+  invisible(list(cv = cv, lrt = lr))
+}
+
+#' @title Fixed-gate LRT leave-one-out over the added-value frame
+#' @description Drops one patient at a time from the frame (gate markers and z-scores
+#'   fixed; the clinical median imputation is recomputed on the remaining patients, as
+#'   in \code{av_lrt()}) and refits the nested LRT. Deterministic. When a selection-aware
+#'   null is supplied, each LR also gets its approximate p on that null and the count of
+#'   removals whose LR falls below the null's 95th percentile (approximate p > 0.05).
+#' @param A Output of \code{av_assemble()} for the published gate.
+#' @param lr_null Optional numeric vector: the selection-aware (top-K rule) null.
+#' @return List: per_patient data.frame, lr_all, min/max with the dropped patient,
+#'   null_q95, n_below_null_q95, n_patients.
+run_lrt_leave_one_out <- function(A, lr_null = NULL) {
+  n <- length(A$yb)
+  lr_all <- av_lrt(A)$stat
+  drop_one <- function(i) list(comp = A$comp[-i], Cmat = A$Cmat[-i, , drop = FALSE],
+                               yb = A$yb[-i], y = A$y[-i], neg_label = A$neg_label,
+                               resp_label = A$resp_label)
+  lr <- vapply(seq_len(n), function(i) av_lrt(drop_one(i))$stat, numeric(1))
+  pp <- if (!is.null(lr_null) && length(lr_null))
+          vapply(lr, function(s) (1 + sum(lr_null >= s)) / (length(lr_null) + 1), numeric(1))
+        else rep(NA_real_, n)
+  per_patient <- data.frame(Patient_ID = A$pid,
+                            Group = as.character(A$y),
+                            LR_without = lr,
+                            delta_LR = lr - lr_all,
+                            approx_p_selection_aware = pp,
+                            stringsAsFactors = FALSE)
+  q95 <- if (!is.null(lr_null) && length(lr_null)) unname(stats::quantile(lr_null, 0.95)) else NA_real_
+  i_min <- which.min(lr); i_max <- which.max(lr)
+  list(method = paste("fixed-gate LRT leave-one-out: each patient of the added-value frame",
+                      "dropped in turn; gate markers and composite z fixed; nested logistic",
+                      "LRT refitted on the remaining patients"),
+       n_patients = n, lr_all = lr_all,
+       lr_min = lr[i_min], lr_min_dropped = A$pid[i_min],
+       lr_max = lr[i_max], lr_max_dropped = A$pid[i_max],
+       null_q95 = q95,
+       n_below_null_q95 = if (is.finite(q95)) sum(lr < q95) else NA_integer_,
+       per_patient = per_patient)
+}

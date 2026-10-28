@@ -3,7 +3,7 @@
 # ==============================================================================
 
 # --- System Setup ---
-output_root: "results"
+output_root: "results/0final"   # canonical runs; RUN_NAME sets the run dir (primary: primary_PIregated_noPS)
 project_name: "base_run"
 run_machine_learning: true
 run_nested_loocv_validation: true
@@ -36,18 +36,17 @@ run_publication_figures: true    # Step 06: Frontiers-styled manuscript figure s
 #   STILL TRUE: increments are NOT comparable across baselines — NLR-free +0.223 > with-NLR
 #   +0.176 is the diag_24 degradation effect (weaker baseline ⇒ bigger increment), not more value.
 include_nlr: false
-input_file: "data/Dati_NSCLC_standardizzati_anonimi_T0.xlsx"
-input_file_t0: "data/Dati_NSCLC_standardizzati_anonimi_T0.xlsx"
-input_file_t1: "data/Dati_NSCLC_standardizzati_anonimi_T1.xlsx"
+input_file: "data/0final/primary_PIregated_noPS/Dati_NSCLC_excl6_final_T0.xlsx"
+input_file_t0: "data/0final/primary_PIregated_noPS/Dati_NSCLC_excl6_final_T0.xlsx"
+input_file_t1: "data/0final/primary_PIregated_noPS/Dati_NSCLC_excl6_final_T1.xlsx"
 
 # --- Experiment Iterations ---
 experiments:
   BestResponse_2v3_4:
     is_longitudinal: true
-    run_network: true
-    input_file:    "data/Dati_NSCLC_standardizzati_latest_anonimi_T0.xlsx"
-    input_file_t0: "data/Dati_NSCLC_standardizzati_latest_anonimi_T0.xlsx"
-    input_file_t1: "data/Dati_NSCLC_standardizzati_latest_anonimi_T1.xlsx"
+    input_file:    "data/0final/primary_PIregated_noPS/Dati_NSCLC_excl6_final_T0.xlsx"
+    input_file_t0: "data/0final/primary_PIregated_noPS/Dati_NSCLC_excl6_final_T0.xlsx"
+    input_file_t1: "data/0final/primary_PIregated_noPS/Dati_NSCLC_excl6_final_T1.xlsx"
     # Temporal discovery/validation split (Pass 0) — DISABLED 2026-06-11.
     # The added-value study develops on the FULL cohort with bootstrap-optimism
     # internal validation: with only ~36 events (minority class) an internal
@@ -117,7 +116,6 @@ experiments:
       benchmark_label: "PD-L1 expression (%)"
       sensitivity_covariates:
         - "PD_L1"
-        - "PS_prima_immuno"
         - "Terapia_Pembro_1_Pembro_CHT_2_ipi/nivo_CHT_3;_Atezo_CHT_4"
       # Supplementary 3-way LMM (responder vs each non-responder sub-code).
       # Reveals whether the dichotomized interaction is graded or driven by
@@ -150,7 +148,6 @@ experiments:
         vars:
           PD_L1: "PD_L1"
           NLR:   "neutrophils/lymphocytes"
-          PS:    "PS_prima_immuno"
         impute: "median"
         # ── Predictor timepoint for the immune composite (gate markers read at) ──
         #   T0    = baseline, deployable at diagnosis (PRIMARY; canonical, full n)
@@ -194,14 +191,13 @@ experiments:
           # PRIMARY contrast. Must be a key of clinical_model.vars. Pre-specified:
           # PS is the archetypal PROGNOSTIC marker, which is what makes the crossover
           # meaningful. NEVER re-point this at whichever variable gives the best contrast.
-          comparator: PS
+          comparator: null   # no-PS run: PS was the pre-specified comparator; no prognostic var left
           # Orientation = the sign making HIGHER = BETTER outcome. MANDATORY and
           # pre-specified from biology: a variable with no entry here is skipped, because
           # orienting by the statistic it is about to be scored on manufactures the result.
           #   PD-L1 higher = better response · PS higher (worse ECOG) = worse · NLR higher = worse
           orientation:
             PD_L1: 1
-            PS: -1
             NLR: -1
           # composite_orientation: null => taken from the pre-specified LMM interaction sign
           # (responders contract the gate => lower delta is responder-like => -1).
@@ -220,96 +216,6 @@ experiments:
         #   Set a list only to deliberately draw a sub-model (display-only).
         nomogram:
           clinical_vars: null
-
-  Comorbidity_1v0:
-    enabled: false   # closed NO-GO (diag_22), negative control — retained for record
-    is_longitudinal: true
-    run_network: false
-    clinical:
-      target_column: "comorbidità_No_0_Si_1"
-      responder_label: "Comorb_Yes"
-      non_responder_label: "Comorb_No"
-      mapping:
-        Comorb_Yes: [1]
-        Comorb_No:  [0]
-
-  Toxicity_1v0:
-    enabled: false   # closed NO-GO (diag_22), null outcome — retained for record
-    is_longitudinal: true
-    run_network: false
-    clinical:
-      target_column: "tossicità_da_immuno_No_0_Si_1"
-      responder_label: "Tox_Yes"
-      non_responder_label: "Tox_No"
-      mapping:
-        Tox_Yes: [1]
-        Tox_No:  [0]
-
-  HNSCC_Response:
-    input_file:    "data/Dati_HNSCC_standardizzati_anonimi.xlsx"
-    input_file_t0: "data/Dati_HNSCC_standardizzati_anonimi.xlsx"
-    is_longitudinal: false
-    run_network: false       # network.feature_selection.always_include uses NSCLC-only markers
-    clinical:
-      target_column:       "Clinical_Response"
-      responder_label:     "R"
-      non_responder_label: "NR"
-      benchmark_column:    "CPS"
-      benchmark_label:     "CPS score"
-    machine_learning:
-      gate_method:              "univariate"
-      univariate_fdr_threshold: 0.20
-      univariate_fallback_k:    3
-      n_perm:                   999
-      # CPS stratification cutoffs for the HNSCC anti-PD-1 benchmark (config-driven;
-      # a new cohort/benchmark re-bins here without code edits). These reproduce the
-      # historical hard-coded defaults: neg(<1), low(1-19), high(>=20).
-      benchmark_strata:
-        breaks:         [0.5, 19.5]
-        labels:         ["neg(<1)", "low(1-19)", "high(>=20)"]
-        high_threshold: 20
-    features:
-      facs:
-        - "M_MDSC"
-        - "LOX1_PMN_MDSC"
-        - "T_reg"
-        - "Resting"
-        - "Active"
-        - "Non_suppressive"
-        - "TregCD137"
-        - "CM"
-        - "EFF"
-        - "EM"
-        - "NAIVE"
-        - "CD137tot"
-        - "CD137CD4"
-        - "CD137CD8"
-        - "CD137PD1"
-        - "CD137CM"
-        - "CD137EFF"
-        - "CD137EMRA"
-        - "CD137NAIVE"
-        - "PD1"
-        - "PD1CD4"
-        - "PD1CD8"
-        - "PD1CM"
-        - "PD1EFF"
-        - "PD1EMRA"
-        - "PD1NAIVE"
-      soluble:
-        - "sBTLA"
-        - "sCD137"
-        - "sCD152"
-        - "sCD27"
-        - "sCD28"
-        - "sCD80"
-        - "sGITR"
-        - "sHVEM"
-        - "sIDO"
-        - "sLAG_3"
-        - "sPD_1"
-        - "sPD_L2"
-        - "sTIM_3"
 
 # --- Data Dictionaries (Hybrid Logic) ---
 features:
@@ -408,22 +314,89 @@ multivariate:
     n_perm: 200
     n_repeat: 1
 
+# --- Post hoc analyses (step 07, src/07_post_hoc.R) ---
+# Run after step 06 on the run's own frames with the gate fixed; sensitivity /
+# descriptive only. Each block can be switched off with enabled: false.
+post_hoc:
+  grouping:                    # PR / SD / PD grouping of the LMM frame (+ disease-control gate)
+    enabled: true
+    subcodes: {PR: 2, SD: 3, PD: 4}   # best-response codes of clinical.target_column
+  duplicate_rows:              # identical T1 rows (two persons): drop each, then both
+    enabled: true
+    drop_t1: [NSCLC_10, NSCLC_12]
+  therapy:                     # ICI monotherapy vs chemo-immunotherapy (parser v3.1 regimen)
+    enabled: true
+    file_t0: "data/therapy_fix/Dati_NSCLC_standardizzati_latest_anonimi_therapyfix_T0.xlsx"
+    file_t1: "data/therapy_fix/Dati_NSCLC_standardizzati_latest_anonimi_therapyfix_T1.xlsx"
+    tag: "v3.1"                # therapy data version (parser v3.1, 2026-10-27)
+    B: 10000                   # within-regimen permutations
+    seed: 56
+  km:                          # Kaplan-Meier OS / PFS by median split of the Δ composite
+    enabled: true
+    landmark_days: 21          # T1 landmark (after the 1st cycle)
+
+# --- Figure export (save_figure(), R/utils_figures.R) ---
+# formats: any of pdf (cairo, default), png / tiff (ragg; tiff LZW), svg (cairo).
+# dpi applies to the raster formats. Multipage figures: one pdf, one raster/svg file per page.
+figures:
+  formats: [pdf]
+  dpi: 300
+
+# --- Publication set (collect_publication(), R/utils_publication.R) ---
+# Copied from the step dirs into <run>/publication/{main,supplementary,supplementary/tables,
+# additional}/ at the end of main.R, with publication/INDEX.md. Labels are provisional.
+# frame: {key} = N of this run (t0_standard, lmm_patients, lmm_obs, lmm_paired, delta,
+# delta_pos, delta_complete_case, t0_pdl1_valid). A missing main/supplementary file is FATAL.
+publication:
+  main:
+    - {stem: Figure1_Biology, from: 06_machine_learning/publication, label: "Figure 1",
+       producer: "pub_fig_biology + pub_fig_lmm_forest",
+       frame: "A: Δ frame, n = {delta}; B: LMM frame, {lmm_patients} patients / {lmm_obs} obs"}
+    - {stem: Figure2b_AddedValue_CVcurves, from: 06_machine_learning/publication, label: "Figure 2",
+       producer: "pub_fig_added_value(curves = \"cv\")", frame: "Δ frame, n = {delta} ({delta_pos} PR)"}
+    - {stem: FigureS9b_Nomogram_FullRangeAxes, from: 06_machine_learning/publication, label: "Figure 3",
+       producer: "pub_fig_nomogram_hybrid", frame: "Δ frame, n = {delta} (apparent fit, not validated)"}
+    - {stem: FigureKM_DeltaComposite_OS_PFS, from: 07_post_hoc/km, label: "Figure 4",
+       producer: "pub_fig_km_panels (src/07_post_hoc.R)", frame: "Δ frame, n = {delta}; post hoc, descriptive"}
+  supplementary:
+    - {stem: FigureS1_CONSORT, from: 06_machine_learning/publication, label: "Figure S1",
+       producer: "pub_fig_consort",
+       frame: "T0 n = {t0_standard}; LMM {lmm_patients} patients / {lmm_obs} obs; Δ n = {delta}"}
+    - {stem: FigureS7_Calibration_IDI, from: 06_machine_learning/publication, label: "Figure S2",
+       producer: "pub_fig_calibration_idi", frame: "Δ frame, n = {delta}"}
+    - {stem: FigureT_TherapyChange, from: 07_post_hoc/therapy, label: "Figure S3",
+       producer: "pub_fig_therapy_change(adjusted = TRUE) (src/07_post_hoc.R)",
+       frame: "paired LMM patients with a known regimen (of {lmm_paired} paired); n per group in therapy/console.txt"}
+  tables:
+    - {stem: Longitudinal_LMM_Report, from: 04_longitudinal_analysis, type: xlsx, label: "Table S1",
+       producer: "src/04_longitudinal_lmm.R", frame: "LMM frame, {lmm_patients} patients / {lmm_obs} obs"}
+    - {stem: ML_Classification_Report, from: 06_machine_learning, type: xlsx, label: "Table S2",
+       producer: "src/06_machine_learning.R", frame: "T0 n = {t0_standard}; Δ n = {delta}"}
+  additional:
+    - {stem: Figure2_AddedValue, from: 06_machine_learning/publication, producer: "pub_fig_added_value(curves = \"loo\")", frame: "Δ frame, n = {delta}"}
+    - {stem: Figure3_PDL1_context, from: 06_machine_learning/publication, producer: "pub_fig_pdl1_context", frame: "T0 frame, n = {t0_standard} ({t0_pdl1_valid} with PD-L1)"}
+    - {stem: FigureS2_BaselineInvariance, from: 06_machine_learning/publication, producer: "pub_fig_baseline_invariance", frame: "Δ frame, n = {delta}"}
+    - {stem: FigureS3_SpecificityNull, from: 06_machine_learning/publication, producer: "pub_fig_specificity_null", frame: "Δ frame, n = {delta}"}
+    - {stem: FigureS4_StandaloneClassifier, from: 06_machine_learning/publication, producer: "pub_fig_standalone", frame: "T0 frame, n = {t0_standard}"}
+    - {stem: FigureS5_Coupling, from: 06_machine_learning/publication, producer: "pub_fig_coupling", frame: "Δ frame, n = {delta}"}
+    - {stem: FigureS6_Robustness, from: 06_machine_learning/publication, producer: "pub_fig_robustness", frame: "Δ frame, n = {delta}"}
+    - {stem: FigureS8_GateSignal, from: 06_machine_learning/publication, producer: "pub_fig_gate_signal", frame: "paired patients, n = {delta}"}
+    - {stem: FigureS9_Nomogram, from: 06_machine_learning/publication, producer: "pub_fig_nomogram", frame: "Δ frame, n = {delta}"}
+    - {stem: FigureS10_Classification, from: 06_machine_learning/publication, producer: "pub_fig_classification", frame: "Δ frame, n = {delta}"}
+    - {stem: FigureS11_FoldChange, from: 06_machine_learning/publication, producer: "pub_fig_foldchange", frame: "paired patients, n = {delta}"}
+    - {stem: FigureS12_Dissociation, from: 06_machine_learning/publication, producer: "pub_fig_dissociation", frame: "Δ frame, n = {delta}; descriptive"}
+    - {stem: FigureT_TherapyChange_unadjusted, from: 07_post_hoc/therapy, producer: "pub_fig_therapy_change(adjusted = FALSE)", frame: "paired LMM patients with a known regimen; raw means (not a valid ranking)"}
+    - {stem: SelectionAware_LRT, from: 06_machine_learning, type: csv, producer: "run_selection_aware_lrt", frame: "LMM {lmm_patients} patients (selection); Δ n = {delta} (LRT)"}
+    - {stem: PatientBootstrap_AUC, from: 06_machine_learning, type: csv, producer: "run_patient_bootstrap_auc", frame: "Δ frame, n = {delta}"}
+    - {stem: LRT_LeaveOneOut, from: 06_machine_learning, type: csv, producer: "run_lrt_leave_one_out", frame: "Δ frame, n = {delta}"}
+
 # --- Visualization & Colors ---
 # EXPANDED: Contains all possible labels injected by the mini-configs
 colors:
   groups:
-    # Toxicity labels
-    Tox_Yes: "#B2182B"       # Red
-    Tox_No: "#2E8B57"        # Green
     # Best Response labels
     RP: "#2E8B57"            # Green
     SD_PD: "#B2182B"         # Red
-    # Comorbidity labels
-    Comorb_Yes: "#B2182B"    # Red
-    Comorb_No: "#2E8B57"     # Green
-    # HNSCC labels
-    R:  "#2E8B57"              # Green (responder)
-    NR: "#B2182B"              # Red (non-responder)
     # Legacy fallbacks
     Responder: "#2E8B57"
     Non_Responder: "#B2182B"
@@ -447,8 +420,25 @@ machine_learning:
   include_interactions: false  # Disabled: SVM-RBF captures non-linear interactions via kernel; explicit terms add collinear noise
 
   clinical_utility:            # Clinical-utility layer (run_clinical_utility) — calibration/DCA/optimism on the pre-specified composite
-    stability_pct: 50          # univariate path only: include markers selected in >= this % of outer folds (conservative)
     n_boot: 2000               # Harrell enhanced-bootstrap reps for optimism correction
+
+  # Inference on the clinical+immune increment (step 06, section 12e). Seeds and B are the
+  # values behind the reported numbers; changing them changes the numbers.
+  clinical_immune_added_value:
+    selection_aware_lrt:       # THE reportable p: label permutation with full gate re-selection
+      enabled: true
+      B: 10000                 # ~40 min on 15 cores
+      topk: gate_size          # top-K rule, K = observed gate size (the rule the Methods describe)
+      cores: 15                # results do not depend on it (permutations drawn before the parallel loop)
+      seed: 2026
+    patient_bootstrap:         # THE reported CIs for the CV AUCs and dAUC (cv_kfold$delta_auc_ci is NOT a CI)
+      enabled: true
+      B: 2000                  # ~10 min on 15 cores
+      reps_in_boot: 10         # CV repetitions inside each resample
+      cores: 15
+      seed: 2026
+    lrt_leave_one_out:         # fixed-gate LRT dropping one patient at a time (deterministic)
+      enabled: true
 
   glmnet:
     alpha_grid: [0.0, 0.5, 1.0] # Tuned in inner CV: Ridge, Elastic Net, LASSO
@@ -462,37 +452,3 @@ machine_learning:
 
   output:
     top_n_features: 10
-
-# --- Differential Network Analysis (Step 05) ---
-# Activated per-experiment via run_network: true in the experiments block.
-network:
-  n_boot: 1000                 # Bootstrap iterations for baseline stability
-  n_perm: 2000                 # Permutation iterations for differential testing (p-value floor 0.0005)
-  n_cores: "auto"              # "auto" uses all available cores - 1; or set to a fixed integer
-  threshold_type: "absolute"   # "absolute" or "percentile"
-  edge_threshold: 0.075        # Minimum |pcor| for a valid edge — lower threshold recovers weak inverted edges
-  min_marginal_cor: 0.10       # Minimum delta Pcor for differential significance
-  min_network_n: 3             # Minimum samples per group to attempt network inference
-  cytoscape_export:            # Baseline network export filters
-    min_stability_freq: 0.90   # Edge must appear in ≥90% of bootstrap iterations
-    min_abs_pcor: 0.075        # Minimum |pcor| for Cytoscape export (aligned with edge_threshold)
-    max_export_edges: 40       # Maximum edges in main Cytoscape file (rest go to remaining/)
-  cytoscape_export_diff:       # Differential network export filters
-    exclude_conserved: false   # Whether to exclude conserved edges from export
-    min_stability_freq_any: 0.90
-    min_diff_score: 0.10
-    max_export_edges: 40
-  feature_selection:           # sPLS-DA-guided panel reduction before network inference
-    enabled: true
-    method: "splsda_loadings"  # Retain markers with |loading| > min_abs_loading in Step 03
-    min_abs_loading: 0.0       # 0 = any marker selected by sPLS-DA in at least one component
-    min_features: 8            # Safety floor; reverts to full panel if selection is smaller
-    always_include:            # Structural backbone: parent lineage + memory phenotypes
-      - "CD3tot"               # Total T cells — anchor for lineage interpretation
-      - "CD4tot"
-      - "CD8tot"
-      - "CM"                   # Central memory
-      - "EFF"                  # Effector
-      - "EM"                   # Effector memory
-      - "NAIVE"
-      - "KI657EMRA"            # Terminally differentiated EMRA (note: field name typo in source data)

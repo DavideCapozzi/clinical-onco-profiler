@@ -9,9 +9,6 @@ library(ggplot2)
 library(FactoMineR)
 library(factoextra)
 library(ggrepel)
-library(igraph)
-library(tidygraph)
-library(ggraph)
 library(ComplexHeatmap)
 library(circlize)
 library(patchwork)
@@ -136,10 +133,11 @@ plot_raw_distribution_merged <- function(data_df, marker_name, colors,
 #' 
 #' @param data_df Merged dataframe with metadata and raw values.
 #' @param markers Vector of marker names to plot.
-#' @param file_path Output path for the PDF.
+#' @param file_path Output path (extension optional; formats from fig_cfg).
 #' @param colors Named vector of colors for groups.
 #' @param hl_pattern String pattern for highlighting (e.g. "_LS").
-viz_save_distribution_report <- function(data_df, markers, file_path, colors, hl_pattern = "") {
+viz_save_distribution_report <- function(data_df, markers, file_path, colors, hl_pattern = "",
+                                         fig_cfg = NULL) {
   
   if (length(markers) == 0) {
     warning("[Viz] No markers provided for distribution report.")
@@ -148,29 +146,26 @@ viz_save_distribution_report <- function(data_df, markers, file_path, colors, hl
   
   message(sprintf("   [Viz] Saving distribution plots to: %s", basename(file_path)))
   
-  pdf(file_path, width = 8, height = 6)
-  # Ensure device is closed even if the loop crashes
-  on.exit(try(dev.off(), silent = TRUE), add = TRUE)
-  
-  for (marker in markers) {
-    if (marker %in% names(data_df)) {
-      # Try-catch ensures one bad plot doesn't crash the whole PDF generation
-      tryCatch({
-        p <- plot_raw_distribution_merged(
-          data_df = data_df, 
-          marker_name = marker,
-          colors = colors,     
-          highlight_pattern = hl_pattern,   
-          highlight_color = "#FFD700"
-        )
-        if (!is.null(p)) print(p)
-      }, error = function(e) {
-        warning(sprintf("      [WARN] Failed to plot marker '%s': %s", marker, e$message))
-      })
+  # One page per marker; a failing marker is skipped, never the whole report.
+  render <- function() {
+    for (marker in markers) {
+      if (marker %in% names(data_df)) {
+        tryCatch({
+          p <- plot_raw_distribution_merged(
+            data_df = data_df, 
+            marker_name = marker,
+            colors = colors,     
+            highlight_pattern = hl_pattern,   
+            highlight_color = "#FFD700"
+          )
+          if (!is.null(p)) print(p)
+        }, error = function(e) {
+          warning(sprintf("      [WARN] Failed to plot marker '%s': %s", marker, e$message))
+        })
+      }
     }
   }
-  
-  dev.off()
+  save_figure(render, file_path, 8, 6, units = "in", config = fig_cfg, multipage = TRUE)
 }
 
 #' @title Custom PCA Biplot with Multi-Pattern Highlighting
@@ -568,7 +563,9 @@ viz_plot_splsda_heatmap <- function(mat_z, metadata, group_col, colors, title = 
 #' @param out_path Path to save the PDF.
 #' @param group_col The name of the metadata column to use for grouping/coloring (default: "Group").
 #' @param n_top_boxplots Number of boxplots to plot. 
-viz_report_plsda <- function(pls_res, drivers_df, metadata_viz, colors_viz, out_path, group_col = "Group", n_top_boxplots = 9) {
+#' @param fig_cfg Config (or its \code{figures} block) for \code{save_figure()}.
+viz_report_plsda <- function(pls_res, drivers_df, metadata_viz, colors_viz, out_path, group_col = "Group", n_top_boxplots = 9,
+                             fig_cfg = NULL) {
   
   if (is.null(pls_res$model)) return(NULL)
   
@@ -584,9 +581,6 @@ viz_report_plsda <- function(pls_res, drivers_df, metadata_viz, colors_viz, out_
   if (!group_col %in% names(metadata_viz)) {
     stop(sprintf("Column '%s' not found in metadata for sPLS-DA visualization.", group_col))
   }
-  
-  pdf(out_path, width = 11, height = 8)
-  on.exit(try(dev.off(), silent = TRUE), add = TRUE) 
   
   plot_group_factor <- as.factor(metadata_viz[[group_col]])
   levels_present <- levels(plot_group_factor)
@@ -608,106 +602,111 @@ viz_report_plsda <- function(pls_res, drivers_df, metadata_viz, colors_viz, out_
       theme_void()
   }
   
-  # 1. Native ggplot2 Biplot
-  tryCatch({
-    variates_df <- as.data.frame(pls_res$model$variates$X[, 1:2, drop = FALSE])
-    colnames(variates_df) <- c("PC1", "PC2")
-    variates_df$Group <- plot_group_factor
-    variates_df$Patient_ID <- rownames(pls_res$model$variates$X)
+  # Pages: biplot, then per component loadings + boxplots, then the heatmap.
+  render <- function() {
+    # 1. Native ggplot2 Biplot
+    tryCatch({
+      variates_df <- as.data.frame(pls_res$model$variates$X[, 1:2, drop = FALSE])
+      colnames(variates_df) <- c("PC1", "PC2")
+      variates_df$Group <- plot_group_factor
+      variates_df$Patient_ID <- rownames(pls_res$model$variates$X)
     
-    var_pct <- round(pls_res$model$prop_expl_var$X[1:2] * 100, 1)
+      var_pct <- round(pls_res$model$prop_expl_var$X[1:2] * 100, 1)
     
-    p_biplot <- ggplot(variates_df, aes(x = PC1, y = PC2, color = Group, fill = Group)) +
-      geom_hline(yintercept = 0, linetype = "dashed", color = "gray70") +
-      geom_vline(xintercept = 0, linetype = "dashed", color = "gray70") +
-      stat_ellipse(geom = "polygon", alpha = 0.1, level = 0.95, show.legend = FALSE) +
-      geom_point(size = 3.5, shape = 21, color = "white", stroke = 0.5) +
-      geom_text_repel(aes(label = Patient_ID), size = 3, show.legend = FALSE, max.overlaps = 20) +
-      scale_fill_manual(values = plot_colors) +
-      scale_color_manual(values = plot_colors) +
-      labs(
-        title = "sPLS-DA: Model Separation",
-        subtitle = paste("Grouping by:", group_col),
-        x = sprintf("X-variate 1: %s%% expl. var", var_pct[1]),
-        y = sprintf("X-variate 2: %s%% expl. var", var_pct[2])
-      ) +
-      theme_coda()
+      p_biplot <- ggplot(variates_df, aes(x = PC1, y = PC2, color = Group, fill = Group)) +
+        geom_hline(yintercept = 0, linetype = "dashed", color = "gray70") +
+        geom_vline(xintercept = 0, linetype = "dashed", color = "gray70") +
+        stat_ellipse(geom = "polygon", alpha = 0.1, level = 0.95, show.legend = FALSE) +
+        geom_point(size = 3.5, shape = 21, color = "white", stroke = 0.5) +
+        geom_text_repel(aes(label = Patient_ID), size = 3, show.legend = FALSE, max.overlaps = 20) +
+        scale_fill_manual(values = plot_colors) +
+        scale_color_manual(values = plot_colors) +
+        labs(
+          title = "sPLS-DA: Model Separation",
+          subtitle = paste("Grouping by:", group_col),
+          x = sprintf("X-variate 1: %s%% expl. var", var_pct[1]),
+          y = sprintf("X-variate 2: %s%% expl. var", var_pct[2])
+        ) +
+        theme_coda()
     
-    print(p_biplot)
-  }, error = function(e) {
-    print(plot_error_msg(paste("Biplot Error:", e$message)))
-  })
+      print(p_biplot)
+    }, error = function(e) {
+      print(plot_error_msg(paste("Biplot Error:", e$message)))
+    })
   
-  # 2. Loadings & Boxplots
-  for (i in 1:n_comps) {
-    comp_col <- paste0("Comp", i, "_Weight")
-    if (!comp_col %in% names(drivers_df)) next
+    # 2. Loadings & Boxplots
+    for (i in 1:n_comps) {
+      comp_col <- paste0("Comp", i, "_Weight")
+      if (!comp_col %in% names(drivers_df)) next
     
-    variates <- pls_res$model$variates$X[, i]
-    stat_groups <- plot_group_factor
-    group_means <- tapply(variates, stat_groups, mean)
+      variates <- pls_res$model$variates$X[, i]
+      stat_groups <- plot_group_factor
+      group_means <- tapply(variates, stat_groups, mean)
     
-    pos_group_name <- names(group_means)[which.max(group_means)]
-    neg_group_name <- names(group_means)[which.min(group_means)]
+      pos_group_name <- names(group_means)[which.max(group_means)]
+      neg_group_name <- names(group_means)[which.min(group_means)]
     
-    label_sub <- sprintf("Direction: Positive -> %s | Negative -> %s", pos_group_name, neg_group_name)
+      label_sub <- sprintf("Direction: Positive -> %s | Negative -> %s", pos_group_name, neg_group_name)
     
-    current_fill_colors <- c()
-    if(pos_group_name %in% names(plot_colors)) current_fill_colors[[pos_group_name]] <- plot_colors[[pos_group_name]]
-    if(neg_group_name %in% names(plot_colors)) current_fill_colors[[neg_group_name]] <- plot_colors[[neg_group_name]]
-    if(is.null(current_fill_colors[[pos_group_name]])) current_fill_colors[[pos_group_name]] <- "gray"
-    if(is.null(current_fill_colors[[neg_group_name]])) current_fill_colors[[neg_group_name]] <- "gray"
+      current_fill_colors <- c()
+      if(pos_group_name %in% names(plot_colors)) current_fill_colors[[pos_group_name]] <- plot_colors[[pos_group_name]]
+      if(neg_group_name %in% names(plot_colors)) current_fill_colors[[neg_group_name]] <- plot_colors[[neg_group_name]]
+      if(is.null(current_fill_colors[[pos_group_name]])) current_fill_colors[[pos_group_name]] <- "gray"
+      if(is.null(current_fill_colors[[neg_group_name]])) current_fill_colors[[neg_group_name]] <- "gray"
     
-    df_comp <- drivers_df[abs(drivers_df[[comp_col]]) > 0, ]
+      df_comp <- drivers_df[abs(drivers_df[[comp_col]]) > 0, ]
     
-    if (nrow(df_comp) > 0) {
-      df_comp$Association <- ifelse(df_comp[[comp_col]] > 0, pos_group_name, neg_group_name)
+      if (nrow(df_comp) > 0) {
+        df_comp$Association <- ifelse(df_comp[[comp_col]] > 0, pos_group_name, neg_group_name)
       
-      p_load <- ggplot(df_comp, aes(x = reorder(Marker, abs(.data[[comp_col]])), 
-                                    y = .data[[comp_col]], fill = Association)) +
-        geom_bar(stat = "identity", width = 0.7) +
-        coord_flip() +
-        scale_fill_manual(values = current_fill_colors) +
-        labs(title = sprintf("sPLS-DA Loadings (Component %d)", i), 
-             subtitle = label_sub, x = "Marker", y = "Weight Contribution", fill = "Associated Group") +
-        theme_coda() + theme(legend.position = "bottom")
-      print(p_load)
+        p_load <- ggplot(df_comp, aes(x = reorder(Marker, abs(.data[[comp_col]])), 
+                                      y = .data[[comp_col]], fill = Association)) +
+          geom_bar(stat = "identity", width = 0.7) +
+          coord_flip() +
+          scale_fill_manual(values = current_fill_colors) +
+          labs(title = sprintf("sPLS-DA Loadings (Component %d)", i), 
+               subtitle = label_sub, x = "Marker", y = "Weight Contribution", fill = "Associated Group") +
+          theme_coda() + theme(legend.position = "bottom")
+        print(p_load)
       
-      if(exists("viz_plot_signature_boxplots")) {
-        p_box <- viz_plot_signature_boxplots(
-          data_matrix = pls_res$model$X, 
-          group_factor = plot_group_factor,
-          loadings_df = df_comp, 
-          comp = i, 
-          n_top = n_top_boxplots, 
-          colors = plot_colors
-        )
-        if (!is.null(p_box)) print(p_box)
+        if(exists("viz_plot_signature_boxplots")) {
+          p_box <- viz_plot_signature_boxplots(
+            data_matrix = pls_res$model$X, 
+            group_factor = plot_group_factor,
+            loadings_df = df_comp, 
+            comp = i, 
+            n_top = n_top_boxplots, 
+            colors = plot_colors
+          )
+          if (!is.null(p_box)) print(p_box)
+        }
       }
     }
-  }
   
-  # 3. Transposed Signature Heatmap
-  if (nrow(drivers_df) > 1) {
-    tryCatch({
-      mks <- unique(drivers_df$Marker)
-      mat_sub <- pls_res$model$X[, mks, drop = FALSE]
+    # 3. Transposed Signature Heatmap
+    if (nrow(drivers_df) > 1) {
+      tryCatch({
+        mks <- unique(drivers_df$Marker)
+        mat_sub <- pls_res$model$X[, mks, drop = FALSE]
       
-      meta_hm <- metadata_viz[match(rownames(mat_sub), metadata_viz$Patient_ID), ]
+        meta_hm <- metadata_viz[match(rownames(mat_sub), metadata_viz$Patient_ID), ]
       
-      hm <- viz_plot_splsda_heatmap(
-        mat_z = mat_sub,
-        metadata = meta_hm,
-        group_col = group_col,
-        colors = plot_colors,
-        title = "sPLS-DA Signature Heatmap"
-      )
+        hm <- viz_plot_splsda_heatmap(
+          mat_z = mat_sub,
+          metadata = meta_hm,
+          group_col = group_col,
+          colors = plot_colors,
+          title = "sPLS-DA Signature Heatmap"
+        )
       
-      ComplexHeatmap::draw(hm, merge_legend = TRUE)
-    }, error = function(e) {
-      print(plot_error_msg(paste("Heatmap Error:", e$message)))
-    })
+        ComplexHeatmap::draw(hm, merge_legend = TRUE)
+      }, error = function(e) {
+        print(plot_error_msg(paste("Heatmap Error:", e$message)))
+      })
+    }
   }
+
+  save_figure(render, out_path, 11, 8, units = "in", config = fig_cfg, multipage = TRUE)
 }
 
 
@@ -738,317 +737,4 @@ get_clinical_colors <- function(config) {
   }
 
   return(colors_viz)
-}
-
-# ==============================================================================
-# NETWORK VISUALIZATION FUNCTIONS
-# ==============================================================================
-
-#' @title Plot Network Structure (ggraph)
-#' @description Force-directed network layout colored by edge sign.
-#' @param adj_mat Adjacency matrix (0/1).
-#' @param weight_mat Partial correlation matrix.
-#' @param title Plot title.
-#' @param layout_type ggraph layout algorithm.
-#' @param min_cor Minimum absolute weight to render edge.
-#' @return ggplot object.
-plot_network_structure <- function(adj_mat, weight_mat, title = "Network",
-                                   layout_type = "nicely", min_cor = 0) {
-
-  requireNamespace("igraph", quietly = TRUE)
-  requireNamespace("tidygraph", quietly = TRUE)
-  requireNamespace("ggraph", quietly = TRUE)
-
-  g <- igraph::graph_from_adjacency_matrix(adj_mat, mode = "undirected", diag = FALSE)
-
-  igraph::E(g)$weight_raw <- NA
-  igraph::E(g)$sign <- NA
-  igraph::E(g)$weight <- NA
-
-  el <- igraph::as_data_frame(g, what = "edges")
-
-  if (nrow(el) > 0) {
-    weights <- numeric(nrow(el))
-    signs   <- character(nrow(el))
-    keep_edge <- logical(nrow(el))
-
-    for (k in 1:nrow(el)) {
-      w <- weight_mat[el[k, 1], el[k, 2]]
-      if (abs(w) >= min_cor) {
-        keep_edge[k] <- TRUE
-        weights[k] <- abs(w)
-        signs[k]   <- ifelse(w > 0, "Positive", "Negative")
-      }
-    }
-
-    g <- igraph::delete_edges(g, igraph::E(g)[!keep_edge])
-
-    if (igraph::ecount(g) > 0) {
-      igraph::E(g)$weight <- weights[keep_edge]
-      igraph::E(g)$sign   <- signs[keep_edge]
-    }
-  }
-
-  igraph::V(g)$degree <- igraph::degree(g)
-  tg <- tidygraph::as_tbl_graph(g)
-
-  p <- ggraph::ggraph(tg, layout = layout_type) +
-    ggraph::geom_edge_link(ggplot2::aes(width = weight, color = sign), alpha = 0.6) +
-    ggraph::scale_edge_width(range = c(0.2, 1.5), guide = "none") +
-    ggraph::scale_edge_color_manual(values = c("Positive" = "#00BFC4", "Negative" = "#F8766D")) +
-    ggraph::geom_node_point(ggplot2::aes(size = degree), color = "gray20", fill = "white", shape = 21) +
-    ggraph::geom_node_text(ggplot2::aes(label = name), repel = TRUE, size = 3, max.overlaps = 20) +
-    ggplot2::scale_size_continuous(range = c(2, 8)) +
-    ggplot2::labs(
-      title = title,
-      subtitle = sprintf("Nodes: %d | Edges: %d (Filter: |rho| > %.2f)",
-                         igraph::vcount(g), igraph::ecount(g), min_cor),
-      edge_color = "Association"
-    ) +
-    ggplot2::theme_void() +
-    ggplot2::theme(
-      plot.title = ggplot2::element_text(face = "bold", hjust = 0.5),
-      plot.subtitle = ggplot2::element_text(hjust = 0.5, color = "gray50"),
-      legend.position = "bottom"
-    )
-
-  return(p)
-}
-
-#' @title Plot Partial Correlation Density
-#' @description Density of edge weights with threshold annotation.
-#' @param pcor_mat Numeric partial correlation matrix.
-#' @param adj_mat Optional adjacency matrix (0/1) to report stable edge count.
-#' @param threshold Magnitude threshold used for filtering.
-#' @param group_label Label for the group.
-#' @return ggplot object.
-viz_plot_edge_density <- function(pcor_mat, adj_mat = NULL, threshold = 0.15, group_label = "") {
-
-  vals <- pcor_mat[upper.tri(pcor_mat)]
-  n_total <- length(vals)
-  df_plot <- data.frame(Value = vals)
-
-  if (!is.null(adj_mat)) {
-    n_stable <- sum(adj_mat[upper.tri(adj_mat)])
-    sub_text <- sprintf("Threshold: |rho| > %.4f | Final Stable Edges: %d", threshold, n_stable)
-  } else {
-    n_kept <- sum(abs(vals) >= threshold)
-    pct_kept <- round((n_kept / n_total) * 100, 1)
-    sub_text <- sprintf("Threshold: |rho| > %.4f (Keeps %.1f%% of raw edges)", threshold, pct_kept)
-  }
-
-  p <- ggplot2::ggplot(df_plot, ggplot2::aes(x = Value)) +
-    ggplot2::geom_density(fill = "steelblue", alpha = 0.3)
-
-  if (threshold > 0) {
-    p <- p + ggplot2::geom_vline(xintercept = c(-threshold, threshold),
-                                 linetype = "dashed", color = "red", linewidth = 0.8)
-  }
-
-  p <- p +
-    ggplot2::labs(
-      title = paste("Edge Weight Distribution:", group_label),
-      subtitle = sub_text,
-      x = "Partial Correlation (Shrinkage)",
-      y = "Density"
-    ) +
-    ggplot2::theme_bw(base_size = 12) +
-    ggplot2::theme(
-      plot.title = ggplot2::element_text(face = "bold", size = 14, hjust = 0.5),
-      plot.subtitle = ggplot2::element_text(size = 11, hjust = 0.5, color = "gray40")
-    ) +
-    ggplot2::xlim(-1, 1)
-
-  return(p)
-}
-
-#' @title Plot Hub-Driver Quadrant
-#' @description sPLS-DA Importance vs Network Topology scatter with role classification.
-#' @param hub_driver_df Output from integrate_hub_drivers().
-#' @param y_label Label for Y axis ("Degree" or "Betweenness").
-#' @param title_suffix String to append to plot title.
-#' @return ggplot object.
-plot_hub_driver_quadrant <- function(hub_driver_df, y_label = "Degree", title_suffix = "") {
-
-  if (is.null(hub_driver_df) || nrow(hub_driver_df) == 0) return(NULL)
-
-  y_col_name <- if ("Topology_Metric_Value" %in% names(hub_driver_df)) "Topology_Metric_Value" else "Degree"
-
-  x_mid <- median(hub_driver_df$Importance, na.rm = TRUE)
-  y_mid <- median(hub_driver_df[[y_col_name]], na.rm = TRUE)
-
-  p <- ggplot2::ggplot(hub_driver_df, ggplot2::aes(x = Importance, y = .data[[y_col_name]], fill = Role)) +
-    ggplot2::geom_vline(xintercept = x_mid, linetype = "dashed", color = "gray60") +
-    ggplot2::geom_hline(yintercept = y_mid, linetype = "dashed", color = "gray60") +
-    ggplot2::geom_point(size = 4, shape = 21, alpha = 0.8) +
-    ggrepel::geom_text_repel(ggplot2::aes(label = Marker), size = 3.5, max.overlaps = 20) +
-    ggplot2::scale_fill_manual(values = c(
-      "Master_Regulator"    = VIZ_RED,
-      "Solo_Driver"         = VIZ_RED_LT,
-      "Structural_Connector" = VIZ_BLUE,
-      "Background"          = "gray80"
-    )) +
-    ggplot2::scale_y_continuous(breaks = scales::pretty_breaks()) +
-    ggplot2::labs(
-      title    = paste("Hub-Driver Analysis", title_suffix),
-      subtitle = paste("sPLS-DA Importance vs", y_label),
-      x        = "Statistical Importance (sPLS-DA)",
-      y        = paste0("Topological Centrality (", y_label, ")"),
-      caption  = "Quadrants defined by median values"
-    ) +
-    theme_coda() +
-    ggplot2::theme(legend.position = "bottom")
-
-  return(p)
-}
-
-
-
-#' @title Clinical-Utility Figure (Calibration + Decision Curve)
-#' @description Paper-ready two-panel figure for the output of
-#'   \code{run_clinical_utility()}. Panel A: leakage-free (LOO) calibration with
-#'   quartile bins and the logistic-recalibrated curve overlaid (shows the
-#'   shrinkage). Panel B: decision curve (net benefit vs treat-all / treat-none)
-#'   with the model-dominance range shaded. Styled with \code{theme_coda()}.
-#' @param clin_util  List returned by \code{run_clinical_utility()}.
-#' @param colors     Named vector of group colours (from \code{get_clinical_colors}).
-#' @param title_prefix Optional string prepended to the figure title (e.g. cohort).
-#' @return A patchwork object (A | B). ASCII-only titles (PDF font safe).
-viz_plot_clinical_utility <- function(clin_util, colors, title_prefix = "") {
-  if (is.null(clin_util)) return(NULL)
-  pos    <- clin_util$positive_label
-  col_mod <- if (!is.null(colors[[pos]])) colors[[pos]] else VIZ_BLUE
-  pp     <- clin_util$per_patient
-  yb     <- as.integer(pp$True_Group == pos)
-  cl     <- clin_util$calibration; dc <- clin_util$decision_curve
-
-  # ── Panel A: calibration (LOO raw vs recalibrated) ──────────────────────────
-  calib_long <- rbind(
-    data.frame(pred = pp$Prob_LOO,   obs = yb, kind = "LOO (raw)"),
-    data.frame(pred = pp$Prob_Recal, obs = yb, kind = "Recalibrated")
-  )
-  bins <- do.call(rbind, lapply(split(seq_along(yb), dplyr::ntile(pp$Prob_LOO, 4)),
-    function(ix) {
-      o <- mean(yb[ix])
-      data.frame(p_mean = mean(pp$Prob_LOO[ix]), obs = o,
-                 se = sqrt(o * (1 - o) / length(ix)))
-    }))
-  pA <- ggplot(calib_long, aes(pred, obs, colour = kind, linetype = kind)) +
-    geom_abline(slope = 1, intercept = 0, linetype = 3, colour = "grey50") +
-    geom_smooth(method = "loess", se = FALSE, span = 1, linewidth = 0.9) +
-    geom_point(data = bins, aes(p_mean, obs), inherit.aes = FALSE, size = 2.4) +
-    geom_errorbar(data = bins,
-                  aes(x = p_mean, ymin = pmax(0, obs - se), ymax = pmin(1, obs + se)),
-                  inherit.aes = FALSE, width = 0.012) +
-    scale_colour_manual(values = c("LOO (raw)" = col_mod, "Recalibrated" = "grey40")) +
-    scale_linetype_manual(values = c("LOO (raw)" = 1, "Recalibrated" = 2)) +
-    coord_cartesian(xlim = c(0, 1), ylim = c(0, 1)) +
-    labs(title = "Calibration (LOO)",
-         subtitle = sprintf("CITL=%.2f  slope=%.2f  Brier=%.3f  (recal. slope=%.2f)",
-                            cl$loo$intercept, cl$loo$slope, cl$loo$brier, cl$recalibrated$slope),
-         x = "Predicted probability", y = "Observed fraction", colour = NULL, linetype = NULL) +
-    theme_coda()
-
-  # ── Panel B: decision curve ─────────────────────────────────────────────────
-  cur <- dc$curve
-  dom <- cur[cur$model > cur$treat_all & cur$model > cur$treat_none, , drop = FALSE]
-  nb_long <- rbind(
-    data.frame(threshold = cur$threshold, net_benefit = cur$model,      strategy = "Model"),
-    data.frame(threshold = cur$threshold, net_benefit = cur$treat_all,  strategy = "Treat all"),
-    data.frame(threshold = cur$threshold, net_benefit = cur$treat_none, strategy = "Treat none")
-  )
-  pB <- ggplot(nb_long, aes(threshold, net_benefit, colour = strategy))
-  if (nrow(dom) > 0)
-    pB <- pB + annotate("rect", xmin = min(dom$threshold), xmax = max(dom$threshold),
-                        ymin = -Inf, ymax = Inf, alpha = 0.08, fill = col_mod)
-  pB <- pB +
-    geom_line(linewidth = 0.9) +
-    scale_colour_manual(values = c("Model" = col_mod, "Treat all" = VIZ_RED,
-                                   "Treat none" = "grey45")) +
-    coord_cartesian(ylim = c(min(-0.02, min(cur$treat_all)), max(cur$model) + 0.02)) +
-    labs(title = "Decision curve",
-         subtitle = sprintf("Net benefit > defaults over pt [%s]; prevalence=%.2f",
-                            dc$dominance_range, dc$prevalence),
-         x = "Threshold probability", y = "Net benefit", colour = NULL) +
-    theme_coda()
-
-  ttl <- paste0(if (nzchar(title_prefix)) paste0(title_prefix, " - ") else "",
-                "Clinical utility of pre-specified composite (",
-                paste(clin_util$composite_markers, collapse = "+"), ")")
-  sub <- sprintf("AUC corrected=%.3f [%.3f-%.3f] | optimism=%.4f | gate: %s",
-                 clin_util$discrimination$auc_corrected,
-                 clin_util$discrimination$auc_corrected_ci[1],
-                 clin_util$discrimination$auc_corrected_ci[2],
-                 clin_util$discrimination$auc_optimism, clin_util$gate_provenance)
-
-  patchwork::wrap_plots(pA, pB, nrow = 1) +
-    patchwork::plot_annotation(title = ttl, subtitle = sub, tag_levels = "A",
-      theme = theme(plot.title = element_text(face = "bold", hjust = 0.5),
-                    plot.subtitle = element_text(hjust = 0.5, colour = "gray40")))
-}
-
-#' @title Plot clinical + cytometric added-value (decision curve + LOO AUC)
-#' @description Two panels: (A) decision curve comparing the standard-of-care
-#'   clinical model vs clinical+immune (vs treat-all / treat-none), and (B) a bar
-#'   of leakage-free LOO AUCs (clinical / immune / combined). Subtitle carries the
-#'   increment (ΔAUC, DeLong p, IDI with 95% CI).
-#' @param av Result of run_clinical_immune_added_value().
-viz_plot_added_value <- function(av, colors, title_prefix = "") {
-  if (is.null(av)) return(NULL)
-  pos     <- av$positive_label
-  col_comb <- if (!is.null(colors[[pos]])) colors[[pos]] else VIZ_BLUE
-  cur <- av$decision_curve$curve; inc <- av$increment
-
-  # ── Panel A: decision curve (clinical vs combined) ──────────────────────────
-  nb_long <- rbind(
-    data.frame(threshold = cur$threshold, net_benefit = cur$clinical,   strategy = "Clinical only"),
-    data.frame(threshold = cur$threshold, net_benefit = cur$combined,   strategy = "Clinical + immune"),
-    data.frame(threshold = cur$threshold, net_benefit = cur$treat_all,  strategy = "Treat all"),
-    data.frame(threshold = cur$threshold, net_benefit = cur$treat_none, strategy = "Treat none")
-  )
-  pA <- ggplot(nb_long, aes(threshold, net_benefit, colour = strategy, linetype = strategy)) +
-    geom_line(linewidth = 0.9) +
-    scale_colour_manual(values = c("Clinical only" = "#E08214", "Clinical + immune" = col_comb,
-                                   "Treat all" = VIZ_RED, "Treat none" = "grey45")) +
-    scale_linetype_manual(values = c("Clinical only" = 2, "Clinical + immune" = 1,
-                                     "Treat all" = 3, "Treat none" = 3)) +
-    coord_cartesian(ylim = c(min(-0.02, min(cur$treat_all)),
-                             max(c(cur$clinical, cur$combined)) + 0.02)) +
-    labs(title = "Decision curve", x = "Threshold probability", y = "Net benefit",
-         colour = NULL, linetype = NULL,
-         subtitle = sprintf("prevalence=%.2f", av$decision_curve$prevalence)) +
-    theme_coda()
-
-  # ── Panel B: LOO AUC bars ───────────────────────────────────────────────────
-  auc_df <- data.frame(
-    model = factor(c("Clinical", "Immune", "Clinical+immune"),
-                   levels = c("Clinical", "Immune", "Clinical+immune")),
-    auc   = c(av$auc$clinical[["loo"]], av$auc$immune[["loo"]], av$auc$combined[["loo"]]))
-  pB <- ggplot(auc_df, aes(model, auc, fill = model)) +
-    geom_col(width = 0.6) +
-    geom_hline(yintercept = 0.5, linetype = 3, colour = "grey50") +
-    geom_text(aes(label = sprintf("%.3f", auc)), vjust = -0.4, size = 3.4) +
-    scale_fill_manual(values = c("Clinical" = "#E08214", "Immune" = "#80CDC1",
-                                 "Clinical+immune" = col_comb), guide = "none") +
-    coord_cartesian(ylim = c(0, 1)) +
-    labs(title = "Discrimination (leakage-free LOO AUC)", x = NULL, y = "AUC") +
-    theme_coda()
-
-  ttl <- paste0(if (nzchar(title_prefix)) paste0(title_prefix, " - ") else "",
-                "Added value of immune profiling over clinical (",
-                paste(names(av$clinical_vars), collapse = "+"), ")")
-  # LRT of the increment = the correct primary test for nested models (DeLong on
-  # ΔAUC is expected to be ns); lead with it, guard if absent (older runs / no logistf).
-  lrt_txt <- if (!is.null(inc$lrt_p)) {
-    pp <- if (!is.null(inc$lrt_perm_p)) sprintf(" (perm %.3f)", inc$lrt_perm_p) else ""
-    sprintf("LRT p=%.4f%s   ", inc$lrt_p, pp)
-  } else ""
-  sub <- sprintf("%sDelta-AUC(LOO)=%+.3f  DeLong p=%.3f  IDI=%+.3f [%.3f, %.3f]  | %s",
-                 lrt_txt, inc$delta_auc_loo, inc$delong_p_loo, inc$idi,
-                 inc$idi_ci[1], inc$idi_ci[2], av$gate_provenance)
-
-  patchwork::wrap_plots(pA, pB, nrow = 1) +
-    patchwork::plot_annotation(title = ttl, subtitle = sub, tag_levels = "A",
-      theme = theme(plot.title = element_text(face = "bold", hjust = 0.5),
-                    plot.subtitle = element_text(hjust = 0.5, colour = "gray40")))
 }

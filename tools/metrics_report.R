@@ -10,9 +10,9 @@
 # parses args, calls the helpers, and prints).
 #
 # Usage:
-#   Rscript tools/metrics_report.R [--new <run>] [--base <run>] [--exp A,B]
+#   Rscript tools/metrics_report.R --new <run> [--base <run>] [--exp A,B]
 #
-#   --new   run root to evaluate         (default: latest, via resolve_run_root)
+#   --new   run root to evaluate         (REQUIRED)
 #   --base  baseline run root to diff    (omit -> verdict only, no delta table)
 #   --exp   comma-separated experiments  (default: all in the run[s])
 #
@@ -49,7 +49,8 @@ resolve_run_arg <- function(x) {
 }
 
 opt  <- parse_args(commandArgs(trailingOnly = TRUE))
-new  <- if (!is.null(opt$new)) resolve_run_arg(opt$new) else resolve_run_root()
+if (is.null(opt$new) || !nzchar(opt$new)) stop("[metrics_report] --new <run> is required (there is no latest-run default).")
+new  <- resolve_run_arg(opt$new)
 base <- if (!is.null(opt$base)) resolve_run_arg(opt$base) else NULL
 exps <- if (!is.null(opt$exp)) trimws(strsplit(opt$exp, ",")[[1]]) else list_run_experiments(new)
 
@@ -68,6 +69,12 @@ for (exp in exps) {
     cat(sprintf("   [%s] %-26s %s %s %s\n",
                 if (isTRUE(c$pass)) "PASS" else "FAIL",
                 c$metric, format(c$value), c$op, format(c$threshold)))
+  sa <- v$reported
+  if (!is.null(sa))
+    cat(sprintf("   [REPORT] selection-aware LRT p = %.4f (%s; %d/%d null LR >= %.4f; MC 95%% CI [%.3f, %.3f]) <- the p to quote; not a verdict criterion\n",
+                sa$p, sa$rule, as.integer(sa$n_ge_obs), as.integer(sa$B), sa$lr_obs, sa$p_mc_ci_lo, sa$p_mc_ci_hi))
+  else if (identical(v$primary_method, "clinical+immune added-value"))
+    cat("   [REPORT] selection-aware LRT not in this run's JSON (disabled or predates step-06 integration)\n")
 }
 
 # --- delta table vs baseline --------------------------------------------------
