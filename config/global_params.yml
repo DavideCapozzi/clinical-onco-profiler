@@ -3,7 +3,7 @@
 # ==============================================================================
 
 # --- System Setup ---
-output_root: "results"
+output_root: "results/0final"   # canonical runs; RUN_NAME sets the run dir (primary: primary_PIregated_noPS)
 project_name: "base_run"
 run_machine_learning: true
 run_nested_loocv_validation: true
@@ -36,18 +36,18 @@ run_publication_figures: true    # Step 06: Frontiers-styled manuscript figure s
 #   STILL TRUE: increments are NOT comparable across baselines — NLR-free +0.223 > with-NLR
 #   +0.176 is the diag_24 degradation effect (weaker baseline ⇒ bigger increment), not more value.
 include_nlr: false
-input_file: "data/Dati_NSCLC_standardizzati_anonimi_T0.xlsx"
-input_file_t0: "data/Dati_NSCLC_standardizzati_anonimi_T0.xlsx"
-input_file_t1: "data/Dati_NSCLC_standardizzati_anonimi_T1.xlsx"
+input_file: "data/0final/primary_PIregated_noPS/Dati_NSCLC_excl6_final_T0.xlsx"
+input_file_t0: "data/0final/primary_PIregated_noPS/Dati_NSCLC_excl6_final_T0.xlsx"
+input_file_t1: "data/0final/primary_PIregated_noPS/Dati_NSCLC_excl6_final_T1.xlsx"
 
 # --- Experiment Iterations ---
 experiments:
   BestResponse_2v3_4:
     is_longitudinal: true
     run_network: true
-    input_file:    "data/Dati_NSCLC_standardizzati_latest_anonimi_T0.xlsx"
-    input_file_t0: "data/Dati_NSCLC_standardizzati_latest_anonimi_T0.xlsx"
-    input_file_t1: "data/Dati_NSCLC_standardizzati_latest_anonimi_T1.xlsx"
+    input_file:    "data/0final/primary_PIregated_noPS/Dati_NSCLC_excl6_final_T0.xlsx"
+    input_file_t0: "data/0final/primary_PIregated_noPS/Dati_NSCLC_excl6_final_T0.xlsx"
+    input_file_t1: "data/0final/primary_PIregated_noPS/Dati_NSCLC_excl6_final_T1.xlsx"
     # Temporal discovery/validation split (Pass 0) — DISABLED 2026-06-11.
     # The added-value study develops on the FULL cohort with bootstrap-optimism
     # internal validation: with only ~36 events (minority class) an internal
@@ -117,7 +117,6 @@ experiments:
       benchmark_label: "PD-L1 expression (%)"
       sensitivity_covariates:
         - "PD_L1"
-        - "PS_prima_immuno"
         - "Terapia_Pembro_1_Pembro_CHT_2_ipi/nivo_CHT_3;_Atezo_CHT_4"
       # Supplementary 3-way LMM (responder vs each non-responder sub-code).
       # Reveals whether the dichotomized interaction is graded or driven by
@@ -150,7 +149,6 @@ experiments:
         vars:
           PD_L1: "PD_L1"
           NLR:   "neutrophils/lymphocytes"
-          PS:    "PS_prima_immuno"
         impute: "median"
         # ── Predictor timepoint for the immune composite (gate markers read at) ──
         #   T0    = baseline, deployable at diagnosis (PRIMARY; canonical, full n)
@@ -194,14 +192,13 @@ experiments:
           # PRIMARY contrast. Must be a key of clinical_model.vars. Pre-specified:
           # PS is the archetypal PROGNOSTIC marker, which is what makes the crossover
           # meaningful. NEVER re-point this at whichever variable gives the best contrast.
-          comparator: PS
+          comparator: null   # no-PS run: PS was the pre-specified comparator; no prognostic var left
           # Orientation = the sign making HIGHER = BETTER outcome. MANDATORY and
           # pre-specified from biology: a variable with no entry here is skipped, because
           # orienting by the statistic it is about to be scored on manufactures the result.
           #   PD-L1 higher = better response · PS higher (worse ECOG) = worse · NLR higher = worse
           orientation:
             PD_L1: 1
-            PS: -1
             NLR: -1
           # composite_orientation: null => taken from the pre-specified LMM interaction sign
           # (responders contract the gate => lower delta is responder-like => -1).
@@ -220,96 +217,6 @@ experiments:
         #   Set a list only to deliberately draw a sub-model (display-only).
         nomogram:
           clinical_vars: null
-
-  Comorbidity_1v0:
-    enabled: false   # closed NO-GO (diag_22), negative control — retained for record
-    is_longitudinal: true
-    run_network: false
-    clinical:
-      target_column: "comorbidità_No_0_Si_1"
-      responder_label: "Comorb_Yes"
-      non_responder_label: "Comorb_No"
-      mapping:
-        Comorb_Yes: [1]
-        Comorb_No:  [0]
-
-  Toxicity_1v0:
-    enabled: false   # closed NO-GO (diag_22), null outcome — retained for record
-    is_longitudinal: true
-    run_network: false
-    clinical:
-      target_column: "tossicità_da_immuno_No_0_Si_1"
-      responder_label: "Tox_Yes"
-      non_responder_label: "Tox_No"
-      mapping:
-        Tox_Yes: [1]
-        Tox_No:  [0]
-
-  HNSCC_Response:
-    input_file:    "data/Dati_HNSCC_standardizzati_anonimi.xlsx"
-    input_file_t0: "data/Dati_HNSCC_standardizzati_anonimi.xlsx"
-    is_longitudinal: false
-    run_network: false       # network.feature_selection.always_include uses NSCLC-only markers
-    clinical:
-      target_column:       "Clinical_Response"
-      responder_label:     "R"
-      non_responder_label: "NR"
-      benchmark_column:    "CPS"
-      benchmark_label:     "CPS score"
-    machine_learning:
-      gate_method:              "univariate"
-      univariate_fdr_threshold: 0.20
-      univariate_fallback_k:    3
-      n_perm:                   999
-      # CPS stratification cutoffs for the HNSCC anti-PD-1 benchmark (config-driven;
-      # a new cohort/benchmark re-bins here without code edits). These reproduce the
-      # historical hard-coded defaults: neg(<1), low(1-19), high(>=20).
-      benchmark_strata:
-        breaks:         [0.5, 19.5]
-        labels:         ["neg(<1)", "low(1-19)", "high(>=20)"]
-        high_threshold: 20
-    features:
-      facs:
-        - "M_MDSC"
-        - "LOX1_PMN_MDSC"
-        - "T_reg"
-        - "Resting"
-        - "Active"
-        - "Non_suppressive"
-        - "TregCD137"
-        - "CM"
-        - "EFF"
-        - "EM"
-        - "NAIVE"
-        - "CD137tot"
-        - "CD137CD4"
-        - "CD137CD8"
-        - "CD137PD1"
-        - "CD137CM"
-        - "CD137EFF"
-        - "CD137EMRA"
-        - "CD137NAIVE"
-        - "PD1"
-        - "PD1CD4"
-        - "PD1CD8"
-        - "PD1CM"
-        - "PD1EFF"
-        - "PD1EMRA"
-        - "PD1NAIVE"
-      soluble:
-        - "sBTLA"
-        - "sCD137"
-        - "sCD152"
-        - "sCD27"
-        - "sCD28"
-        - "sCD80"
-        - "sGITR"
-        - "sHVEM"
-        - "sIDO"
-        - "sLAG_3"
-        - "sPD_1"
-        - "sPD_L2"
-        - "sTIM_3"
 
 # --- Data Dictionaries (Hybrid Logic) ---
 features:
