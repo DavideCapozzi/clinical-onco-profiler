@@ -138,6 +138,15 @@ pub_fig_added_value <- function(av, curves = c("loo", "cv")) {
   # Rendered as the companion Figure2b; the default stays the LOO curves described below.
   cv_curves <- identical(curves, "cv") && !is.null(av$roc_cv)
   cv_df <- function(col) list(df = data.frame(FPR = av$roc_cv$fpr, TPR = av$roc_cv[[col]]))
+  # CV curves of each clinical var ALONE (cv_kfold, same folds; only when the clinical model
+  # has > 1 var). They replace the LOO "PD-L1 alone" curve, so every curve on a CV panel
+  # comes from the same CV. Labels: "<var> alone"; PD-L1 keeps its red.
+  single_v <- if (cv_curves) sub("^single_", "", grep("^single_", names(av$roc_cv), value = TRUE)) else character(0)
+  single_lab <- setNames(sprintf("%s alone", pub_relabel_var(single_v)), single_v)
+  single_col <- setNames(rep(PDL1_RED, length(single_v)), single_v)
+  other_v    <- setdiff(single_v, "PD_L1")         # sky blue, vermillion, grey: Okabe-Ito, unused here
+  single_col[other_v] <- rep_len(c("#56B4E9", "#D55E00", "#999999"), length(other_v))
+  if (length(single_v)) pdl1_ok <- FALSE
   # NB every Prob_* column here is a LEAVE-ONE-OUT prediction (pl_* upstream), so every
   # curve is LOO. LOO is NOT the reportable discrimination: for tied/discrete clinical vars
   # it is tie-artifact-prone (PS has 44% tied pairs) and under-reports the clinical arm,
@@ -155,6 +164,10 @@ pub_fig_added_value <- function(av, curves = c("loo", "cv")) {
     lm_  <- clab
     roc_l <- c(roc_l, list(data.frame(rcmp$df, M = lm_)))
     lev <- c(lev, lm_); cols <- c(cols, COMP_COL); lts <- c(lts, 5)
+  }
+  for (v in single_v) {
+    roc_l <- c(roc_l, list(data.frame(cv_df(paste0("single_", v))$df, M = single_lab[[v]])))
+    lev <- c(lev, single_lab[[v]]); cols <- c(cols, single_col[[v]]); lts <- c(lts, 4)
   }
   if (pdl1_ok) {
     fin <- is.finite(pp$Prob_PDL1)              # complete-case only (PD-L1 missingness)
@@ -186,11 +199,15 @@ pub_fig_added_value <- function(av, curves = c("loo", "cv")) {
   cv_clin <- cv_num(cv$auc_clinical); cv_comb <- cv_num(cv$auc_combined)
   cv_imm  <- cv_num(cv$auc_immune);   cv_k    <- cv_num(cv$k); cv_r <- cv_num(cv$reps)
   cv_lab  <- if (isTRUE(is.finite(cv_clin)) && isTRUE(is.finite(cv_comb)))
-    sprintf("Reported AUC: %d-fold CV%s, n = %d\nclinical %.2f · combined %.2f%s\ncurves: %s",
+    sprintf("Reported AUC: %d-fold CV%s, n = %d\nclinical %.2f · combined %.2f%s%s\ncurves: %s",
             if (isTRUE(is.finite(cv_k))) as.integer(cv_k) else 10L,
             if (isTRUE(is.finite(cv_r))) sprintf(" × %d", as.integer(cv_r)) else "",
             as.integer(av$n), cv_clin, cv_comb,
             if (isTRUE(is.finite(cv_imm))) sprintf(" · immune %.2f", cv_imm) else "",
+            if (length(single_v) && !is.null(cv$auc_single))
+              paste0("\n", paste(sprintf("%s %.2f", single_lab[single_v],
+                                          vapply(single_v, function(v) cv_num(cv$auc_single[[v]]), numeric(1))),
+                                  collapse = " · ")) else "",
             if (cv_curves) "mean of the CV ROC curves" else "leave-one-out predictions") else NULL
   pA <- ggplot(roc, aes(FPR, TPR, colour = M, linetype = M)) +
     geom_abline(slope = 1, intercept = 0, linetype = "dotted", colour = pub_palette[["ref"]]) +
@@ -216,9 +233,16 @@ pub_fig_added_value <- function(av, curves = c("loo", "cv")) {
     nb_l <- c(nb_l, list(data.frame(t = cur$threshold, nb = cur$comparator, s = clab)))
     b_cols <- c(b_cols, setNames(COMP_COL, clab)); b_lts <- c(b_lts, setNames(5, clab))
   }
-  if (!is.null(cur$pdl1) && !pdl1_dup) {
+  pdl1_nb <- !is.null(cur$pdl1) && !pdl1_dup && !length(single_v)
+  if (pdl1_nb) {
     nb_l <- c(nb_l, list(data.frame(t = cur$threshold, nb = cur$pdl1, s = "PD-L1 alone")))
     b_cols <- c(b_cols, "PD-L1 alone" = PDL1_RED); b_lts <- c(b_lts, "PD-L1 alone" = 4)
+  }
+  single_nb <- single_v[paste0("single_", single_v) %in% names(cur)]
+  for (v in single_nb) {
+    nb_l <- c(nb_l, list(data.frame(t = cur$threshold, nb = cur[[paste0("single_", v)]], s = single_lab[[v]])))
+    b_cols <- c(b_cols, setNames(single_col[[v]], single_lab[[v]]))
+    b_lts  <- c(b_lts, setNames(4, single_lab[[v]]))
   }
   # Immune alone on the decision curve too — DCA is co-primary with the LRT, so the arm that
   # may dominate on net benefit has to be visible here, not only on the ROC.
@@ -234,7 +258,7 @@ pub_fig_added_value <- function(av, curves = c("loo", "cv")) {
   nb <- do.call(rbind, nb_l)
   nb$s <- factor(nb$s, levels = c(clin_nm, "Clinical + immune",
                                   if (!is.null(cur$comparator)) clab,
-                                  if (!is.null(cur$pdl1) && !pdl1_dup) "PD-L1 alone",
+                                  if (pdl1_nb) "PD-L1 alone", unname(single_lab[single_nb]),
                                   if (!is.null(cur$immune)) IMM_NM,
                                   "Treat all", "Treat none"))
   pB <- ggplot(nb, aes(t, nb, colour = s, linetype = s)) +

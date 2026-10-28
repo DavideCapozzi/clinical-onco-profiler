@@ -52,9 +52,14 @@ av_oof_probs <- function(A, reps = 50L, seed = 2026L + 977L) {
 #' @param seed Base seed (CV point estimate seed + 977, resamples seed + 101,
 #'   resample b's CV seed + b).
 #' @param cores Worker processes (results do not depend on it).
-av_bootstrap_marker_set <- function(R, markers, timepoint, B, reps_in_boot, seed, cores) {
+#' @param single Also bootstrap each clinical var alone (same folds inside each resample,
+#'   no extra RNG draws, so every other number is unchanged); only when > 1 clinical var.
+av_bootstrap_marker_set <- function(R, markers, timepoint, B, reps_in_boot, seed, cores,
+                                    single = FALSE) {
   A <- av_assemble(R, markers, timepoint)
-  cv_full <- av_cv_kfold(A, seed = seed + 977L)            # step-06-style point estimates
+  cv_full <- av_cv_kfold(A, seed = seed + 977L, single = single)   # step-06-style point estimates
+  sv <- names(cv_full$auc_single)
+  nA <- 5L + length(sv)
   P  <- av_oof_probs(A, seed = seed + 977L)
   ap <- function(p) av_auc_pos(p, A$y, A$neg_label, A$resp_label)
 
@@ -64,18 +69,20 @@ av_bootstrap_marker_set <- function(R, markers, timepoint, B, reps_in_boot, seed
   # (A) full-procedure patient bootstrap -------------------------------------
   bootA <- parallel::mclapply(seq_len(B), function(b) {
     idx <- idx_list[[b]]
-    if (length(unique(A$yb[idx])) < 2) return(rep(NA_real_, 5))
+    if (length(unique(A$yb[idx])) < 2) return(rep(NA_real_, nA))
     Ab <- list(comp = A$comp[idx], Cmat = A$Cmat[idx, , drop = FALSE],
                yb = A$yb[idx], y = A$y[idx],
                neg_label = A$neg_label, resp_label = A$resp_label)
-    cvb <- tryCatch(av_cv_kfold(Ab, reps = reps_in_boot, seed = seed + b),
+    cvb <- tryCatch(av_cv_kfold(Ab, reps = reps_in_boot, seed = seed + b, single = length(sv) > 0),
                     error = function(e) NULL)
-    if (is.null(cvb)) return(rep(NA_real_, 5))
-    c(cvb$delta_auc, cvb$delta_auc_vs_immune, cvb$auc_clinical, cvb$auc_immune, cvb$auc_combined)
+    if (is.null(cvb)) return(rep(NA_real_, nA))
+    c(cvb$delta_auc, cvb$delta_auc_vs_immune, cvb$auc_clinical, cvb$auc_immune, cvb$auc_combined,
+      vapply(sv, function(v) { a <- cvb$auc_single[[v]]; if (is.null(a)) NA_real_ else a }, numeric(1)))
   }, mc.cores = cores)
-  if (any(vapply(bootA, function(x) !is.numeric(x) || length(x) != 5, logical(1))))
+  if (any(vapply(bootA, function(x) !is.numeric(x) || length(x) != nA, logical(1))))
     stop("[FATAL] patient bootstrap: a worker failed (full-procedure resamples)")
-  MA <- do.call(rbind, bootA); MA <- MA[complete.cases(MA), , drop = FALSE]
+  MA <- do.call(rbind, bootA)
+  MA <- MA[complete.cases(MA[, 1:5, drop = FALSE]), , drop = FALSE]   # validity = the 5 original arms
 
   # (B) conditional patient bootstrap over fixed out-of-fold probs ------------
   bootB <- parallel::mclapply(seq_len(B), function(b) {
@@ -105,7 +112,7 @@ av_bootstrap_marker_set <- function(R, markers, timepoint, B, reps_in_boot, seed
   qci <- function(v) unname(quantile(v, c(.025, .975), na.rm = TRUE))
   lr  <- av_lrt(A)
 
-  list(
+  out <- list(
     markers = markers, n = length(A$yb), n_pos = sum(A$yb),
     point = list(auc_clinical = cv_full$auc_clinical, auc_immune = cv_full$auc_immune,
                  auc_combined = cv_full$auc_combined,
@@ -125,6 +132,11 @@ av_bootstrap_marker_set <- function(R, markers, timepoint, B, reps_in_boot, seed
     lrt = list(stat = lr$stat, p = lr$p),
     auc_oof = c(clinical = ap(P[, "clinical"]), immune = ap(P[, "immune"]), combined = ap(P[, "combined"]))
   )
+  if (length(sv)) {                     # each clinical var alone (keys absent otherwise)
+    out$point$auc_single <- cv_full$auc_single
+    out$bootA$auc_single <- setNames(lapply(seq_along(sv), function(j) qci(MA[, 5L + j])), sv)
+  }
+  out
 }
 
 #' @title Patient-bootstrap AUC CIs for the gate composite and each gate marker alone
@@ -153,7 +165,8 @@ run_patient_bootstrap_auc <- function(DATA_T0, DATA_LONG, av, config, clinical_v
   res <- lapply(names(sets), function(nm) {
     message(sprintf("   [PatientBoot] %s (%s): B=%d", nm, paste(sets[[nm]], collapse = "+"), B))
     av_bootstrap_marker_set(R, sets[[nm]], av$composite_timepoint, as.integer(B),
-                            as.integer(reps_in_boot), as.integer(seed), max(1L, as.integer(cores)))
+                            as.integer(reps_in_boot), as.integer(seed), max(1L, as.integer(cores)),
+                            single = identical(nm, "gate"))   # clinical vars alone: gate set only
   })
   names(res) <- names(sets)
   message(sprintf("   [PatientBoot] done in %.1f min", as.numeric(difftime(Sys.time(), t0, units = "mins"))))
@@ -171,7 +184,7 @@ patient_bootstrap_table <- function(pb) {
   full <- "patient bootstrap (full procedure)"
   out <- do.call(rbind, lapply(names(pb$results), function(nm) {
     r <- pb$results[[nm]]; a <- r$bootA
-    data.frame(
+    d <- data.frame(
       marker_set = nm, markers = paste(r$markers, collapse = "+"), n = r$n, n_pos = r$n_pos,
       quantity = c("AUC clinical", "AUC immune", "AUC combined", "dAUC combined - clinical",
                    "dAUC combined - immune", "dAUC combined - clinical", "dAUC combined - clinical"),
@@ -186,6 +199,15 @@ patient_bootstrap_table <- function(pb) {
       boot_p_two_sided = c(NA, NA, NA, a$p_two_sided, NA, NA, NA),
       n_valid_resamples = c(rep(a$n_valid, 5), NA, NA),
       stringsAsFactors = FALSE)
+    sv <- names(r$point$auc_single)
+    if (length(sv)) d <- rbind(d, data.frame(   # each clinical var alone (same CV, same resamples)
+      marker_set = nm, markers = paste(r$markers, collapse = "+"), n = r$n, n_pos = r$n_pos,
+      quantity = sprintf("AUC %s alone", sv), point = unlist(r$point$auc_single[sv]),
+      ci_low = vapply(sv, function(v) a$auc_single[[v]][1], numeric(1)),
+      ci_high = vapply(sv, function(v) a$auc_single[[v]][2], numeric(1)),
+      interval = full, boot_p_two_sided = NA, n_valid_resamples = a$n_valid,
+      stringsAsFactors = FALSE, row.names = NULL))
+    d
   }))
   out$B <- pb$B; out$seed <- pb$seed
   out

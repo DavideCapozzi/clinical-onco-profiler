@@ -95,3 +95,9 @@ retired before the refactor; their manifest was `diagnostics/archive/README.md`
   outputs keep their names; `INDEX.md` gained a source column. Both canonical `publication/` folders were re-collected
   (same 25 files, byte-identical contents). Config entries accept an optional `name:` (used for
   `AddedValue_LOOcurves`).
+- Each clinical variable alone (only when the clinical model has more than one, i.e. the NLR run): 1-variable
+  logistic scored on the same repeated 10-fold CV folds as the three arms (no extra random draws), with its
+  patient-bootstrap CI (gate set, same resamples). New: JSON `cv_kfold.auc_single`, rows `AUC <var> alone` in
+  `PatientBootstrap_AUC_*.csv`, `single_<var>` curves in Figure 2b (ROC and net benefit). These CV curves replace the
+  LOO "PD-L1 alone" curve that Figure 2b of the NLR run used to draw next to CV curves. With a one-variable clinical
+  model (primary run) nothing is added.
