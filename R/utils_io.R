@@ -188,7 +188,8 @@ write_run_manifest <- function(path, run_id, config, experiments_meta,
   "2" = "02_visualization",
   "3" = "03_statistical_analysis",
   "4" = "04_longitudinal_analysis",
-  "6" = "06_machine_learning"
+  "6" = "06_machine_learning",
+  "7" = "07_post_hoc"
 )
 
 #' @title Look up a Step Directory Name by Step Number
@@ -782,7 +783,7 @@ validate_experiment_columns <- function(cfg, exp, nm) {
 #' @param base_config The global configuration (single source of truth).
 #' @param exp_cfg The per-experiment override block.
 #' @param exp_name Experiment name (becomes \code{project_name}).
-#' @param pass_mode One of "standard", "longitudinal", "machine_learning".
+#' @param pass_mode One of "standard", "longitudinal", "machine_learning", "post_hoc".
 #' @param run_root The run root directory; \code{output_root} becomes
 #'   \code{run_root/exp_name}.
 #' @return The isolated, pass-ready config list.
@@ -803,7 +804,7 @@ resolve_include_nlr <- function(base_config) {
 }
 
 prepare_pass_config <- function(base_config, exp_cfg, exp_name, pass_mode, run_root) {
-  valid_modes <- c("standard", "longitudinal", "machine_learning")
+  valid_modes <- c("standard", "longitudinal", "machine_learning", "post_hoc")
   if (!pass_mode %in% valid_modes)
     stop(sprintf("[CONFIG] Unknown pass_mode '%s' (expected one of: %s)",
                  pass_mode, paste(valid_modes, collapse = ", ")))
@@ -838,7 +839,8 @@ prepare_pass_config <- function(base_config, exp_cfg, exp_name, pass_mode, run_r
     if (!is.null(exp_cfg$input_file_t0)) config$input_file_t0 <- exp_cfg$input_file_t0
     if (!is.null(exp_cfg$input_file_t1)) config$input_file_t1 <- exp_cfg$input_file_t1
 
-  } else if (pass_mode == "machine_learning") {
+  } else if (pass_mode %in% c("machine_learning", "post_hoc")) {
+    # post_hoc (step 07) reads the same inputs and machine_learning block as step 06.
     if (!is.null(exp_cfg$input_file))    config$input_file    <- exp_cfg$input_file
     if (!is.null(exp_cfg$input_file_t0)) config$input_file_t0 <- exp_cfg$input_file_t0
     # Step 06 reads T1 via the Step 01 longitudinal RDS, not this path — but the value is

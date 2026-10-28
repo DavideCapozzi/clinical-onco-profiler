@@ -314,6 +314,27 @@ multivariate:
     n_perm: 200
     n_repeat: 1
 
+# --- Post hoc analyses (step 07, src/07_post_hoc.R) ---
+# Run after step 06 on the run's own frames with the gate fixed; sensitivity /
+# descriptive only. Each block can be switched off with enabled: false.
+post_hoc:
+  grouping:                    # PR / SD / PD grouping of the LMM frame (+ disease-control gate)
+    enabled: true
+    subcodes: {PR: 2, SD: 3, PD: 4}   # best-response codes of clinical.target_column
+  duplicate_rows:              # identical T1 rows (two persons): drop each, then both
+    enabled: true
+    drop_t1: [NSCLC_10, NSCLC_12]
+  therapy:                     # ICI monotherapy vs chemo-immunotherapy (parser v3.1 regimen)
+    enabled: true
+    file_t0: "data/therapy_fix/Dati_NSCLC_standardizzati_latest_anonimi_therapyfix_T0.xlsx"
+    file_t1: "data/therapy_fix/Dati_NSCLC_standardizzati_latest_anonimi_therapyfix_T1.xlsx"
+    tag: "v3.1"                # therapy data version (parser v3.1, 2026-10-27)
+    B: 10000                   # within-regimen permutations
+    seed: 56
+  km:                          # Kaplan-Meier OS / PFS by median split of the Δ composite
+    enabled: true
+    landmark_days: 21          # T1 landmark (after the 1st cycle)
+
 # --- Figure export (save_figure(), R/utils_figures.R) ---
 # formats: any of pdf (cairo, default), png / tiff (ragg; tiff LZW), svg (cairo).
 # dpi applies to the raster formats. Multipage figures: one pdf, one raster/svg file per page.
