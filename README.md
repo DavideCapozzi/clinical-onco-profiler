@@ -7,7 +7,7 @@ An R-based, config-driven pipeline for immunological profiling of oncology cohor
 - **Differential network analysis** (Step 05, optional): bootstrap partial correlation baselines per clinical group → permutation-tested differential overlay → Cytoscape-ready CSV exports
 - **Machine learning classification** (Step 06): nested-LOOCV Elastic Net + SVM-RBF classifier gated on LMM LOO-robust features
 
-Applied to NSCLC patients treated with immune checkpoint inhibitors (ICI) to identify response biomarkers. Converging evidence across three analytical layers (sPLS-DA, LMM, ML) points to a **KI67 proliferation axis that moves with early radiological response**. The reported result is the *incremental* value of that axis over a PD-L1 + ECOG-PS baseline — it is a single pre-specified marker with family-level corroboration, **not a validated multi-marker signature and not a standalone classifier**.
+Applied to NSCLC patients treated with immune checkpoint inhibitors (ICI) to identify response biomarkers. Converging evidence across three analytical layers (sPLS-DA, LMM, ML) points to a **KI67 proliferation axis that moves with early radiological response**. The reported result is the *incremental* value of that axis over a PD-L1 baseline — it is a single marker axis selected by the LMM, with family-level corroboration, **not a validated multi-marker signature and not a standalone classifier**.
 
 ---
 
