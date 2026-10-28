@@ -6,9 +6,9 @@
 # the run's own by construction. Use it after a figure-code (presentation) change.
 #
 # Usage:
-#   Rscript tools/render_pub_figures.R [--run <run>] [--exp A,B] [--out DIR] [--preview DIR]
+#   Rscript tools/render_pub_figures.R --run <run> [--exp A,B] [--out DIR] [--preview DIR]
 #
-#   --run      run root (default: latest, via resolve_run_root); absolute or under results/
+#   --run      run root (REQUIRED); absolute or under results/
 #   --exp      comma-separated experiments (default: all in the run)
 #   --out      output dir (default: <run>/<exp>/06_machine_learning/publication_corrected;
 #              with several experiments, <out>/<exp>)
@@ -45,7 +45,8 @@ resolve_run_arg <- function(x) {
 }
 
 opt  <- parse_args(commandArgs(trailingOnly = TRUE))
-run  <- if (!is.null(opt$run)) resolve_run_arg(opt$run) else resolve_run_root()
+if (is.null(opt$run) || !nzchar(opt$run)) stop("[render_pub_figures] --run <run> is required (there is no latest-run default).")
+run  <- resolve_run_arg(opt$run)
 exps <- if (!is.null(opt$exp)) trimws(strsplit(opt$exp, ",")[[1]]) else list_run_experiments(run)
 if (!is.null(opt$preview)) options(pub_fig.preview_dir = opt$preview)
 

@@ -10,9 +10,9 @@
 # parses args, calls the helpers, and prints).
 #
 # Usage:
-#   Rscript tools/metrics_report.R [--new <run>] [--base <run>] [--exp A,B]
+#   Rscript tools/metrics_report.R --new <run> [--base <run>] [--exp A,B]
 #
-#   --new   run root to evaluate         (default: latest, via resolve_run_root)
+#   --new   run root to evaluate         (REQUIRED)
 #   --base  baseline run root to diff    (omit -> verdict only, no delta table)
 #   --exp   comma-separated experiments  (default: all in the run[s])
 #
@@ -49,7 +49,8 @@ resolve_run_arg <- function(x) {
 }
 
 opt  <- parse_args(commandArgs(trailingOnly = TRUE))
-new  <- if (!is.null(opt$new)) resolve_run_arg(opt$new) else resolve_run_root()
+if (is.null(opt$new) || !nzchar(opt$new)) stop("[metrics_report] --new <run> is required (there is no latest-run default).")
+new  <- resolve_run_arg(opt$new)
 base <- if (!is.null(opt$base)) resolve_run_arg(opt$base) else NULL
 exps <- if (!is.null(opt$exp)) trimws(strsplit(opt$exp, ",")[[1]]) else list_run_experiments(new)
 

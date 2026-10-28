@@ -244,7 +244,11 @@ perform_data_transformation <- function(mat_raw, config, mode = "complete") {
   
   # --- 4. JOINT IMPUTATION (BPCA) ---
   if (mode == "complete") {
-    seed_val <- if(!is.null(config$stats$seed)) config$stats$seed else 123
+    # Seed from config (stats.seed, 2026 in every canonical run). The 123 fallback
+    # only applies to a config without stats.seed and is logged so it is never silent.
+    seed_val <- if (!is.null(config$stats$seed)) config$stats$seed else {
+      message("   [BPCA] config stats.seed missing -> fallback seed 123"); 123
+    }
     message("   [Transform] Running Joint BPCA Imputation on combined data...")
     mat_imputed <- impute_matrix_bpca(mat_merged, nPcs = "auto", seed = seed_val)
   } else {
