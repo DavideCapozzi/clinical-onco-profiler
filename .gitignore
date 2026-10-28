@@ -22,11 +22,6 @@ manuscript/
 *.pdf
 Rplots.pdf
 
-# Diagnostics: not tracked for now — only the archive manifest is kept
-diagnostics/*
-!diagnostics/archive/
-diagnostics/archive/*
-!diagnostics/archive/README.md
 explore_added_value.md
 
 # Archived dated records (closed decisions) — local only
@@ -34,3 +29,6 @@ docs/archive/
 
 # presentation workspace (pptx build, node_modules, figure PNGs)
 deck/
+
+# Identifiable exports (names) — local only, never committed
+private/

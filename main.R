@@ -61,8 +61,8 @@ validate_config(base_config)
 
 # NLR toggle: single switch selecting whether the clinical model includes NLR.
 # Env INCLUDE_NLR overrides the config default; run the with-/without-NLR variants
-# as SEPARATE invocations. The run dir is auto-labeled with_nlr / no_nlr so each
-# configuration lands in its own self-describing directory. Applied in Step 06
+# as SEPARATE invocations. A timestamped run dir (no RUN_NAME) is auto-labeled
+# with_nlr / no_nlr so each configuration lands in its own self-describing directory. Applied in Step 06
 # (drops the NLR clinical var when false); reaches every pass via base_config.
 include_nlr <- resolve_include_nlr(base_config)   # R/utils_io.R — shared with prepare_pass_config()
 base_config$include_nlr <- include_nlr
@@ -72,11 +72,13 @@ base_config$run_label <- if (!is.null(base_config$run_label) && nzchar(base_conf
 message(sprintf("[System] include_nlr = %s (clinical model %s NLR)",
                 include_nlr, if (include_nlr) "includes" else "excludes"))
 
-# Isolate this invocation in one immutable, timestamped run directory. Every
-# pass routes its output_root under run_root, so all cross-step artifacts of a
-# single main.R call stay self-contained and reproducible.
-run_id   <- make_run_id(base_config$run_label)
-run_root <- file.path(base_config$output_root, run_id)
+# Isolate this invocation in one run directory: <output_root>/<RUN_NAME> when
+# RUN_NAME is set (refuses an existing dir unless FORCE=1), else a timestamped id.
+# Every pass routes its output_root under run_root, so all cross-step artifacts of
+# a single main.R call stay self-contained and reproducible.
+.run     <- resolve_run_dir(base_config$output_root, base_config$run_label)
+run_id   <- .run$run_id
+run_root <- .run$run_root
 if (!dir.exists(run_root)) dir.create(run_root, recursive = TRUE)
 message(sprintf("[System] Run ID: %s  ->  %s", run_id, run_root))
 
@@ -89,8 +91,7 @@ for (exp_name in names(experiments_list)) {
   exp_cfg <- experiments_list[[exp_name]]
 
   # Skip experiments explicitly disabled in config (e.g. closed NO-GO endpoints
-  # retained for record). Absence of the key means enabled, so untouched blocks
-  # (BestResponse_2v3_4, HNSCC_Response) run as before. Mirrors validation_split.enabled.
+  # retained for record). Absence of the key means enabled. Mirrors validation_split.enabled.
   if (!is.null(exp_cfg$enabled) && !isTRUE(exp_cfg$enabled)) {
     message(sprintf("[System] Skipping disabled experiment: %s", exp_name))
     next
@@ -99,15 +100,16 @@ for (exp_name in names(experiments_list)) {
   # Inherit boolean flags with safety fallbacks
   run_standard        <- if (!is.null(exp_cfg$run_standard))         as.logical(exp_cfg$run_standard)         else TRUE
   run_longitudinal    <- if (!is.null(exp_cfg$is_longitudinal))      as.logical(exp_cfg$is_longitudinal)      else FALSE
-  run_network         <- if (!is.null(exp_cfg$run_network))          as.logical(exp_cfg$run_network)          else FALSE
   # ML is a global flag (base_config), not per-experiment — Step 06 self-gates on LOO-robust feature availability
   run_machine_learning <- if (!is.null(base_config$run_machine_learning)) as.logical(base_config$run_machine_learning) else FALSE
+  # Post hoc (step 07) needs steps 04 and 06; it self-skips (logged) when their artifacts are missing.
+  run_post_hoc <- run_longitudinal && run_machine_learning && !isFALSE(base_config$run_post_hoc)
 
   run_passes[[exp_name]] <- c(
     if (run_standard)         "standard",
-    if (run_network)          "network",
     if (run_longitudinal)     "longitudinal",
-    if (run_machine_learning) "machine_learning"
+    if (run_machine_learning) "machine_learning",
+    if (run_post_hoc)         "post_hoc"
   )
 
   # ============================================================================
@@ -156,9 +158,7 @@ for (exp_name in names(experiments_list)) {
   message(sprintf("========================================================\n"))
   
   # ============================================================================
-  # PASS 1: STANDARD CROSS-SECTIONAL PIPELINE (01, 02, 03[, 05])
-  # Note: step 05 (network) runs here, before pass 2 step 04 (longitudinal).
-  #       The two steps belong to independent analytical passes and different data modalities.
+  # PASS 1: STANDARD CROSS-SECTIONAL PIPELINE (01, 02, 03)
   # ============================================================================
   if (run_standard) {
     # Isolate configuration state for this pass (see prepare_pass_config in utils_io.R)
@@ -179,11 +179,6 @@ for (exp_name in names(experiments_list)) {
 
         message("\n>>> RUNNING PHASE 3: STATISTICAL ANALYSIS & REPORTING <<<")
         source(here("src/03_statistical_analysis.R"), echo = FALSE, local = FALSE)
-
-        if (run_network) {
-          message("\n>>> RUNNING PHASE 5: DIFFERENTIAL NETWORK ANALYSIS <<<")
-          source(here("src/05_network_analysis.R"), echo = FALSE, local = FALSE)
-        }
 
         message(sprintf("\n[SUCCESS] Standard Pipeline completed for: %s", exp_name))
       }, message = function(m) cat(conditionMessage(m), file = log_file_std, append = TRUE, sep = "\n"),
@@ -252,11 +247,54 @@ for (exp_name in names(experiments_list)) {
       message(err_msg)
     })
   }
+
+  # ============================================================================
+  # PASS 4: POST HOC (07) — grouping, duplicated rows, therapy, KM on the
+  # finished step-04 / step-06 artifacts. Self-skips when they are missing.
+  # ============================================================================
+  if (run_post_hoc) {
+    config <- prepare_pass_config(base_config, exp_cfg, exp_name, "post_hoc", run_root)
+
+    log_file_ph <- file.path(config$output_root, paste0("log_post_hoc_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".txt"))
+
+    message(sprintf("\n--- [PASS 4] POST HOC: %s ---", config$project_name))
+    cat(sprintf("=== POST HOC STARTED: %s ===\n", Sys.time()), file = log_file_ph)
+
+    tryCatch({
+      withCallingHandlers({
+        message(">>> RUNNING PHASE 7: POST HOC ANALYSES <<<")
+        source(here("src/07_post_hoc.R"), echo = FALSE, local = FALSE)
+
+        message(sprintf("\n[SUCCESS] Post hoc completed for: %s", exp_name))
+      }, message = function(m) cat(conditionMessage(m), file = log_file_ph, append = TRUE, sep = "\n"),
+      warning = function(w) cat(paste0("WARNING: ", conditionMessage(w)), file = log_file_ph, append = TRUE, sep = "\n"))
+    }, error = function(e) {
+      err_msg <- paste0("\n[FATAL ERROR] Post Hoc Pipeline stopped: ", e$message)
+      cat(err_msg, file = log_file_ph, append = TRUE, sep = "\n")
+      message(err_msg)
+    })
+  }
 }
 
-# Publish provenance + the `latest` pointer once all experiments have run.
-write_run_manifest(file.path(run_root, "run_manifest.yml"), run_id, base_config, run_passes)
-update_latest_pointer(base_config$output_root, run_id)
+# Publication set: copy the mapped figures / tables into <run>/publication/ (+ INDEX.md).
+# A mapped main or supplementary file that is missing is FATAL (logged, like a failed pass).
+if (!is.null(base_config$publication)) {
+  log_file_pub <- file.path(run_root, paste0("log_publication_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".txt"))
+  cat(sprintf("=== PUBLICATION COLLECTOR STARTED: %s ===\n", Sys.time()), file = log_file_pub)
+  tryCatch(
+    withCallingHandlers(collect_publication(run_root, base_config, experiments = names(run_passes)),
+      message = function(m) cat(conditionMessage(m), file = log_file_pub, append = TRUE, sep = "\n"),
+      warning = function(w) cat(paste0("WARNING: ", conditionMessage(w)), file = log_file_pub, append = TRUE, sep = "\n")),
+    error = function(e) {
+      err_msg <- paste0("\n[FATAL ERROR] Publication collector stopped: ", e$message)
+      cat(err_msg, file = log_file_pub, append = TRUE, sep = "\n")
+      message(err_msg)
+    })
+}
+
+# Publish provenance once all experiments have run.
+write_run_manifest(file.path(run_root, "run_manifest.yml"), run_id, base_config, run_passes,
+                   config_path = base_config_path, experiments_cfg = experiments_list)
 
 options(crayon.enabled = TRUE)
 message(sprintf("\n=== ALL EXPERIMENT BLOCKS COMPLETED (run: %s) ===", run_id))

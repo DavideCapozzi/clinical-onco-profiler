@@ -6,10 +6,11 @@
 #              Feature selection is frozen before any CV iteration — no leakage.
 #              Primary: Elastic Net Logistic Regression. Secondary: SVM-RBF.
 #              Degrades gracefully when no LOO-robust markers exist for an
-#              experiment (e.g., Comorbidity, Toxicity with FDR > 0.05).
+#              experiment (FDR > 0.05 for every marker).
 # ==============================================================================
 
 source("R/utils_io.R")
+source("R/utils_figures.R")
 source("R/modules_ml.R")
 source("R/modules_viz.R")
 source("R/modules_pub_style.R")
@@ -23,10 +24,8 @@ if (!exists("config")) stop("[FATAL] Global configuration object not detected in
 
 ml_cfg <- if (!is.null(config$machine_learning)) config$machine_learning else list()
 
-# ── Gate method dispatch ──────────────────────────────────────────────────────
-# "lmm"        (default): feature gate from Step 04 LMM LOO-robustness test.
-# "univariate": fully-nested Wilcoxon+BH gate re-selected inside each outer LOO fold.
-#               Used for cross-sectional datasets with no T1 (e.g. HNSCC).
+# ── Gate method ───────────────────────────────────────────────────────────────
+# "lmm" (the only method): feature gate from the Step 04 LMM LOO-robustness test.
 gate_method <- if (!is.null(ml_cfg$gate_method)) ml_cfg$gate_method else "lmm"
 fdr_thresh  <- if (!is.null(ml_cfg$fdr_threshold)) as.numeric(ml_cfg$fdr_threshold) else 0.05
 loo_thresh  <- if (!is.null(ml_cfg$loo_threshold)) as.numeric(ml_cfg$loo_threshold) else 0.05
@@ -59,8 +58,6 @@ if (lmm_robust$n_robust == 0) {
   DATA <- readRDS(input_rds)
 
   out_dir <- step_dir(config, 6, create = TRUE)
-
-  colors_viz <- get_clinical_colors(config)
 
   # 4. Build Feature Matrix
   # ------------------------------------------------------------------------------
@@ -421,7 +418,8 @@ if (lmm_robust$n_robust == 0) {
         gate_markers    = lmm_robust$markers,
         resp_label      = config$clinical$responder_label,
         gate_provenance = "lmm-prespecified",
-        n_boot          = if (!is.null(cu_cfg$n_boot)) as.integer(cu_cfg$n_boot) else 2000L
+        n_boot          = if (!is.null(cu_cfg$n_boot)) as.integer(cu_cfg$n_boot) else 2000L,
+        seed            = if (!is.null(config$stats$seed)) as.integer(config$stats$seed) else 2026L
       ),
       error = function(e) {
         warning(sprintf("[ML] Clinical-utility layer failed (non-fatal): %s", e$message)); NULL
@@ -488,7 +486,8 @@ if (lmm_robust$n_robust == 0) {
                                    as.character(unlist(cm$nomogram$clinical_vars)) else NULL,
         # Dissociation (response-specific vs prognostic). Orientation is pre-specified in
         # config and never inferred — see run_dissociation_analysis().
-        dissociation_cfg = cm$dissociation
+        dissociation_cfg = cm$dissociation,
+        seed             = if (!is.null(config$stats$seed)) as.integer(config$stats$seed) else 2026L
       ),
       error = function(e) {
         warning(sprintf("[ML] Added-value layer (timepoint=%s) failed (non-fatal): %s", tp, e$message)); NULL
@@ -504,7 +503,7 @@ if (lmm_robust$n_robust == 0) {
   # 12c. Locked-model export — freeze the pre-specified scorer NOW so incoming patients can be
   # scored WITHOUT refitting (prospective/temporal validation, TRIPOD 2b/3 — the only tier-
   # lifter). The model object carries development-cohort coefficients + preprocessing constants;
-  # here we attach the transform recipe (from config) and run provenance. See diagnostics/run_validation.R.
+  # here we attach the transform recipe (from config) and run provenance.
   if (!is.null(clin_addval) && !is.null(clin_addval$locked_model) &&
       !isFALSE(ml_cfg$clinical_model$export_locked_model)) {
     tr       <- config$transformation
@@ -525,7 +524,7 @@ if (lmm_robust$n_robust == 0) {
         created       = format(Sys.time(), "%Y-%m-%d %H:%M:%S %Z"),
         input_file_t0 = config$input_file_t0,
         # Only meaningful for a Δ/T1 scorer (composite_timepoint != "T0"), which needs a
-        # paired T1 draw — diagnostics/run_validation.R uses it for --self-test.
+        # paired T1 draw.
         input_file_t1 = config$input_file_t1,
         n = clin_addval$n, n_pos = clin_addval$n_pos, n_neg = clin_addval$n_neg))
     write_locked_model(
@@ -563,6 +562,77 @@ if (lmm_robust$n_robust == 0) {
         nested_val$auc$prespec["clinical"], nested_val$auc$prespec["combined"],
         nested_val$auc$nested["clinical"],  nested_val$auc$nested["combined"],
         100 * nested_val$prespec_recovery))
+  }
+
+  # 12e. Inference on the added-value increment (selection-aware LRT, patient-bootstrap
+  #      CIs, fixed-gate LRT leave-one-out). Config block
+  #      machine_learning.clinical_immune_added_value.{selection_aware_lrt, patient_bootstrap,
+  #      lrt_leave_one_out}. The frame they share is first checked to reproduce the cv_kfold
+  #      AUCs and the LRT of 12b (FATAL otherwise). Each saves/restores the RNG state, so
+  #      nothing above or below moves. Correctness failures are fatal by design.
+  # ------------------------------------------------------------------------------
+  sel_aware <- NULL; patient_boot <- NULL; lrt_loo <- NULL
+  inf_cfg <- if (!is.null(ml_cfg$clinical_immune_added_value)) ml_cfg$clinical_immune_added_value else list()
+  sa_cfg  <- inf_cfg$selection_aware_lrt
+  pb_cfg  <- inf_cfg$patient_bootstrap
+  loo_cfg <- inf_cfg$lrt_leave_one_out
+  if (!is.null(clin_addval) && exists("DATA_LONG_decomp") && !is.null(DATA_LONG_decomp) &&
+      (isTRUE(sa_cfg$enabled) || isTRUE(pb_cfg$enabled) || !isFALSE(loo_cfg$enabled))) {
+    av_cv_vars <- unlist(ml_cfg$clinical_model$vars)   # after the NLR toggle of 12b
+    av_seed    <- if (!is.null(config$stats$seed)) as.integer(config$stats$seed) else 2026L
+    n_cores    <- function(x) if (is.null(x)) max(1L, parallel::detectCores() - 1L)
+                              else max(1L, min(as.integer(x), parallel::detectCores()))
+    R_av <- av_context(DATA, DATA_LONG_decomp, config$clinical$responder_label,
+                       config$input_file_t0, av_cv_vars)
+    A_av <- av_assemble(R_av, clin_addval$composite_markers, clin_addval$composite_timepoint)
+    av_verify_frame(A_av, clin_addval, seed = av_seed)
+
+    if (isTRUE(sa_cfg$enabled)) {
+      if (!identical(clin_addval$composite_timepoint, "delta"))
+        stop("[FATAL] selection_aware_lrt is implemented for composite_timepoint = delta only")
+      sel_aware <- run_selection_aware_lrt(
+        DATA, DATA_LONG_decomp, clin_addval, config, av_cv_vars,
+        B     = if (!is.null(sa_cfg$B)) as.integer(sa_cfg$B) else 10000L,
+        topk  = if (!is.null(sa_cfg$topk)) sa_cfg$topk else "gate_size",
+        cores = n_cores(sa_cfg$cores),
+        seed  = if (!is.null(sa_cfg$seed)) as.integer(sa_cfg$seed) else av_seed,
+        fdr_thr  = fdr_thresh,
+        log_file = file.path(out_dir, sprintf("SelectionAware_LRT_progress_%s.log", config$project_name)))
+      saveRDS(sel_aware, file.path(out_dir, sprintf("SelectionAware_LRT_%s.rds", config$project_name)))
+      utils::write.csv(selection_aware_table(sel_aware),
+                       file.path(out_dir, sprintf("SelectionAware_LRT_%s.csv", config$project_name)),
+                       row.names = FALSE)
+      message(sprintf("[ML][SelAware] %s: p = %.4f (%d/%d null LR >= %.4f) | null 95th pct %.2f",
+                      sel_aware$rule, sel_aware$p_selection_aware, sel_aware$n_null_ge_obs,
+                      sel_aware$B_valid, sel_aware$lr_obs, sel_aware$null_q95))
+    }
+
+    if (isTRUE(pb_cfg$enabled)) {
+      patient_boot <- run_patient_bootstrap_auc(
+        DATA, DATA_LONG_decomp, clin_addval, config, av_cv_vars,
+        B            = if (!is.null(pb_cfg$B)) as.integer(pb_cfg$B) else 2000L,
+        reps_in_boot = if (!is.null(pb_cfg$reps_in_boot)) as.integer(pb_cfg$reps_in_boot) else 10L,
+        seed         = if (!is.null(pb_cfg$seed)) as.integer(pb_cfg$seed) else av_seed,
+        cores        = n_cores(pb_cfg$cores))
+      saveRDS(patient_boot, file.path(out_dir, sprintf("PatientBootstrap_AUC_%s.rds", config$project_name)))
+      utils::write.csv(patient_bootstrap_table(patient_boot),
+                       file.path(out_dir, sprintf("PatientBootstrap_AUC_%s.csv", config$project_name)),
+                       row.names = FALSE)
+      g <- patient_boot$results$gate
+      message(sprintf("[ML][PatientBoot] dAUC combined-clinical %+.4f [%+.3f, %+.3f] (B=%d)",
+                      g$point$delta_auc, g$bootA$delta_auc[1], g$bootA$delta_auc[2], patient_boot$B))
+    }
+
+    if (!isFALSE(loo_cfg$enabled)) {
+      lrt_loo <- run_lrt_leave_one_out(A_av, if (!is.null(sel_aware)) sel_aware$lr_null_topk else NULL)
+      utils::write.csv(lrt_loo$per_patient,
+                       file.path(out_dir, sprintf("LRT_LeaveOneOut_%s.csv", config$project_name)),
+                       row.names = FALSE)
+      message(sprintf("[ML][LRT-LOO] LR %.2f; leave-one-out %.2f (-%s) to %.2f (-%s); %s removals below the null 95th pct",
+                      lrt_loo$lr_all, lrt_loo$lr_min, lrt_loo$lr_min_dropped,
+                      lrt_loo$lr_max, lrt_loo$lr_max_dropped,
+                      if (is.na(lrt_loo$n_below_null_q95)) "n/a" else as.character(lrt_loo$n_below_null_q95)))
+    }
   }
 
   # 13. Export Machine-Readable JSON
@@ -637,11 +707,7 @@ if (lmm_robust$n_robust == 0) {
       }
       sr_json
     } else NULL,
-    benchmark_combined   = if (!is.null(combined_result)) {
-      cr_json <- combined_result
-      cr_json$plot_data <- NULL
-      cr_json
-    } else NULL,
+    benchmark_combined   = combined_result,
     nested_loocv_validation = if (!is.null(nested_validation)) {
       nv_m <- nested_validation$metrics
       list(
@@ -675,7 +741,12 @@ if (lmm_robust$n_robust == 0) {
     } else NULL,
     clinical_utility = clinical_utility_json(clin_util),
     clinical_immune_added_value = clinical_immune_json(clin_addval),
-    nested_gate_validation = nested_validation_json(nested_val)
+    nested_gate_validation = nested_validation_json(nested_val),
+    # Inference on the added-value increment (12e). Full-precision values and the null
+    # vectors are in SelectionAware_LRT_<exp>.rds / PatientBootstrap_AUC_<exp>.rds.
+    selection_aware_lrt = selection_aware_json(sel_aware),
+    patient_bootstrap   = patient_boot,
+    lrt_leave_one_out   = if (!is.null(lrt_loo)) lrt_loo[setdiff(names(lrt_loo), "per_patient")] else NULL
   )
 
   # Additive secondary-timepoint added-value nodes (e.g. delta) — primary node above unchanged.
@@ -936,147 +1007,9 @@ if (lmm_robust$n_robust == 0) {
   openxlsx::saveWorkbook(wb, excel_path, overwrite = TRUE)
   message(sprintf("   [Output] Classification report saved: %s", basename(excel_path)))
 
-  # 11. PDF Visualizations
-  # ------------------------------------------------------------------------------
-  results_list_plot <- list(
-    `Elastic Net` = res_glmnet,
-    `SVM-RBF`     = res_svm
-  )
-
-  pdf(file.path(out_dir, sprintf("ROC_ML_%s.pdf", config$project_name)), width = 8, height = 7)
-  tryCatch({
-    p_roc <- plot_ml_roc(
-      results_list   = results_list_plot,
-      colors_viz     = colors_viz,
-      title          = sprintf("Nested-LOOCV ROC: %s vs %s\n(%s)",
-                               config$clinical$responder_label,
-                               config$clinical$non_responder_label,
-                               config$project_name),
-      benchmark_list = if (!is.null(benchmark_result)) list(benchmark_result) else NULL
-    )
-    if (!is.null(p_roc)) print(p_roc)
-  }, error = function(e) warning(paste("ROC plot failed:", e$message)))
-  dev.off()
-
-  pdf(file.path(out_dir, sprintf("Predictions_ML_%s.pdf", config$project_name)), width = 10, height = 6)
-  tryCatch({
-    df_preds_plot <- df_preds %>%
-      dplyr::mutate(Group = factor(True_Group, levels = levels(y)))
-    p_pred <- plot_ml_predictions(
-      predictions_df = df_preds_plot,
-      colors_viz     = colors_viz,
-      title          = sprintf("Out-of-Fold Predicted Probabilities: %s", config$project_name)
-    )
-    if (!is.null(p_pred)) print(p_pred)
-  }, error = function(e) warning(paste("Predictions plot failed:", e$message)))
-  dev.off()
-
-  pdf(file.path(out_dir, sprintf("Univariate_ML_%s.pdf", config$project_name)), width = 8, height = 7)
-  tryCatch({
-    p_uni <- plot_univariate_roc(
-      X_main         = X_main,
-      y              = y,
-      positive_label = res_glmnet$positive_label,
-      univariate_df  = uni_auc_df,
-      colors_viz     = colors_viz,
-      title          = sprintf("Univariate ROC: %s vs %s\n(%s)",
-                               config$clinical$responder_label,
-                               config$clinical$non_responder_label,
-                               config$project_name)
-    )
-    if (!is.null(p_uni)) print(p_uni)
-  }, error = function(e) warning(paste("Univariate ROC plot failed:", e$message)))
-  dev.off()
-
-  # Clinical-utility figure (calibration + decision curve)
-  if (!is.null(clin_util)) {
-    pdf(file.path(out_dir, sprintf("ClinicalUtility_%s.pdf", config$project_name)),
-        width = 11, height = 5)
-    tryCatch({
-      p_cu <- viz_plot_clinical_utility(clin_util, colors_viz, title_prefix = config$project_name)
-      if (!is.null(p_cu)) print(p_cu)
-    }, error = function(e) warning(paste("Clinical-utility figure failed:", e$message)))
-    dev.off()
-  }
-
-  # Clinical + cytometric added-value figure (decision curve: clinical vs combined)
-  if (!is.null(clin_addval)) {
-    pdf(file.path(out_dir, sprintf("ClinicalImmune_AddedValue_%s.pdf", config$project_name)),
-        width = 11, height = 5)
-    tryCatch({
-      p_av <- viz_plot_added_value(clin_addval, colors_viz, title_prefix = config$project_name)
-      if (!is.null(p_av)) print(p_av)
-    }, error = function(e) warning(paste("Added-value figure failed:", e$message)))
-    dev.off()
-  }
-
-  # Benchmark-stratified figure (clinical-strata + subgroup ROC)
-  if (!is.null(stratified_result)) {
-    pdf(file.path(out_dir, sprintf("Benchmark_Stratified_%s.pdf", config$project_name)),
-        width = 13, height = 6)
-    tryCatch({
-      p_strat <- plot_benchmark_stratified(
-        stratified_result = stratified_result,
-        colors_viz        = colors_viz,
-        positive_label    = res_glmnet$positive_label,
-        title             = sprintf("%s strata and gate-model subgroup performance (%s)",
-                                    stratified_result$label, config$project_name)
-      )
-      if (!is.null(p_strat)) print(p_strat)
-    }, error = function(e) warning(paste("Stratified figure failed:", e$message)))
-    dev.off()
-  }
-
-  # Combined-model information-gain figure (3-ROC overlay + IDI/cNRI forest)
-  if (!is.null(combined_result)) {
-    pdf(file.path(out_dir, sprintf("InformationGain_%s.pdf", config$project_name)),
-        width = 13, height = 6)
-    tryCatch({
-      p_ig <- plot_combined_information_gain(
-        combined_result = combined_result,
-        title           = sprintf("Information gain over %s (%s)",
-                                  combined_result$label, config$project_name)
-      )
-      if (!is.null(p_ig)) print(p_ig)
-    }, error = function(e) warning(paste("InformationGain figure failed:", e$message)))
-    dev.off()
-  }
-
-  if (!is.null(gate_decomp)) {
-    pdf(file.path(out_dir, sprintf("GateSignal_T0Delta_%s.pdf", config$project_name)),
-        width = 10, height = 4)
-    tryCatch({
-      gd        <- gate_decomp$marker_decomp
-      gd$Timepoint <- factor(gd$Timepoint, levels = c("T0", "T1", "Delta (T1-T0)"))
-      gd$Marker    <- factor(gd$Marker, levels = unique(gd$Marker))
-      p_gd <- ggplot2::ggplot(gd[!is.na(gd$AUC), ],
-                               ggplot2::aes(x = Timepoint, y = AUC,
-                                            colour = Timepoint, group = Marker)) +
-        ggplot2::geom_point(size = 3) +
-        ggplot2::geom_line(colour = "grey60", linetype = "dashed") +
-        ggplot2::geom_errorbar(ggplot2::aes(ymin = AUC_CI_Lo, ymax = AUC_CI_Hi),
-                                width = 0.15) +
-        ggplot2::geom_hline(yintercept = 0.5, linetype = "dotted", colour = "grey40") +
-        ggplot2::facet_wrap(~Marker) +
-        ggplot2::scale_colour_manual(
-          values = c("T0" = "#1f78b4", "T1" = "#33a02c", "Delta (T1-T0)" = "#e31a1c")
-        ) +
-        ggplot2::labs(
-          title    = sprintf("Gate signal decomposition: T0 / T1 / Delta - %s", config$project_name),
-          subtitle = sprintf("n_paired=%d | %s", gate_decomp$n_paired, gate_decomp$scenario),
-          y        = "Univariate AUC (DeLong 95% CI)",
-          x        = NULL
-        ) +
-        ggplot2::theme_bw(base_size = 11) +
-        ggplot2::theme(legend.position = "none")
-      print(p_gd)
-    }, error = function(e) warning(paste("GateSignal plot failed:", e$message)))
-    dev.off()
-  }
-
   # 11b. Publication figure set (additive; driven by the live result objects so
   #      it always reflects the current analysis). Frontiers-styled, captions
-  #      external. Legacy QC figures above are left untouched.
+  #      external. These are the only figures step 06 writes.
   if (isTRUE(config$run_publication_figures)) {
     pub_dir <- file.path(out_dir, "publication")
     dir.create(pub_dir, showWarnings = FALSE)
@@ -1100,7 +1033,7 @@ if (lmm_robust$n_robust == 0) {
         positive_label    = res_glmnet$positive_label,
         perm              = list(en = perm_glmnet$p_value, svm = perm_svm$p_value))
       saveRDS(pub_objs, file.path(pub_dir, sprintf("publication_data_%s.rds", config$project_name)))
-      pub_render_all(pub_objs, pub_dir, config$project_name)
+      pub_render_all(pub_objs, pub_dir, config$project_name, fig_cfg = config)
       message(sprintf("   [Output] Publication figure set -> %s/", basename(pub_dir)))
     }, error = function(e) warning(paste("Publication figure set failed:", e$message)))
   }
@@ -1121,506 +1054,8 @@ if (lmm_robust$n_robust == 0) {
   ))
 }
 
-} else if (gate_method == "univariate") {
-
-  # ============================================================================
-  # UNIVARIATE GATE PATH — Cross-sectional datasets without T1 (e.g. HNSCC)
-  # Feature gate (Wilcoxon+BH) is re-selected inside every outer LOO fold on
-  # n-1 training patients → fully-nested design, no separate validation needed.
-  # ============================================================================
-
-  uni_fdr <- if (!is.null(ml_cfg$univariate_fdr_threshold)) {
-    as.numeric(ml_cfg$univariate_fdr_threshold)
-  } else 0.20
-
-  uni_k <- if (!is.null(ml_cfg$univariate_fallback_k)) {
-    as.integer(ml_cfg$univariate_fallback_k)
-  } else 3L
-
-  n_perm <- if (!is.null(ml_cfg$n_perm)) as.integer(ml_cfg$n_perm) else 999L
-
-  # Load Step 01 standard RDS (cross-sectional data)
-  input_rds <- step_output_path(config, 1, sprintf("data_processed_%s_standard", config$project_name), "rds")
-  if (!file.exists(input_rds)) {
-    stop(sprintf("[FATAL] Step 01 standard RDS not found at: %s", input_rds))
-  }
-  DATA <- readRDS(input_rds)
-
-  out_dir <- step_dir(config, 6, create = TRUE)
-
-  colors_viz <- get_clinical_colors(config)
-
-  # Build X from all post-QC markers available in Step 01 output
-  target_markers <- unique(c(unlist(config$features$facs), unlist(config$features$soluble)))
-  available      <- intersect(target_markers, DATA$hybrid_markers)
-  if (length(available) == 0L)
-    stop("[ML][FATAL] No features available in Step 01 data matching config features.")
-
-  X_all <- as.matrix(DATA$hybrid_data_z[, available, drop = FALSE])
-  mode(X_all) <- "numeric"
-  rownames(X_all) <- make.unique(as.character(DATA$metadata$Patient_ID))
-  y <- DATA$metadata$Group
-
-  message(sprintf(
-    "[ML] Univariate gate path | %d patients | %d candidate markers | Classes: %s",
-    nrow(X_all), ncol(X_all),
-    paste(names(table(y)), table(y), sep = "=", collapse = ", ")
-  ))
-
-  # Global collinearity filter — uses only X (not y) → no leakage
-  cor_threshold <- if (!is.null(ml_cfg$collinearity_threshold)) {
-    as.numeric(ml_cfg$collinearity_threshold)
-  } else 0.85
-
-  filt_global <- filter_collinear_features(X_all, cor_threshold = cor_threshold)
-  if (length(filt_global$dropped) > 0L) {
-    message(sprintf(
-      "   [ML] Global collinearity filter (|r|>%.2f): dropped %s",
-      cor_threshold, paste(filt_global$dropped, collapse = ", ")
-    ))
-  }
-  X_all                    <- filt_global$X
-  collinearity_dropped_global <- filt_global$dropped
-  message(sprintf("   [ML] Post-filter: %d independent features", ncol(X_all)))
-
-  # Hyperparameter grids (inherit from global machine_learning config)
-  glmnet_cfg <- if (!is.null(ml_cfg$glmnet)) ml_cfg$glmnet else list()
-  alpha_grid <- if (!is.null(glmnet_cfg$alpha_grid))  as.numeric(unlist(glmnet_cfg$alpha_grid)) else c(0, 0.5, 1)
-  n_lambda   <- if (!is.null(glmnet_cfg$n_lambda))    as.integer(glmnet_cfg$n_lambda)            else 100L
-  inner_k_en <- if (!is.null(glmnet_cfg$inner_folds)) as.integer(glmnet_cfg$inner_folds)         else 5L
-  svm_cfg    <- if (!is.null(ml_cfg$svm)) ml_cfg$svm else list()
-  C_grid     <- if (!is.null(svm_cfg$C_grid))     as.numeric(unlist(svm_cfg$C_grid))     else c(0.01, 0.1, 1, 10, 100)
-  gamma_grid <- if (!is.null(svm_cfg$gamma_grid)) as.numeric(unlist(svm_cfg$gamma_grid)) else c(0.01, 0.1, 1, 10)
-  inner_k_sv <- if (!is.null(svm_cfg$inner_folds)) as.integer(svm_cfg$inner_folds)       else 5L
-
-  message("\n[ML] Running Fully-Nested LOOCV with Univariate Gate...")
-  set.seed(config$stats$seed)
-  res_uni <- run_nested_loocv_univariate_gate(
-    X_all         = X_all,
-    y             = y,
-    positive_label = config$clinical$responder_label,
-    fdr_threshold = uni_fdr,
-    fallback_k    = uni_k,
-    cor_threshold = 1.0,       # X_all already globally filtered above
-    alpha_grid    = alpha_grid,
-    n_lambda      = n_lambda,
-    inner_folds   = inner_k_en,
-    C_grid        = C_grid,
-    gamma_grid    = gamma_grid,
-    seed          = config$stats$seed
-  )
-
-  # Wrap into the same named-list interface used by the LMM path
-  res_glmnet <- list(
-    method          = "Elastic Net Logistic Regression (Fully-Nested Univariate Gate LOOCV)",
-    predicted_probs = res_uni$glmnet_probs,
-    y_true          = res_uni$y_true,
-    positive_label  = res_uni$positive_label,
-    coef_matrix     = NULL,
-    feature_names   = colnames(X_all)
-  )
-  res_svm <- list(
-    method          = "SVM with RBF Kernel (Fully-Nested Univariate Gate LOOCV)",
-    predicted_probs = res_uni$svm_probs,
-    y_true          = res_uni$y_true,
-    positive_label  = res_uni$positive_label,
-    coef_matrix     = NULL,
-    feature_names   = colnames(X_all)
-  )
-
-  metrics_glmnet <- compute_classification_metrics(
-    res_glmnet$y_true, res_glmnet$predicted_probs, res_glmnet$positive_label
-  )
-  metrics_svm <- compute_classification_metrics(
-    res_svm$y_true, res_svm$predicted_probs, res_svm$positive_label
-  )
-
-  message(sprintf(
-    "   [Elastic Net] AUC=%.3f [%.3f-%.3f] | BalAcc=%.3f",
-    metrics_glmnet$auc, metrics_glmnet$auc_ci[1], metrics_glmnet$auc_ci[3],
-    metrics_glmnet$balanced_accuracy
-  ))
-  message(sprintf(
-    "   [SVM-RBF]     AUC=%.3f [%.3f-%.3f] | BalAcc=%.3f",
-    metrics_svm$auc, metrics_svm$auc_ci[1], metrics_svm$auc_ci[3],
-    metrics_svm$balanced_accuracy
-  ))
-
-  # Primary method: SVM if its AUC exceeds Elastic Net by > 0.05
-  primary_method <- if (
-    !is.na(metrics_glmnet$auc) && !is.na(metrics_svm$auc) &&
-    metrics_svm$auc > metrics_glmnet$auc + 0.05
-  ) "SVM-RBF" else "Elastic-Net"
-  message(sprintf("   [ML] Primary method: %s", primary_method))
-
-  # Permutation tests
-  set.seed(config$stats$seed)
-  perm_glmnet <- run_permutation_auc_test(
-    res_glmnet$y_true, res_glmnet$predicted_probs, res_glmnet$positive_label,
-    n_perm = n_perm, seed = config$stats$seed
-  )
-  perm_svm <- run_permutation_auc_test(
-    res_svm$y_true, res_svm$predicted_probs, res_svm$positive_label,
-    n_perm = n_perm, seed = config$stats$seed
-  )
-  message(sprintf("   [Perm] EN p=%.4f | SVM p=%.4f (n_perm=%d)",
-                  perm_glmnet$p_value, perm_svm$p_value, n_perm))
-
-  # Univariate AUC and LOO-threshold analysis on all post-filter markers
-  uni_auc_df    <- run_univariate_auc(X_all, y, res_glmnet$positive_label)
-  set.seed(config$stats$seed)
-  uni_thresh_df <- run_univariate_loo_threshold(
-    X_all, y, res_glmnet$positive_label, seed = config$stats$seed
-  )
-
-  # Clinical benchmark (CPS or equivalent) — wraps in tryCatch; free-text CPS is non-fatal
-  benchmark_result  <- NULL
-  bench_col         <- config$clinical$benchmark_column
-  bench_label       <- if (!is.null(config$clinical$benchmark_label)) {
-    config$clinical$benchmark_label
-  } else bench_col
-
-  if (!is.null(bench_col) && !is.null(config$input_file_t0) &&
-      file.exists(config$input_file_t0)) {
-    message(sprintf("\n[ML] Clinical benchmark: '%s'...", bench_label))
-    primary_res <- if (primary_method == "SVM-RBF") res_svm else res_glmnet
-    benchmark_result <- tryCatch(
-      run_clinical_benchmark(
-        DATA            = DATA,
-        primary_probs   = primary_res$predicted_probs,
-        y_primary       = primary_res$y_true,
-        positive_label  = res_glmnet$positive_label,
-        input_file      = config$input_file_t0,
-        benchmark_col   = bench_col,
-        benchmark_label = bench_label
-      ),
-      error = function(e) {
-        warning(sprintf("[ML] Clinical benchmark failed (non-fatal): %s", e$message))
-        NULL
-      }
-    )
-    if (!is.null(benchmark_result)) {
-      message(sprintf("   [Benchmark] %s AUC=%.3f (n_valid=%d)",
-                      bench_label, benchmark_result$auc, benchmark_result$n_valid))
-    }
-  }
-
-  # Benchmark-stratified subgroup analysis and combined information-gain model.
-  # CPS cutoffs for HNSCC (anti-PD-1 context): neg(<1), low(1-19), high(>=20).
-  # parse_range_midpoint() in run_clinical_benchmark() now handles all free-text formats.
-  stratified_result <- NULL
-  combined_result   <- NULL
-
-  if (!is.null(bench_col) && !is.null(config$input_file_t0) &&
-      file.exists(config$input_file_t0)) {
-
-    message(sprintf("\n[ML] Benchmark-stratified subgroup analysis: '%s'...", bench_label))
-    primary_res_strat <- if (primary_method == "SVM-RBF") res_svm else res_glmnet
-
-    # Benchmark stratification cutoffs are config-driven (machine_learning.benchmark_strata)
-    # so a new cohort/benchmark can re-bin without code edits. Defaults reproduce the
-    # NSCLC PD-L1 / HNSCC CPS cutoffs used historically: neg(<1), low(1-19), high(>=20).
-    strata_cfg <- config$machine_learning$benchmark_strata
-    strat_breaks <- if (!is.null(strata_cfg$breaks)) unlist(strata_cfg$breaks) else c(0.5, 19.5)
-    strat_labels <- if (!is.null(strata_cfg$labels)) unlist(strata_cfg$labels) else c("neg(<1)", "low(1-19)", "high(>=20)")
-    strat_high   <- if (!is.null(strata_cfg$high_threshold)) strata_cfg$high_threshold else 20
-    stratified_result <- tryCatch(
-      run_pdl1_stratified(
-        DATA            = DATA,
-        X_main          = X_all,
-        y               = y,
-        positive_label  = res_glmnet$positive_label,
-        input_file      = config$input_file_t0,
-        benchmark_col   = bench_col,
-        benchmark_label = bench_label,
-        bin_breaks      = strat_breaks,
-        bin_labels      = strat_labels,
-        high_threshold  = strat_high,
-        C_grid          = C_grid,
-        gamma_grid      = gamma_grid,
-        inner_folds     = inner_k_sv,
-        seed            = config$stats$seed
-      ),
-      error = function(e) {
-        warning(sprintf("[ML] Stratified analysis failed (non-fatal): %s", e$message))
-        NULL
-      }
-    )
-    if (!is.null(stratified_result)) {
-      bc <- stratified_result$binary_cut
-      message(sprintf("   [Stratified] Binary cut at %g: BalAcc=%.3f Sens=%.3f Spec=%.3f Fisher p=%.4f",
-                      bc$threshold, bc$balanced_accuracy, bc$sensitivity, bc$specificity, bc$fisher_p))
-      sl <- stratified_result$subgroup_low; sh <- stratified_result$subgroup_high
-      if (!is.na(sl$auc)) message(sprintf("   [Stratified] CPS-low  (n=%d): SVM AUC=%.3f", sl$n, sl$auc))
-      if (!is.na(sh$auc)) message(sprintf("   [Stratified] CPS-high (n=%d): SVM AUC=%.3f", sh$n, sh$auc))
-    }
-
-    message(sprintf("\n[ML] Combined model (information gain over '%s')...", bench_label))
-    combined_result <- tryCatch(
-      run_combined_benchmark_model(
-        DATA            = DATA,
-        X_main          = X_all,
-        y               = y,
-        positive_label  = res_glmnet$positive_label,
-        input_file      = config$input_file_t0,
-        benchmark_col   = bench_col,
-        benchmark_label = bench_label,
-        n_boot          = 1000L,
-        C_grid          = C_grid,
-        gamma_grid      = gamma_grid,
-        inner_folds     = inner_k_sv,
-        seed            = config$stats$seed
-      ),
-      error = function(e) {
-        warning(sprintf("[ML] Combined model analysis failed (non-fatal): %s", e$message))
-        NULL
-      }
-    )
-    if (!is.null(combined_result)) {
-      lg <- combined_result$logistic
-      # Degenerate case: combined apparent AUC = 1 when primary model is near-random (AUC ≈ 0.5).
-      # In-sample logistic overfits n training points; IDI/cNRI bootstrap can't correct this.
-      if (!is.null(lg$auc_combined) && lg$auc_combined >= 0.99) {
-        combined_result$logistic$degenerate      <- TRUE
-        combined_result$logistic$degenerate_note <- paste(
-          "Combined apparent AUC=1.0 is an in-sample overfitting artefact.",
-          "Primary model AUC is near-random (SVM perm p > 0.05); the logistic on n training",
-          "points achieves spurious separation. IDI/cNRI are not reliable — interpret",
-          "the clinical_benchmark AUC univariately."
-        )
-        warning("[ML] Combined model degenerate (AUC=1.0): primary model is non-discriminative. IDI/cNRI suppressed.")
-        message("   [Combined] DEGENERATE — primary model near-random; combined AUC=1.0 is artefact. See JSON note.")
-      } else {
-        ig <- combined_result$information_gain
-        message(sprintf("   [Combined] IDI=%.3f [%.3f, %.3f] p=%.3f | cNRI=%.3f p=%.3f",
-                        ig$idi, ig$idi_ci[1], ig$idi_ci[2], ig$idi_p,
-                        ig$cnri, ig$cnri_p))
-        message(sprintf("   [Combined] Logistic ΔAUC=%.3f (DeLong p=%.4f)",
-                        lg$delta_auc, lg$delong_p))
-      }
-    }
-  }
-
-  # Clinical-Utility Layer (univariate path). Composite = markers selected in
-  # >= stability_pct of the outer folds. The gate is re-selected on THESE T0 data,
-  # so the composite is exploratory/conditional-on-selection (flagged in output).
-  # ------------------------------------------------------------------------------
-  clin_util <- NULL
-  if (isTRUE(config$run_clinical_utility)) {
-    cu_cfg     <- if (!is.null(ml_cfg$clinical_utility)) ml_cfg$clinical_utility else list()
-    stab_pct   <- if (!is.null(cu_cfg$stability_pct)) as.numeric(cu_cfg$stability_pct) else 50
-    gs         <- res_uni$gate_stability
-    cu_markers <- gs$Marker[gs$Pct_Folds_Selected >= stab_pct]
-    if (length(cu_markers) >= 1) {
-      clin_util <- tryCatch(
-        run_clinical_utility(
-          DATA_T0         = DATA,
-          gate_markers    = cu_markers,
-          resp_label      = config$clinical$responder_label,
-          gate_provenance = "univariate-selected",
-          n_boot          = if (!is.null(cu_cfg$n_boot)) as.integer(cu_cfg$n_boot) else 2000L
-        ),
-        error = function(e) {
-          warning(sprintf("[ML] Clinical-utility layer failed (non-fatal): %s", e$message)); NULL
-        }
-      )
-    } else {
-      message(sprintf("[ML][CU] No marker reaches %.0f%% fold-selection stability — clinical utility skipped.",
-                      stab_pct))
-    }
-  }
-
-  # Write JSON — structure mirrors the LMM path, gate_stability replaces robust_markers
-  machine_output <- list(
-    project_name               = config$project_name,
-    clinical_target            = config$clinical$target_column,
-    gate_method                = "univariate",
-    model_type                 = paste(
-      "Fully-Nested Univariate Gate LOOCV",
-      "(Wilcoxon+BH gate re-selected inside each outer LOO fold on n-1 training patients)"
-    ),
-    univariate_fdr_threshold   = uni_fdr,
-    univariate_fallback_k      = uni_k,
-    n_folds_used_fallback      = res_uni$n_folds_fallback,
-    collinearity_dropped_global = as.list(collinearity_dropped_global),
-    n_samples                  = nrow(X_all),
-    n_features_post_filter     = ncol(X_all),
-    include_interactions       = FALSE,
-    gate_stability             = res_uni$gate_stability,
-    primary_method             = primary_method,
-    elastic_net                = list(method = res_glmnet$method, metrics = metrics_glmnet),
-    svm_rbf                    = list(method = res_svm$method,    metrics = metrics_svm),
-    scaling_note               = paste(
-      "Z-scores globally computed in Step 01.",
-      "Collinearity filter applied globally on X only (no outcome involved — no leakage).",
-      "Wilcoxon+BH gate re-selected inside each outer LOO fold: fully-nested by construction.",
-      "No separate nested_loocv_validation block is needed or reported."
-    ),
-    permutation_test = list(
-      elastic_net = perm_glmnet,
-      svm_rbf     = perm_svm,
-      n_perm      = n_perm
-    ),
-    univariate_auc           = uni_auc_df,
-    univariate_loo_threshold = uni_thresh_df,
-    clinical_benchmark       = if (!is.null(benchmark_result)) {
-      list(
-        label                 = benchmark_result$label,
-        column                = benchmark_result$column,
-        n_valid               = benchmark_result$n_valid,
-        n_total               = nrow(X_all),
-        n_na                  = benchmark_result$n_na,
-        auc                   = benchmark_result$auc,
-        auc_ci                = as.list(benchmark_result$auc_ci),
-        primary_auc_on_subset = benchmark_result$primary_auc_on_subset,
-        delong_p              = benchmark_result$delong_p,
-        n_na_note             = if (benchmark_result$n_na > 0)
-          sprintf("%d/%d entries are NA in the benchmark column.", benchmark_result$n_na, nrow(X_all))
-          else NULL
-      )
-    } else NULL,
-    benchmark_stratified    = if (!is.null(stratified_result)) stratified_result else NULL,
-    benchmark_combined      = if (!is.null(combined_result))   combined_result   else NULL,
-    nested_loocv_validation = NULL, # explicitly NULL: univariate path is already fully-nested
-    clinical_utility        = clinical_utility_json(clin_util)
-  )
-
-  json_path <- file.path(out_dir, sprintf("Machine_Metrics_ML_%s.json", config$project_name))
-  if (requireNamespace("jsonlite", quietly = TRUE)) {
-    jsonlite::write_json(machine_output, json_path, pretty = TRUE, auto_unbox = TRUE)
-    message(sprintf("   [Output] ML metrics JSON: %s", basename(json_path)))
-  } else {
-    saveRDS(machine_output, sub("\\.json$", ".rds", json_path))
-    warning("[ML] jsonlite unavailable — metrics saved as RDS.")
-  }
-
-  # Write Excel report
-  pos_lbl <- res_glmnet$positive_label
-  neg_lbl <- setdiff(levels(res_glmnet$y_true), pos_lbl)
-
-  df_preds <- data.frame(
-    Patient_ID      = as.character(DATA$metadata$Patient_ID),
-    True_Group      = as.character(y),
-    Prob_ElasticNet = round(res_glmnet$predicted_probs, 4),
-    Prob_SVM_RBF    = round(res_svm$predicted_probs,    4),
-    stringsAsFactors = FALSE
-  )
-  df_preds$Pred_ElasticNet    <- ifelse(df_preds$Prob_ElasticNet >= metrics_glmnet$threshold, pos_lbl, neg_lbl)
-  df_preds$Pred_SVM_RBF       <- ifelse(df_preds$Prob_SVM_RBF    >= metrics_svm$threshold,    pos_lbl, neg_lbl)
-  df_preds$Correct_ElasticNet <- df_preds$Pred_ElasticNet == df_preds$True_Group
-  df_preds$Correct_SVM_RBF    <- df_preds$Pred_SVM_RBF   == df_preds$True_Group
-
-  wb <- openxlsx::createWorkbook()
-  openxlsx::addWorksheet(wb, "Performance_Summary")
-  openxlsx::writeData(wb, "Performance_Summary", data.frame(
-    Method            = c(res_glmnet$method,               res_svm$method),
-    Is_Primary        = c(primary_method == "Elastic-Net",  primary_method == "SVM-RBF"),
-    AUC               = c(metrics_glmnet$auc,               metrics_svm$auc),
-    AUC_CI_Lower      = c(metrics_glmnet$auc_ci[1],         metrics_svm$auc_ci[1]),
-    AUC_CI_Upper      = c(metrics_glmnet$auc_ci[3],         metrics_svm$auc_ci[3]),
-    Balanced_Accuracy = c(metrics_glmnet$balanced_accuracy, metrics_svm$balanced_accuracy),
-    BER               = c(metrics_glmnet$ber,               metrics_svm$ber),
-    Sensitivity       = c(metrics_glmnet$sensitivity,       metrics_svm$sensitivity),
-    Specificity       = c(metrics_glmnet$specificity,       metrics_svm$specificity),
-    Youden_Threshold  = c(metrics_glmnet$threshold,         metrics_svm$threshold),
-    stringsAsFactors  = FALSE
-  ))
-  openxlsx::addWorksheet(wb, "Patient_Predictions")
-  openxlsx::writeData(wb, "Patient_Predictions", df_preds)
-  openxlsx::addWorksheet(wb, "Gate_Stability")
-  openxlsx::writeData(wb, "Gate_Stability", res_uni$gate_stability)
-  openxlsx::addWorksheet(wb, "Permutation_Test")
-  openxlsx::writeData(wb, "Permutation_Test", data.frame(
-    Method       = c("Elastic Net", "SVM-RBF"),
-    Observed_AUC = c(perm_glmnet$observed_auc, perm_svm$observed_auc),
-    P_Value      = c(perm_glmnet$p_value,      perm_svm$p_value),
-    N_Perm       = n_perm,
-    stringsAsFactors = FALSE
-  ))
-  openxlsx::addWorksheet(wb, "Univariate_AUC")
-  openxlsx::writeData(wb, "Univariate_AUC", uni_auc_df)
-  openxlsx::addWorksheet(wb, "Univariate_LOO_Threshold")
-  openxlsx::writeData(wb, "Univariate_LOO_Threshold", uni_thresh_df)
-  if (!is.null(benchmark_result)) {
-    openxlsx::addWorksheet(wb, "Clinical_Benchmark")
-    openxlsx::writeData(wb, "Clinical_Benchmark", data.frame(
-      Metric = c("Benchmark biomarker", "N valid (integer-parseable)",
-                 "N total", "Benchmark AUC",
-                 "Primary model AUC (same subset)", "DeLong p"),
-      Value  = c(benchmark_result$label,           benchmark_result$n_valid,
-                 nrow(X_all),                       benchmark_result$auc,
-                 benchmark_result$primary_auc_on_subset, benchmark_result$delong_p),
-      stringsAsFactors = FALSE
-    ))
-  }
-
-  if (!is.null(clin_util)) {
-    openxlsx::addWorksheet(wb, "Clinical_Utility")
-    openxlsx::writeData(wb, "Clinical_Utility", write_clinical_utility_summary(clin_util))
-    openxlsx::addWorksheet(wb, "Clinical_Utility_Patients")
-    openxlsx::writeData(wb, "Clinical_Utility_Patients", clin_util$per_patient)
-  }
-
-  excel_path <- file.path(out_dir, sprintf("ML_Classification_Report_%s.xlsx", config$project_name))
-  openxlsx::saveWorkbook(wb, excel_path, overwrite = TRUE)
-  message(sprintf("   [Output] Classification report: %s", basename(excel_path)))
-
-  # PDFs — reuse existing plot functions unchanged
-  results_list_plot <- list(`Elastic Net` = res_glmnet, `SVM-RBF` = res_svm)
-
-  pdf(file.path(out_dir, sprintf("ROC_ML_%s.pdf", config$project_name)), width = 8, height = 7)
-  tryCatch({
-    p <- plot_ml_roc(
-      results_list_plot, colors_viz,
-      sprintf("Nested-LOOCV ROC: %s vs %s\n(%s, Univariate Gate)",
-              config$clinical$responder_label,
-              config$clinical$non_responder_label,
-              config$project_name),
-      benchmark_list = if (!is.null(benchmark_result)) list(benchmark_result) else NULL
-    )
-    if (!is.null(p)) print(p)
-  }, error = function(e) warning(paste("ROC plot failed:", e$message)))
-  dev.off()
-
-  pdf(file.path(out_dir, sprintf("Predictions_ML_%s.pdf", config$project_name)), width = 10, height = 6)
-  tryCatch({
-    df_plot <- df_preds
-    df_plot$Group <- factor(df_plot$True_Group, levels = levels(y))
-    p <- plot_ml_predictions(df_plot, colors_viz,
-                             sprintf("Out-of-Fold Predicted Probabilities: %s", config$project_name))
-    if (!is.null(p)) print(p)
-  }, error = function(e) warning(paste("Predictions plot failed:", e$message)))
-  dev.off()
-
-  pdf(file.path(out_dir, sprintf("Univariate_ML_%s.pdf", config$project_name)), width = 8, height = 7)
-  tryCatch({
-    p <- plot_univariate_roc(
-      X_all, y, res_glmnet$positive_label, uni_auc_df, colors_viz,
-      sprintf("Univariate ROC: %s vs %s\n(%s)",
-              config$clinical$responder_label,
-              config$clinical$non_responder_label,
-              config$project_name)
-    )
-    if (!is.null(p)) print(p)
-  }, error = function(e) warning(paste("Univariate ROC plot failed:", e$message)))
-  dev.off()
-
-  if (!is.null(clin_util)) {
-    pdf(file.path(out_dir, sprintf("ClinicalUtility_%s.pdf", config$project_name)),
-        width = 11, height = 5)
-    tryCatch({
-      p_cu <- viz_plot_clinical_utility(clin_util, colors_viz, title_prefix = config$project_name)
-      if (!is.null(p_cu)) print(p_cu)
-    }, error = function(e) warning(paste("Clinical-utility figure failed:", e$message)))
-    dev.off()
-  }
-
-  message(sprintf(
-    "\n[ML] Summary — %s | Primary: %s | AUC(EN)=%.3f | AUC(SVM)=%.3f | Perm p(SVM)=%.4f",
-    config$project_name, primary_method,
-    metrics_glmnet$auc, metrics_svm$auc, perm_svm$p_value
-  ))
-
-} # end gate_method == "univariate"
+} else {
+  stop(sprintf("[FATAL] Unsupported machine_learning.gate_method '%s' (only \"lmm\" is implemented).", gate_method))
+}
 
 message("=== STEP 6 COMPLETE ===\n")

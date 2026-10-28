@@ -32,17 +32,18 @@ load_config <- function(config_path = "config/global_params.yml") {
 
 # ==============================================================================
 # RUN MANAGEMENT
-# A single main.R invocation = one immutable, timestamped run directory under
-# `output_root` (e.g. results/20260605_143000/). Every step derives its paths
-# from config$output_root, so isolating the run at the root keeps all cross-step
-# artifacts of one invocation self-contained and reproducible. A `latest`
-# pointer (symlink + portable text file) lets follow-up tooling resolve the most
-# recent run without hardcoding a timestamp.
+# A single main.R invocation = one run directory under `output_root`. With
+# RUN_NAME set (the canonical runs) the directory is `<output_root>/<RUN_NAME>`
+# and the run refuses to start if it exists (FORCE=1 replaces it); otherwise a
+# timestamped id is used. Every step derives its paths from config$output_root,
+# so all cross-step artifacts of one invocation stay self-contained. There is no
+# `latest` pointer: follow-up tools take an explicit --run.
 # ==============================================================================
 
 #' @title Build a Run Identifier
 #' @description Timestamp-based run id, optionally suffixed with a human label
-#'   (config `run_label` or the RUN_LABEL environment variable, env wins).
+#'   (config `run_label` or the RUN_LABEL environment variable, env wins). Used
+#'   only when RUN_NAME is not set.
 #' @param label Optional character label appended after the timestamp.
 #' @return Character run id, e.g. "20260605_143000_disc73".
 make_run_id <- function(label = NULL) {
@@ -57,81 +58,101 @@ make_run_id <- function(label = NULL) {
   id
 }
 
-#' @title Publish the `latest` Run Pointer
-#' @description Records `run_id` as the most recent run via a portable text file
-#'   (`latest_run.txt`, the source of truth) and a best-effort relative symlink
-#'   (`latest`) for convenient path navigation. The symlink is non-fatal: some
-#'   filesystems do not support it, in which case the text pointer still works.
-#' @param results_base Base output directory (config$output_root, e.g. "results").
-#' @param run_id The run id to publish.
-#' @return Invisibly, the pointer file path.
-update_latest_pointer <- function(results_base, run_id) {
-  if (!dir.exists(results_base)) dir.create(results_base, recursive = TRUE)
-
-  pointer <- file.path(results_base, "latest_run.txt")
-  writeLines(run_id, pointer)
-
-  symlink <- file.path(results_base, "latest")
-  if (file.exists(symlink) || nzchar(Sys.readlink(symlink))) unlink(symlink, force = TRUE)
-  ok <- tryCatch(file.symlink(run_id, symlink),
-                 warning = function(w) FALSE, error = function(e) FALSE)
-  if (!isTRUE(ok))
-    message("[RUN] 'latest' symlink not created (filesystem may not support it); using latest_run.txt.")
-
-  invisible(pointer)
+#' @title Resolve the Run Directory for a main.R Invocation
+#' @description RUN_NAME (env) fixes the run directory name; it must be a plain
+#'   directory name. An existing directory is an error unless FORCE=1, in which
+#'   case it is removed first so the run stays self-contained. Without RUN_NAME
+#'   the timestamped \code{make_run_id(label)} is used.
+#' @param output_root Base output directory (config$output_root).
+#' @param label Fallback label for the timestamped id.
+#' @return List with \code{run_id} and \code{run_root}.
+resolve_run_dir <- function(output_root, label = NULL) {
+  run_name <- Sys.getenv("RUN_NAME", unset = "")
+  if (!nzchar(run_name)) {
+    run_id <- make_run_id(label)
+    return(list(run_id = run_id, run_root = file.path(output_root, run_id)))
+  }
+  if (!grepl("^[A-Za-z0-9._-]+$", run_name) || run_name %in% c(".", ".."))
+    stop(sprintf("[FATAL] RUN_NAME '%s' must be a plain directory name ([A-Za-z0-9._-]).", run_name))
+  run_root <- file.path(output_root, run_name)
+  if (dir.exists(run_root)) {
+    if (!identical(Sys.getenv("FORCE", unset = ""), "1"))
+      stop(sprintf("[FATAL] Run directory %s already exists. Set FORCE=1 to replace it.", run_root))
+    message(sprintf("[RUN] FORCE=1: removing existing run directory %s", run_root))
+    unlink(run_root, recursive = TRUE, force = TRUE)
+  }
+  list(run_id = run_name, run_root = run_root)
 }
 
-#' @title Resolve the Run Root for Follow-up Tooling
-#' @description Returns the directory of the run that single-step re-runners
-#'   (diagnostics/) should read from. Resolution order: RUN_ID env override,
-#'   then the `latest_run.txt` pointer, then the `latest` symlink.
-#' @param results_base Base output directory (default "results").
-#' @return Absolute-or-relative path to the resolved run root.
-resolve_run_root <- function(results_base = "results") {
-  env_id <- Sys.getenv("RUN_ID", unset = "")
-  if (nzchar(env_id)) {
-    run_root <- file.path(results_base, env_id)
-    if (!dir.exists(run_root))
-      stop(sprintf("[RUN] RUN_ID '%s' set but %s does not exist.", env_id, run_root))
-    return(run_root)
+#' @title Collect Cohort Sizes per Analysis Frame from a Finished Run
+#' @description Reads the step-04 and step-06 JSONs of one experiment and returns
+#'   the N of each frame (NULL fields when an artifact is missing).
+#' @param exp_root The experiment directory (\code{<run_root>/<exp>}).
+#' @param exp_name Experiment name (file-name suffix).
+#' @return Named list of integers.
+collect_frame_ns <- function(exp_root, exp_name) {
+  rd <- function(step, stem) {
+    f <- file.path(exp_root, step_dir_name(step), sprintf("%s_%s.json", stem, exp_name))
+    if (file.exists(f)) tryCatch(jsonlite::fromJSON(f, simplifyVector = FALSE),
+                                 error = function(e) NULL) else NULL
   }
-
-  pointer <- file.path(results_base, "latest_run.txt")
-  if (file.exists(pointer)) {
-    run_id   <- trimws(readLines(pointer, warn = FALSE)[1])
-    run_root <- file.path(results_base, run_id)
-    if (dir.exists(run_root)) return(run_root)
-  }
-
-  symlink <- file.path(results_base, "latest")
-  target  <- Sys.readlink(symlink)
-  if (nzchar(target)) {
-    run_root <- if (grepl("^(/|[A-Za-z]:)", target)) target else file.path(results_base, target)
-    if (dir.exists(run_root)) return(run_root)
-  }
-
-  stop(sprintf("[RUN] No resolvable run under '%s'. Run main.R first, or set RUN_ID.", results_base))
+  as_int <- function(x) if (is.null(x)) NULL else as.integer(x)
+  j4 <- rd(4, "Machine_Metrics_LMM"); j6 <- rd(6, "Machine_Metrics_ML")
+  cu <- j6$clinical_utility; av <- j6$clinical_immune_added_value
+  out <- list(
+    t0_standard     = as_int(cu$n),
+    t0_standard_pos = as_int(cu$n_pos),
+    lmm_patients    = as_int(j4$n_patients),
+    lmm_obs         = as_int(j4$n_observations),
+    lmm_paired      = as_int(j4$n_paired),
+    delta           = as_int(av$n),
+    delta_pos       = as_int(av$n_pos),
+    delta_complete_case = as_int(av$n_complete_case)
+  )
+  Filter(Negate(is.null), out)
 }
 
 #' @title Write the Run Provenance Manifest
-#' @description Serializes a self-describing record (git state, R version, seed,
-#'   experiments + passes executed) to the run root, making each results folder
-#'   traceable to the exact code and parameters that produced it.
+#' @description Serializes a self-describing record (git state, R version, config
+#'   path and md5, input md5s, seeds, experiments + passes executed, N per frame)
+#'   to the run root, making each results folder traceable to the exact code,
+#'   parameters and inputs that produced it.
 #' @param path Output path for the YAML manifest.
 #' @param run_id The run id.
 #' @param config The base configuration object.
 #' @param experiments_meta Named list mapping experiment name -> character vector
 #'   of passes executed.
+#' @param config_path Path of the YAML config the run read.
+#' @param experiments_cfg Named list of the per-experiment config blocks (inputs).
 #' @return Invisibly, the manifest path.
-write_run_manifest <- function(path, run_id, config, experiments_meta) {
+write_run_manifest <- function(path, run_id, config, experiments_meta,
+                               config_path = NULL, experiments_cfg = NULL) {
   git_out <- function(args) tryCatch(
     system2("git", args, stdout = TRUE, stderr = FALSE),
     error = function(e) character(0), warning = function(w) character(0))
+  md5 <- function(f) if (!is.null(f) && file.exists(f)) unname(tools::md5sum(f)) else NA_character_
 
   sha    <- git_out(c("rev-parse", "HEAD"))
   branch <- git_out(c("rev-parse", "--abbrev-ref", "HEAD"))
+  # Untracked-but-ignored files never count; only tracked modifications and
+  # untracked, non-ignored files make the tree dirty.
   dirty  <- length(git_out(c("status", "--porcelain"))) > 0
 
+  run_root <- dirname(path)
+  exps <- lapply(names(experiments_meta), function(nm) {
+    ex <- if (!is.null(experiments_cfg)) experiments_cfg[[nm]] else NULL
+    pick <- function(k) if (!is.null(ex[[k]])) ex[[k]] else config[[k]]
+    inputs <- unique(Filter(Negate(is.null), list(pick("input_file_t0"), pick("input_file_t1"))))
+    list(
+      passes   = experiments_meta[[nm]],
+      inputs   = lapply(inputs, function(f) list(path = f, md5 = md5(f))),
+      n_frames = collect_frame_ns(file.path(run_root, nm), nm)
+    )
+  })
+  names(exps) <- names(experiments_meta)
+
+  pc  <- config$post_hoc
+  sal <- config$machine_learning$clinical_immune_added_value
   manifest <- list(
     run_id      = run_id,
     timestamp   = format(Sys.time(), "%Y-%m-%d %H:%M:%S %Z"),
@@ -139,9 +160,18 @@ write_run_manifest <- function(path, run_id, config, experiments_meta) {
     git_branch  = if (length(branch)) branch[1] else NA_character_,
     git_dirty   = dirty,
     r_version   = R.version.string,
+    config_path = config_path,
+    config_md5  = md5(config_path),
+    include_nlr = isTRUE(config$include_nlr),
+    seeds       = Filter(Negate(is.null), list(
+      stats               = config$stats$seed,
+      lmm_bootstrap       = config$lmm_bootstrap$seed,
+      selection_aware_lrt = sal$selection_aware_lrt$seed,
+      patient_bootstrap   = sal$patient_bootstrap$seed,
+      therapy             = pc$therapy$seed)),
     seed        = if (!is.null(config$stats$seed)) as.integer(config$stats$seed) else NULL,
     run_label   = if (!is.null(config$run_label)) config$run_label else NULL,
-    experiments = experiments_meta
+    experiments = exps
   )
 
   yaml::write_yaml(manifest, path)
@@ -150,25 +180,35 @@ write_run_manifest <- function(path, run_id, config, experiments_meta) {
 }
 
 #' @title Per-Step Output Directory Names
-#' @description Single source of truth for the canonical step subdirectory names
-#'   (indexed by step number 1..6). Every step derives its paths from these, so a
-#'   rename happens in exactly one place.
+#' @description Single source of truth for the canonical step subdirectory names,
+#'   keyed by step number (there is no step 05). Every step derives its paths from
+#'   these, so a rename happens in exactly one place.
 .STEP_DIRS <- c(
-  "01_data_processing",
-  "02_visualization",
-  "03_statistical_analysis",
-  "04_longitudinal_analysis",
-  "05_network_analysis",
-  "06_machine_learning"
+  "1" = "01_data_processing",
+  "2" = "02_visualization",
+  "3" = "03_statistical_analysis",
+  "4" = "04_longitudinal_analysis",
+  "6" = "06_machine_learning",
+  "7" = "07_post_hoc"
 )
+
+#' @title Look up a Step Directory Name by Step Number
+#' @param step Integer step number (a key of \code{.STEP_DIRS}).
+#' @return The directory name; an error for an unknown step.
+step_dir_name <- function(step) {
+  key <- as.character(as.integer(step))
+  if (!key %in% names(.STEP_DIRS))
+    stop(sprintf("[FATAL] Unknown pipeline step %s (known: %s)", key, paste(names(.STEP_DIRS), collapse = ", ")))
+  .STEP_DIRS[[key]]
+}
 
 #' @title Resolve a Step's Output Directory
 #' @param config Pass config (uses \code{config$output_root}).
-#' @param step Integer step number (1..6).
+#' @param step Integer step number (a key of \code{.STEP_DIRS}).
 #' @param create If TRUE, create the directory (recursively) when missing.
 #' @return The step directory path under the run's experiment root.
 step_dir <- function(config, step, create = FALSE) {
-  d <- file.path(config$output_root, .STEP_DIRS[[step]])
+  d <- file.path(config$output_root, step_dir_name(step))
   if (isTRUE(create) && !dir.exists(d)) dir.create(d, recursive = TRUE)
   d
 }
@@ -178,7 +218,7 @@ step_dir <- function(config, step, create = FALSE) {
 #'   pattern repeated across \code{src/}. The step subdirectory name lives only in
 #'   \code{.STEP_DIRS}.
 #' @param config Pass config (uses \code{config$output_root}).
-#' @param step Integer step number (1..6) owning the artifact.
+#' @param step Integer step number (a key of \code{.STEP_DIRS}) owning the artifact.
 #' @param name File name without extension (or full name if \code{ext} is NULL).
 #' @param ext Optional extension (no dot), e.g. "rds", "json".
 #' @return The full artifact path.
@@ -725,7 +765,7 @@ validate_experiment_columns <- function(cfg, exp, nm) {
 #' @title Build an Isolated Per-Pass Configuration
 #' @description
 #' Encapsulates the null-guarded config assembly repeated once per pass in
-#' \code{main.R} (and the single-step diagnostics runners). Starts from a copy of
+#' \code{main.R}. Starts from a copy of
 #' \code{base_config}, layers the per-experiment overrides relevant to the given
 #' pass, points \code{output_root} at the experiment's run subdirectory (creating
 #' it), and returns the isolated config. Mutations never leak back into
@@ -743,7 +783,7 @@ validate_experiment_columns <- function(cfg, exp, nm) {
 #' @param base_config The global configuration (single source of truth).
 #' @param exp_cfg The per-experiment override block.
 #' @param exp_name Experiment name (becomes \code{project_name}).
-#' @param pass_mode One of "standard", "longitudinal", "machine_learning".
+#' @param pass_mode One of "standard", "longitudinal", "machine_learning", "post_hoc".
 #' @param run_root The run root directory; \code{output_root} becomes
 #'   \code{run_root/exp_name}.
 #' @return The isolated, pass-ready config list.
@@ -751,8 +791,8 @@ validate_experiment_columns <- function(cfg, exp, nm) {
 #'
 #' Single source of truth for the with-/without-NLR variants. `main.R` needs it early
 #' (it labels the run dir with_nlr/no_nlr), and `prepare_pass_config()` re-applies it so
-#' EVERY consumer — including the `diagnostics/` single-step runners, which read the YAML
-#' directly and never saw main.R's resolution — honours the env var. Idempotent: main.R
+#' EVERY consumer — including code that reads the YAML directly and never saw main.R's
+#' resolution — honours the env var. Idempotent: main.R
 #' writes the resolved value back into base_config, so re-resolving yields the same answer.
 #' Without this the runners silently ran the WITH-NLR model regardless of INCLUDE_NLR, and
 #' would happily write it into a `*_no_nlr` run dir — a mislabeled artifact with no error.
@@ -764,7 +804,7 @@ resolve_include_nlr <- function(base_config) {
 }
 
 prepare_pass_config <- function(base_config, exp_cfg, exp_name, pass_mode, run_root) {
-  valid_modes <- c("standard", "longitudinal", "machine_learning")
+  valid_modes <- c("standard", "longitudinal", "machine_learning", "post_hoc")
   if (!pass_mode %in% valid_modes)
     stop(sprintf("[CONFIG] Unknown pass_mode '%s' (expected one of: %s)",
                  pass_mode, paste(valid_modes, collapse = ", ")))
@@ -799,7 +839,8 @@ prepare_pass_config <- function(base_config, exp_cfg, exp_name, pass_mode, run_r
     if (!is.null(exp_cfg$input_file_t0)) config$input_file_t0 <- exp_cfg$input_file_t0
     if (!is.null(exp_cfg$input_file_t1)) config$input_file_t1 <- exp_cfg$input_file_t1
 
-  } else if (pass_mode == "machine_learning") {
+  } else if (pass_mode %in% c("machine_learning", "post_hoc")) {
+    # post_hoc (step 07) reads the same inputs and machine_learning block as step 06.
     if (!is.null(exp_cfg$input_file))    config$input_file    <- exp_cfg$input_file
     if (!is.null(exp_cfg$input_file_t0)) config$input_file_t0 <- exp_cfg$input_file_t0
     # Step 06 reads T1 via the Step 01 longitudinal RDS, not this path — but the value is

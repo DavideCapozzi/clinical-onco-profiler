@@ -1,0 +1,81 @@
+# Changelog
+
+Analysis history of the NSCLC response study and the record of the 2026-10-28 refactor. The canonical runs are
+`results/0final/primary_PIregated_noPS` (primary) and `results/0final/nlr_v2_cc50` (NLR cohort). Every number from an
+earlier run is superseded and is not quoted anywhere.
+
+## Analysis history
+
+- **2026-08-22**: first full run on the parsed database (pre-label-fix).
+- **2026-09-10**: audit found response labels misassigned for a group of patients by the parser.
+- **2026-09-14**: label-fixed data files. Analysis cohort fixed: patients with an undefined T1 response target removed
+  at both timepoints (`data/0final/_upstream_excl6/make_excl6_inputs.R`). This with-PS run is archived:
+  `results/_archive/20260914_135629_EXPLORATORY_excl6_no_nlr/`.
+- **2026-10-19/20**: ECOG PS removed from every analysis (PI decision); clinical model = PD-L1 TPS alone. This
+  no-PS run is archived: `results/_archive/no_PS_20261020_112735_EXPLORATORY_excl6_no_PS_no_nlr/`.
+- **2026-10-22**: selection-aware LRT fixed to the top-K rule (K = observed gate size, the rule the Methods describe).
+- **2026-10-23**: T1 Ki67 data error. Three patients had the six Ki67-subset columns on the wrong denominator; the PI
+  re-gated those samples and only those 21 cells were replaced (`data/0final/primary_PIregated_noPS/`). This is the
+  final dataset.
+- **2026-10-26/27**: therapy regimen parsed from the free-text field (parser v3.1, mixed code legend; open with the PI);
+  therapy sensitivity (ICI monotherapy vs chemo-immunotherapy).
+- **2026-10-27**: Kaplan-Meier median split of the Δ composite (post hoc, descriptive).
+- **2026-10-27**: NLR v2. The whole pipeline on the 50 Δ-frame patients with a pre-therapy NLR, clinical model
+  PD-L1 + NLR (`data/0final/nlr_v2_cc50/`). It replaces the NLR v1 test (gate selected on the larger LMM frame).
+- **2026-10-28**: refactor (below). Both canonical runs re-run on the refactored code and verified equal to the
+  2026-10-23 / 2026-10-27 runs (`results/0final/VERIFICATION.md`: 136/136 and 129/129 checks pass; every stochastic
+  quantity bit-identical).
+
+## Refactor 2026-10-28 (branch `refactor/final-results`, tag `pre-refactor-20261028` = state before)
+
+- Inputs frozen in `data/0final/` (md5 in each `MD5SUMS`); `config/global_params.yml` = primary config,
+  `config/nlr_v2_cc50.yml` = NLR config.
+- `RUN_NAME` names the run dir (refuses an existing dir unless `FORCE=1`); the `latest` pointer is gone; tools take
+  `--run`; every run writes `run_manifest.yml` (git sha, config and input md5, seeds, N per frame).
+- Removed: step 05 (networks), the HNSCC / Comorbidity / Toxicity experiments, the univariate path, 8 legacy step-06
+  figures, the dead selection-aware builder, `R/modules_ml_plots.R`, `R/modules_network.R`, `diagnostics/`.
+- Figures exported by one helper, `save_figure()` (formats and dpi from config `figures:`).
+- Step 06 now computes the selection-aware LRT, the patient-bootstrap CIs and the LRT leave-one-out.
+- New step 07 (`src/07_post_hoc.R`): grouping, duplicated T1 rows, therapy, KM.
+- `publication/` collector with `INDEX.md`, driven by config `publication:`.
+- Identifiable exports go to `private/<run name>/` (gitignored).
+
+### Old name → new name
+
+| old | new |
+|---|---|
+| `diagnostics/diag_44_selection_aware_lrt.R` | `run_selection_aware_lrt()`, `R/modules_ml_selection_aware.R` (step 06) |
+| `diagnostics/diag_45_bootstrap_delta_auc.R` | `run_patient_bootstrap_auc()`, `R/modules_ml_bootstrap_ci.R` (step 06) |
+| fixed-gate LRT leave-one-out (computed inline) | `run_lrt_leave_one_out()`, `R/modules_ml_utility.R` (step 06) |
+| `diagnostics/diag_50_response_grouping.R` | `run_response_grouping_sensitivity()`, `R/modules_posthoc_grouping.R` (step 07 `grouping/`) |
+| `diagnostics/diag_55_duplicate_t1_sensitivity.R` | `run_duplicate_row_sensitivity()`, `R/modules_posthoc_duplicates.R` (step 07 `duplicate_rows/`) |
+| `diagnostics/diag_56_therapy_stratification.R`, `tools/therapy_sensitivity.R` | `R/modules_therapy_sensitivity.R` via step 07 `therapy/` |
+| `tools/km_median_split.R` | `R/modules_survival_km.R` via step 07 `km/` |
+| `diagnostics/diag_53_data_integrity.R` | `tools/data_integrity_audit.R --run --raw` |
+| `diagnostics/diag_54_compare_runs.R` | `tools/compare_runs.R` |
+| `diagnostics/_av_common.R` (harness) | `av_*` helpers in `R/modules_ml_utility.R` |
+| `diag_00`, `diag_46`–`49`, `diag_51`, `diag_51b`, `diag_57`, `run_d44_d45.sh`, `run_nlr*.sh` | removed (superseded or set aside) |
+| `results/final_PIregated/<run>` | `results/0final/primary_PIregated_noPS` |
+| `results/nlr_v2/<run>` | `results/0final/nlr_v2_cc50` |
+| `<run>/BestResponse_2v3_4/post_hoc/{km_median,therapy_v3.1}` | `<run>/BestResponse_2v3_4/07_post_hoc/{km,therapy}` |
+| `<run>/BestResponse_2v3_4/06_machine_learning/publication/` (all figures) | also collected into `<run>/publication/{main,supplementary,additional}` |
+
+Earlier one-off diagnostics (diag_09–14, the HNSCC prototypes, the multilevel T0 utility prototype) were already
+retired before the refactor; their manifest was `diagnostics/archive/README.md`
+(`git show pre-refactor-20261028:diagnostics/archive/README.md`).
+
+### Archive and deletion record
+
+- Backup of `results/`, `diagnostics/`, `data/`, `config/`, `manuscript/` and `CLAUDE.md` before any change:
+  `~/backups/clinical-onco-profiler_pre-refactor_20261028.tar.gz`, 1316 entries, sha256
+  `42f8cf4766b537a805dda555fbd8b4b8b210d56dcd30a855b59b94fc048c0edd`.
+- Archived (`results/_archive/`, with a README): the 2026-10-20 no-PS run (with its `_inputs/` and README) and the
+  2026-09-14 with-PS run.
+- Run READMEs, comparison tables and the original configs and console logs of the 2026-10-23 and 2026-10-27 runs:
+  `docs/archive/run_history/` (local only).
+- Deleted from `results/`: `20260822_173722_no_nlr`, `20260914_134721_labelfix_no_nlr`,
+  `20260914_163809_EXPLORATORY_76only`, `BestResponse_2v3_4`, `Comorbidity_1v0`, `Toxicity_1v0`, the rest of
+  `no_PS/` (two 2026-10-19 runs, `_inputs/`, README, pointers), `with_PS/`, `ki67_sensitivity/`,
+  `ki67_reconstructed/`, `ki67_PI_regated/`, `grouping_sensitivity/`, `final_PIregated/`, `nlr_v2/`,
+  `data_integrity_audit/`, `latest`, `latest_run.txt`. Deleted: `diagnostics/` (including `diagnostics/out/`).
+  Everything deleted is in the backup above.

@@ -7,8 +7,8 @@
 # whole cohort), so every p here is a sensitivity / exploratory value.
 #
 # Pure functions: data frames in, R objects out. No paths, no file I/O — the
-# driver (tools/therapy_sensitivity.R, or a future pipeline step) owns all paths.
-# Not sourced by main.R / src/ (user, 2026-10-27: not integrated into the main run).
+# driver (src/07_post_hoc.R, therapy/) owns all paths. Sensitivity analysis only:
+# its numbers never feed the step-04 / step-06 results.
 #
 # Tests per marker (numbering as in diagnostics/diag_56, which this replaces):
 #   [1] LMM V ~ Time*Group + Time*Rx + (1|ID); heterogeneity Time:Group:Rx
