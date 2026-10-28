@@ -342,6 +342,54 @@ figures:
   formats: [pdf]
   dpi: 300
 
+# --- Publication set (collect_publication(), R/utils_publication.R) ---
+# Copied from the step dirs into <run>/publication/{main,supplementary,supplementary/tables,
+# additional}/ at the end of main.R, with publication/INDEX.md. Labels are provisional.
+# frame: {key} = N of this run (t0_standard, lmm_patients, lmm_obs, lmm_paired, delta,
+# delta_pos, delta_complete_case, t0_pdl1_valid). A missing main/supplementary file is FATAL.
+publication:
+  main:
+    - {stem: Figure1_Biology, from: 06_machine_learning/publication, label: "Figure 1",
+       producer: "pub_fig_biology + pub_fig_lmm_forest",
+       frame: "A: Δ frame, n = {delta}; B: LMM frame, {lmm_patients} patients / {lmm_obs} obs"}
+    - {stem: Figure2b_AddedValue_CVcurves, from: 06_machine_learning/publication, label: "Figure 2",
+       producer: "pub_fig_added_value(curves = \"cv\")", frame: "Δ frame, n = {delta} ({delta_pos} PR)"}
+    - {stem: FigureS9b_Nomogram_FullRangeAxes, from: 06_machine_learning/publication, label: "Figure 3",
+       producer: "pub_fig_nomogram_hybrid", frame: "Δ frame, n = {delta} (apparent fit, not validated)"}
+    - {stem: FigureKM_DeltaComposite_OS_PFS, from: 07_post_hoc/km, label: "Figure 4",
+       producer: "pub_fig_km_panels (src/07_post_hoc.R)", frame: "Δ frame, n = {delta}; post hoc, descriptive"}
+  supplementary:
+    - {stem: FigureS1_CONSORT, from: 06_machine_learning/publication, label: "Figure S1",
+       producer: "pub_fig_consort",
+       frame: "T0 n = {t0_standard}; LMM {lmm_patients} patients / {lmm_obs} obs; Δ n = {delta}"}
+    - {stem: FigureS7_Calibration_IDI, from: 06_machine_learning/publication, label: "Figure S2",
+       producer: "pub_fig_calibration_idi", frame: "Δ frame, n = {delta}"}
+    - {stem: FigureT_TherapyChange, from: 07_post_hoc/therapy, label: "Figure S3",
+       producer: "pub_fig_therapy_change(adjusted = TRUE) (src/07_post_hoc.R)",
+       frame: "paired LMM patients with a known regimen (of {lmm_paired} paired); n per group in therapy/console.txt"}
+  tables:
+    - {stem: Longitudinal_LMM_Report, from: 04_longitudinal_analysis, type: xlsx, label: "Table S1",
+       producer: "src/04_longitudinal_lmm.R", frame: "LMM frame, {lmm_patients} patients / {lmm_obs} obs"}
+    - {stem: ML_Classification_Report, from: 06_machine_learning, type: xlsx, label: "Table S2",
+       producer: "src/06_machine_learning.R", frame: "T0 n = {t0_standard}; Δ n = {delta}"}
+  additional:
+    - {stem: Figure2_AddedValue, from: 06_machine_learning/publication, producer: "pub_fig_added_value(curves = \"loo\")", frame: "Δ frame, n = {delta}"}
+    - {stem: Figure3_PDL1_context, from: 06_machine_learning/publication, producer: "pub_fig_pdl1_context", frame: "T0 frame, n = {t0_standard} ({t0_pdl1_valid} with PD-L1)"}
+    - {stem: FigureS2_BaselineInvariance, from: 06_machine_learning/publication, producer: "pub_fig_baseline_invariance", frame: "Δ frame, n = {delta}"}
+    - {stem: FigureS3_SpecificityNull, from: 06_machine_learning/publication, producer: "pub_fig_specificity_null", frame: "Δ frame, n = {delta}"}
+    - {stem: FigureS4_StandaloneClassifier, from: 06_machine_learning/publication, producer: "pub_fig_standalone", frame: "T0 frame, n = {t0_standard}"}
+    - {stem: FigureS5_Coupling, from: 06_machine_learning/publication, producer: "pub_fig_coupling", frame: "Δ frame, n = {delta}"}
+    - {stem: FigureS6_Robustness, from: 06_machine_learning/publication, producer: "pub_fig_robustness", frame: "Δ frame, n = {delta}"}
+    - {stem: FigureS8_GateSignal, from: 06_machine_learning/publication, producer: "pub_fig_gate_signal", frame: "paired patients, n = {delta}"}
+    - {stem: FigureS9_Nomogram, from: 06_machine_learning/publication, producer: "pub_fig_nomogram", frame: "Δ frame, n = {delta}"}
+    - {stem: FigureS10_Classification, from: 06_machine_learning/publication, producer: "pub_fig_classification", frame: "Δ frame, n = {delta}"}
+    - {stem: FigureS11_FoldChange, from: 06_machine_learning/publication, producer: "pub_fig_foldchange", frame: "paired patients, n = {delta}"}
+    - {stem: FigureS12_Dissociation, from: 06_machine_learning/publication, producer: "pub_fig_dissociation", frame: "Δ frame, n = {delta}; descriptive"}
+    - {stem: FigureT_TherapyChange_unadjusted, from: 07_post_hoc/therapy, producer: "pub_fig_therapy_change(adjusted = FALSE)", frame: "paired LMM patients with a known regimen; raw means (not a valid ranking)"}
+    - {stem: SelectionAware_LRT, from: 06_machine_learning, type: csv, producer: "run_selection_aware_lrt", frame: "LMM {lmm_patients} patients (selection); Δ n = {delta} (LRT)"}
+    - {stem: PatientBootstrap_AUC, from: 06_machine_learning, type: csv, producer: "run_patient_bootstrap_auc", frame: "Δ frame, n = {delta}"}
+    - {stem: LRT_LeaveOneOut, from: 06_machine_learning, type: csv, producer: "run_lrt_leave_one_out", frame: "Δ frame, n = {delta}"}
+
 # --- Visualization & Colors ---
 # EXPANDED: Contains all possible labels injected by the mini-configs
 colors:
