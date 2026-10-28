@@ -314,6 +314,13 @@ multivariate:
     n_perm: 200
     n_repeat: 1
 
+# --- Figure export (save_figure(), R/utils_figures.R) ---
+# formats: any of pdf (cairo, default), png / tiff (ragg; tiff LZW), svg (cairo).
+# dpi applies to the raster formats. Multipage figures: one pdf, one raster/svg file per page.
+figures:
+  formats: [pdf]
+  dpi: 300
+
 # --- Visualization & Colors ---
 # EXPANDED: Contains all possible labels injected by the mini-configs
 colors:

@@ -6,6 +6,7 @@
 # ==============================================================================
 
 source("R/utils_io.R")
+source("R/utils_figures.R")
 source("R/modules_longitudinal.R")
 source("R/modules_viz.R")
 
@@ -496,13 +497,11 @@ message(sprintf("   [Output] Mathematical models matrix saved: %s", basename(exc
 
 # 7. Volcano Plot & Trajectory Rendering
 # ------------------------------------------------------------------------------
-plot_path <- file.path(out_dir, sprintf("Volcano_LMM_%s.pdf", config$project_name))
-pdf(plot_path, width = 9, height = 7)
+plot_path <- file.path(out_dir, sprintf("Volcano_LMM_%s", config$project_name))
 tryCatch({
   p_volcano <- plot_lmm_volcano(df_results, title = sprintf("LMM Pharmacodynamics: Time x %s", config$clinical$target_column))
-  if (!is.null(p_volcano)) print(p_volcano)
+  save_figure(p_volcano, plot_path, 9, 7, units = "in", config = config)
 }, error = function(e) warning(paste("Volcano plot rendering failed:", e$message)))
-dev.off()
 
 message("\n[Viz] Generating Patient Trajectory vectors...")
 
@@ -516,35 +515,33 @@ if (nrow(top_df) == 0) {
 }
 
 if (nrow(top_df) > 0) {
-  traj_path <- file.path(out_dir, sprintf("Trajectories_LMM_%s.pdf", config$project_name))
-  pdf(traj_path, width = 8, height = 6)
+  traj_path <- file.path(out_dir, sprintf("Trajectories_LMM_%s", config$project_name))
   
-  for (i in 1:nrow(top_df)) {
-    mk <- top_df$Marker[i]
-    pval_disp <- if (sig_type == "FDR") top_df$FDR_Interaction[i] else top_df$P_Value_Interaction[i]
-    
-    tryCatch({
-      p_traj <- plot_lmm_trajectories(
-        data_long = df_model,
-        feature = mk,
-        group_col = "Group",
-        time_col = "Timepoint",
-        id_col = "Patient_ID",
-        colors = colors_viz,
-        p_val = pval_disp
-      )
-      print(p_traj)
-    }, error = function(e) warning(sprintf("Trajectory matrix error on marker %s: %s", mk, e$message)))
-  }
-  
-  dev.off()
+  save_figure(function() {
+    for (i in 1:nrow(top_df)) {
+      mk <- top_df$Marker[i]
+      pval_disp <- if (sig_type == "FDR") top_df$FDR_Interaction[i] else top_df$P_Value_Interaction[i]
+      
+      tryCatch({
+        p_traj <- plot_lmm_trajectories(
+          data_long = df_model,
+          feature = mk,
+          group_col = "Group",
+          time_col = "Timepoint",
+          id_col = "Patient_ID",
+          colors = colors_viz,
+          p_val = pval_disp
+        )
+        print(p_traj)
+      }, error = function(e) warning(sprintf("Trajectory matrix error on marker %s: %s", mk, e$message)))
+    }
+  }, traj_path, 8, 6, units = "in", config = config, multipage = TRUE)
   message(sprintf("   [Output] Temporal trajectory visualizations exported: %s", basename(traj_path)))
 }
 
 # Forest plot: bootstrap 95% CI of interaction betas (only if bootstrap ran)
 if (!is.null(bootstrap_results) && nrow(bootstrap_results$summary_df) > 0) {
-  forest_path <- file.path(out_dir, sprintf("Forest_Bootstrap_LMM_%s.pdf", config$project_name))
-  pdf(forest_path, width = 9, height = max(3, 1.0 + 0.5 * nrow(bootstrap_results$summary_df)))
+  forest_path <- file.path(out_dir, sprintf("Forest_Bootstrap_LMM_%s", config$project_name))
   tryCatch({
     p_forest <- plot_lmm_forest(
       boot_summary = bootstrap_results$summary_df,
@@ -552,9 +549,9 @@ if (!is.null(bootstrap_results) && nrow(bootstrap_results$summary_df) > 0) {
       title        = sprintf("Bootstrap 95%% CI of LMM Betas (B=%d) - %s",
                              bootstrap_results$n_boot, config$project_name)
     )
-    if (!is.null(p_forest)) print(p_forest)
+    save_figure(p_forest, forest_path, 9, max(3, 1.0 + 0.5 * nrow(bootstrap_results$summary_df)),
+                units = "in", config = config)
   }, error = function(e) warning(sprintf("Forest plot failed: %s", e$message)))
-  dev.off()
   message(sprintf("   [Output] Bootstrap forest plot exported: %s", basename(forest_path)))
 }
 

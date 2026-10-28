@@ -133,10 +133,11 @@ plot_raw_distribution_merged <- function(data_df, marker_name, colors,
 #' 
 #' @param data_df Merged dataframe with metadata and raw values.
 #' @param markers Vector of marker names to plot.
-#' @param file_path Output path for the PDF.
+#' @param file_path Output path (extension optional; formats from fig_cfg).
 #' @param colors Named vector of colors for groups.
 #' @param hl_pattern String pattern for highlighting (e.g. "_LS").
-viz_save_distribution_report <- function(data_df, markers, file_path, colors, hl_pattern = "") {
+viz_save_distribution_report <- function(data_df, markers, file_path, colors, hl_pattern = "",
+                                         fig_cfg = NULL) {
   
   if (length(markers) == 0) {
     warning("[Viz] No markers provided for distribution report.")
@@ -145,29 +146,26 @@ viz_save_distribution_report <- function(data_df, markers, file_path, colors, hl
   
   message(sprintf("   [Viz] Saving distribution plots to: %s", basename(file_path)))
   
-  pdf(file_path, width = 8, height = 6)
-  # Ensure device is closed even if the loop crashes
-  on.exit(try(dev.off(), silent = TRUE), add = TRUE)
-  
-  for (marker in markers) {
-    if (marker %in% names(data_df)) {
-      # Try-catch ensures one bad plot doesn't crash the whole PDF generation
-      tryCatch({
-        p <- plot_raw_distribution_merged(
-          data_df = data_df, 
-          marker_name = marker,
-          colors = colors,     
-          highlight_pattern = hl_pattern,   
-          highlight_color = "#FFD700"
-        )
-        if (!is.null(p)) print(p)
-      }, error = function(e) {
-        warning(sprintf("      [WARN] Failed to plot marker '%s': %s", marker, e$message))
-      })
+  # One page per marker; a failing marker is skipped, never the whole report.
+  render <- function() {
+    for (marker in markers) {
+      if (marker %in% names(data_df)) {
+        tryCatch({
+          p <- plot_raw_distribution_merged(
+            data_df = data_df, 
+            marker_name = marker,
+            colors = colors,     
+            highlight_pattern = hl_pattern,   
+            highlight_color = "#FFD700"
+          )
+          if (!is.null(p)) print(p)
+        }, error = function(e) {
+          warning(sprintf("      [WARN] Failed to plot marker '%s': %s", marker, e$message))
+        })
+      }
     }
   }
-  
-  dev.off()
+  save_figure(render, file_path, 8, 6, units = "in", config = fig_cfg, multipage = TRUE)
 }
 
 #' @title Custom PCA Biplot with Multi-Pattern Highlighting
@@ -565,7 +563,9 @@ viz_plot_splsda_heatmap <- function(mat_z, metadata, group_col, colors, title = 
 #' @param out_path Path to save the PDF.
 #' @param group_col The name of the metadata column to use for grouping/coloring (default: "Group").
 #' @param n_top_boxplots Number of boxplots to plot. 
-viz_report_plsda <- function(pls_res, drivers_df, metadata_viz, colors_viz, out_path, group_col = "Group", n_top_boxplots = 9) {
+#' @param fig_cfg Config (or its \code{figures} block) for \code{save_figure()}.
+viz_report_plsda <- function(pls_res, drivers_df, metadata_viz, colors_viz, out_path, group_col = "Group", n_top_boxplots = 9,
+                             fig_cfg = NULL) {
   
   if (is.null(pls_res$model)) return(NULL)
   
@@ -581,9 +581,6 @@ viz_report_plsda <- function(pls_res, drivers_df, metadata_viz, colors_viz, out_
   if (!group_col %in% names(metadata_viz)) {
     stop(sprintf("Column '%s' not found in metadata for sPLS-DA visualization.", group_col))
   }
-  
-  pdf(out_path, width = 11, height = 8)
-  on.exit(try(dev.off(), silent = TRUE), add = TRUE) 
   
   plot_group_factor <- as.factor(metadata_viz[[group_col]])
   levels_present <- levels(plot_group_factor)
@@ -605,106 +602,111 @@ viz_report_plsda <- function(pls_res, drivers_df, metadata_viz, colors_viz, out_
       theme_void()
   }
   
-  # 1. Native ggplot2 Biplot
-  tryCatch({
-    variates_df <- as.data.frame(pls_res$model$variates$X[, 1:2, drop = FALSE])
-    colnames(variates_df) <- c("PC1", "PC2")
-    variates_df$Group <- plot_group_factor
-    variates_df$Patient_ID <- rownames(pls_res$model$variates$X)
+  # Pages: biplot, then per component loadings + boxplots, then the heatmap.
+  render <- function() {
+    # 1. Native ggplot2 Biplot
+    tryCatch({
+      variates_df <- as.data.frame(pls_res$model$variates$X[, 1:2, drop = FALSE])
+      colnames(variates_df) <- c("PC1", "PC2")
+      variates_df$Group <- plot_group_factor
+      variates_df$Patient_ID <- rownames(pls_res$model$variates$X)
     
-    var_pct <- round(pls_res$model$prop_expl_var$X[1:2] * 100, 1)
+      var_pct <- round(pls_res$model$prop_expl_var$X[1:2] * 100, 1)
     
-    p_biplot <- ggplot(variates_df, aes(x = PC1, y = PC2, color = Group, fill = Group)) +
-      geom_hline(yintercept = 0, linetype = "dashed", color = "gray70") +
-      geom_vline(xintercept = 0, linetype = "dashed", color = "gray70") +
-      stat_ellipse(geom = "polygon", alpha = 0.1, level = 0.95, show.legend = FALSE) +
-      geom_point(size = 3.5, shape = 21, color = "white", stroke = 0.5) +
-      geom_text_repel(aes(label = Patient_ID), size = 3, show.legend = FALSE, max.overlaps = 20) +
-      scale_fill_manual(values = plot_colors) +
-      scale_color_manual(values = plot_colors) +
-      labs(
-        title = "sPLS-DA: Model Separation",
-        subtitle = paste("Grouping by:", group_col),
-        x = sprintf("X-variate 1: %s%% expl. var", var_pct[1]),
-        y = sprintf("X-variate 2: %s%% expl. var", var_pct[2])
-      ) +
-      theme_coda()
+      p_biplot <- ggplot(variates_df, aes(x = PC1, y = PC2, color = Group, fill = Group)) +
+        geom_hline(yintercept = 0, linetype = "dashed", color = "gray70") +
+        geom_vline(xintercept = 0, linetype = "dashed", color = "gray70") +
+        stat_ellipse(geom = "polygon", alpha = 0.1, level = 0.95, show.legend = FALSE) +
+        geom_point(size = 3.5, shape = 21, color = "white", stroke = 0.5) +
+        geom_text_repel(aes(label = Patient_ID), size = 3, show.legend = FALSE, max.overlaps = 20) +
+        scale_fill_manual(values = plot_colors) +
+        scale_color_manual(values = plot_colors) +
+        labs(
+          title = "sPLS-DA: Model Separation",
+          subtitle = paste("Grouping by:", group_col),
+          x = sprintf("X-variate 1: %s%% expl. var", var_pct[1]),
+          y = sprintf("X-variate 2: %s%% expl. var", var_pct[2])
+        ) +
+        theme_coda()
     
-    print(p_biplot)
-  }, error = function(e) {
-    print(plot_error_msg(paste("Biplot Error:", e$message)))
-  })
+      print(p_biplot)
+    }, error = function(e) {
+      print(plot_error_msg(paste("Biplot Error:", e$message)))
+    })
   
-  # 2. Loadings & Boxplots
-  for (i in 1:n_comps) {
-    comp_col <- paste0("Comp", i, "_Weight")
-    if (!comp_col %in% names(drivers_df)) next
+    # 2. Loadings & Boxplots
+    for (i in 1:n_comps) {
+      comp_col <- paste0("Comp", i, "_Weight")
+      if (!comp_col %in% names(drivers_df)) next
     
-    variates <- pls_res$model$variates$X[, i]
-    stat_groups <- plot_group_factor
-    group_means <- tapply(variates, stat_groups, mean)
+      variates <- pls_res$model$variates$X[, i]
+      stat_groups <- plot_group_factor
+      group_means <- tapply(variates, stat_groups, mean)
     
-    pos_group_name <- names(group_means)[which.max(group_means)]
-    neg_group_name <- names(group_means)[which.min(group_means)]
+      pos_group_name <- names(group_means)[which.max(group_means)]
+      neg_group_name <- names(group_means)[which.min(group_means)]
     
-    label_sub <- sprintf("Direction: Positive -> %s | Negative -> %s", pos_group_name, neg_group_name)
+      label_sub <- sprintf("Direction: Positive -> %s | Negative -> %s", pos_group_name, neg_group_name)
     
-    current_fill_colors <- c()
-    if(pos_group_name %in% names(plot_colors)) current_fill_colors[[pos_group_name]] <- plot_colors[[pos_group_name]]
-    if(neg_group_name %in% names(plot_colors)) current_fill_colors[[neg_group_name]] <- plot_colors[[neg_group_name]]
-    if(is.null(current_fill_colors[[pos_group_name]])) current_fill_colors[[pos_group_name]] <- "gray"
-    if(is.null(current_fill_colors[[neg_group_name]])) current_fill_colors[[neg_group_name]] <- "gray"
+      current_fill_colors <- c()
+      if(pos_group_name %in% names(plot_colors)) current_fill_colors[[pos_group_name]] <- plot_colors[[pos_group_name]]
+      if(neg_group_name %in% names(plot_colors)) current_fill_colors[[neg_group_name]] <- plot_colors[[neg_group_name]]
+      if(is.null(current_fill_colors[[pos_group_name]])) current_fill_colors[[pos_group_name]] <- "gray"
+      if(is.null(current_fill_colors[[neg_group_name]])) current_fill_colors[[neg_group_name]] <- "gray"
     
-    df_comp <- drivers_df[abs(drivers_df[[comp_col]]) > 0, ]
+      df_comp <- drivers_df[abs(drivers_df[[comp_col]]) > 0, ]
     
-    if (nrow(df_comp) > 0) {
-      df_comp$Association <- ifelse(df_comp[[comp_col]] > 0, pos_group_name, neg_group_name)
+      if (nrow(df_comp) > 0) {
+        df_comp$Association <- ifelse(df_comp[[comp_col]] > 0, pos_group_name, neg_group_name)
       
-      p_load <- ggplot(df_comp, aes(x = reorder(Marker, abs(.data[[comp_col]])), 
-                                    y = .data[[comp_col]], fill = Association)) +
-        geom_bar(stat = "identity", width = 0.7) +
-        coord_flip() +
-        scale_fill_manual(values = current_fill_colors) +
-        labs(title = sprintf("sPLS-DA Loadings (Component %d)", i), 
-             subtitle = label_sub, x = "Marker", y = "Weight Contribution", fill = "Associated Group") +
-        theme_coda() + theme(legend.position = "bottom")
-      print(p_load)
+        p_load <- ggplot(df_comp, aes(x = reorder(Marker, abs(.data[[comp_col]])), 
+                                      y = .data[[comp_col]], fill = Association)) +
+          geom_bar(stat = "identity", width = 0.7) +
+          coord_flip() +
+          scale_fill_manual(values = current_fill_colors) +
+          labs(title = sprintf("sPLS-DA Loadings (Component %d)", i), 
+               subtitle = label_sub, x = "Marker", y = "Weight Contribution", fill = "Associated Group") +
+          theme_coda() + theme(legend.position = "bottom")
+        print(p_load)
       
-      if(exists("viz_plot_signature_boxplots")) {
-        p_box <- viz_plot_signature_boxplots(
-          data_matrix = pls_res$model$X, 
-          group_factor = plot_group_factor,
-          loadings_df = df_comp, 
-          comp = i, 
-          n_top = n_top_boxplots, 
-          colors = plot_colors
-        )
-        if (!is.null(p_box)) print(p_box)
+        if(exists("viz_plot_signature_boxplots")) {
+          p_box <- viz_plot_signature_boxplots(
+            data_matrix = pls_res$model$X, 
+            group_factor = plot_group_factor,
+            loadings_df = df_comp, 
+            comp = i, 
+            n_top = n_top_boxplots, 
+            colors = plot_colors
+          )
+          if (!is.null(p_box)) print(p_box)
+        }
       }
     }
-  }
   
-  # 3. Transposed Signature Heatmap
-  if (nrow(drivers_df) > 1) {
-    tryCatch({
-      mks <- unique(drivers_df$Marker)
-      mat_sub <- pls_res$model$X[, mks, drop = FALSE]
+    # 3. Transposed Signature Heatmap
+    if (nrow(drivers_df) > 1) {
+      tryCatch({
+        mks <- unique(drivers_df$Marker)
+        mat_sub <- pls_res$model$X[, mks, drop = FALSE]
       
-      meta_hm <- metadata_viz[match(rownames(mat_sub), metadata_viz$Patient_ID), ]
+        meta_hm <- metadata_viz[match(rownames(mat_sub), metadata_viz$Patient_ID), ]
       
-      hm <- viz_plot_splsda_heatmap(
-        mat_z = mat_sub,
-        metadata = meta_hm,
-        group_col = group_col,
-        colors = plot_colors,
-        title = "sPLS-DA Signature Heatmap"
-      )
+        hm <- viz_plot_splsda_heatmap(
+          mat_z = mat_sub,
+          metadata = meta_hm,
+          group_col = group_col,
+          colors = plot_colors,
+          title = "sPLS-DA Signature Heatmap"
+        )
       
-      ComplexHeatmap::draw(hm, merge_legend = TRUE)
-    }, error = function(e) {
-      print(plot_error_msg(paste("Heatmap Error:", e$message)))
-    })
+        ComplexHeatmap::draw(hm, merge_legend = TRUE)
+      }, error = function(e) {
+        print(plot_error_msg(paste("Heatmap Error:", e$message)))
+      })
+    }
   }
+
+  save_figure(render, out_path, 11, 8, units = "in", config = fig_cfg, multipage = TRUE)
 }
 
 

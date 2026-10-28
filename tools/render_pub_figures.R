@@ -20,6 +20,7 @@
 
 suppressPackageStartupMessages({ library(here); library(jsonlite) })
 source(here("R/utils_io.R"))
+source(here("R/utils_figures.R"))
 source(here("R/utils_metrics.R"))        # list_run_experiments()
 source(here("R/modules_pub_style.R"))
 source(here("R/modules_pub_figures.R"))

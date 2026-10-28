@@ -28,6 +28,7 @@
 
 suppressPackageStartupMessages({ library(here); library(jsonlite); library(readxl); library(survival) })
 source(here("R/utils_io.R"))
+source(here("R/utils_figures.R"))
 source(here("R/utils_metrics.R"))            # list_run_experiments()
 source(here("R/modules_pub_style.R"))
 source(here("R/modules_survival_km.R"))
