@@ -2024,6 +2024,13 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
     }
     roc_sum <- matrix(0, length(fpr_grid), 3, dimnames = list(NULL, colnames(R)))
     nb_sum  <- matrix(0, length(pt_grid),  3, dimnames = list(NULL, colnames(R)))
+    # Each clinical var ALONE (only when the clinical model has > 1 var; with one var the
+    # clinical arm already is that var): 1-var logistic on the SAME folds, same in-fold
+    # imputation => paired with, and comparable to, the three arms. No RNG => unchanged above.
+    sv  <- if (ncol(Cmat) > 1) colnames(Cmat) else character(0)
+    Rs  <- matrix(NA_real_, reps, length(sv), dimnames = list(NULL, sv))
+    roc_sum_s <- matrix(0, length(fpr_grid), length(sv), dimnames = list(NULL, sv))
+    nb_sum_s  <- matrix(0, length(pt_grid),  length(sv), dimnames = list(NULL, sv))
     for (r in seq_len(reps)) {
       fold <- integer(n)
       for (cl in unique(yb)) {                       # stratified fold assignment
@@ -2031,19 +2038,27 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
         fold[ix] <- sample(rep(seq_len(k), length.out = length(ix)))
       }
       pc <- pk <- pi_ <- numeric(n)
+      ps <- matrix(0, n, length(sv), dimnames = list(NULL, sv))
       for (f in seq_len(k)) {
         te <- which(fold == f); tr <- which(fold != f)
-        if (length(unique(yb[tr])) < 2) { pc[te] <- pk[te] <- pi_[te] <- mean(yb[tr]); next }
+        if (length(unique(yb[tr])) < 2) { pc[te] <- pk[te] <- pi_[te] <- ps[te, ] <- mean(yb[tr]); next }
         pc[te]  <- fit_predict(Cmat, comp, tr, te, use_immune = FALSE)
         pk[te]  <- fit_predict(Cmat, comp, tr, te, use_immune = TRUE)
         di      <- data.frame(yb = yb, comp = comp)
         fi      <- suppressWarnings(glm(yb ~ comp, data = di[tr, , drop = FALSE], family = binomial()))
         pi_[te] <- as.numeric(predict(fi, newdata = di[te, , drop = FALSE], type = "response"))
+        for (v in sv) ps[te, v] <- fit_predict(Cmat[, v, drop = FALSE], comp, tr, te, use_immune = FALSE)
       }
       R[r, ] <- c(auc_pos(pc), auc_pos(pi_), auc_pos(pk))
       roc_sum <- roc_sum + cbind(roc_on_grid(pc), roc_on_grid(pi_), roc_on_grid(pk))
       nb_sum  <- nb_sum  + cbind(nb(pc), nb(pi_), nb(pk))
+      for (v in sv) {
+        Rs[r, v] <- auc_pos(ps[, v])
+        roc_sum_s[, v] <- roc_sum_s[, v] + roc_on_grid(ps[, v])
+        nb_sum_s[, v]  <- nb_sum_s[, v]  + nb(ps[, v])
+      }
     }
+    add_single <- function(d, M) if (ncol(M)) cbind(d, setNames(as.data.frame(M), paste0("single_", colnames(M)))) else d
     dlt <- R[, "combined"] - R[, "clinical"]
     # Combined vs immune-ALONE, on the SAME shared folds (hence paired). This exists because
     # the combined model can score BELOW the immune composite alone out-of-sample whenever the
@@ -2052,7 +2067,7 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
     # Reporting the paired interval turns "immune alone beats the combined model" from an
     # unanswered exposure into a quantified statement (cf. diag_43, where +0.0016 was noise).
     dlt_i <- R[, "combined"] - R[, "immune"]
-    list(method = sprintf("repeated stratified %d-fold CV, %d reps (paired folds)", k, reps),
+    out_cv <- list(method = sprintf("repeated stratified %d-fold CV, %d reps (paired folds)", k, reps),
          k = k, reps = reps,
          auc_clinical = unname(mean(R[, "clinical"])),
          auc_immune   = unname(mean(R[, "immune"])),
@@ -2062,12 +2077,15 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
          delta_auc_vs_immune    = unname(mean(dlt_i)),
          delta_auc_vs_immune_ci = unname(stats::quantile(dlt_i, c(.025, .975))),
          baseline_degenerate = unname(mean(R[, "clinical"]) < 0.5),
-         curves = list(roc = data.frame(fpr = fpr_grid, roc_sum / reps),
-                       net_benefit = as.data.frame(nb_sum / reps)),
+         curves = list(roc = add_single(data.frame(fpr = fpr_grid, roc_sum / reps), roc_sum_s / reps),
+                       net_benefit = add_single(as.data.frame(nb_sum / reps), nb_sum_s / reps)),
          note = paste("Reportable discrimination. LOO values in `auc` are retained for",
                       "continuity but are artifact-prone for tied/discrete clinical predictors",
                       "(see diag_41); a sub-chance LOO AUC is a CV pathology, not anti-prediction.",
                       "The increment's primary test is the LRT, which uses no CV."))
+    # each clinical var alone (same folds); key absent when the clinical model has one var
+    if (length(sv)) out_cv$auc_single <- as.list(colMeans(Rs))
+    out_cv
   }, error = function(e) {
     message(sprintf("[ML][AV] k-fold CV block failed (non-fatal): %s", e$message)); NULL
   })
@@ -2076,7 +2094,7 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
   roc_cv <- dc_cv <- NULL
   if (!is.null(cv_kfold$curves)) {
     roc_cv <- cv_kfold$curves$roc
-    dc_cv  <- dc; dc_cv[c("clinical", "immune", "combined")] <- cv_kfold$curves$net_benefit
+    dc_cv  <- dc; dc_cv[names(cv_kfold$curves$net_benefit)] <- cv_kfold$curves$net_benefit
     cv_kfold$curves <- NULL
   }
 
@@ -2475,8 +2493,10 @@ av_auc_pos <- function(p, y, neg_label, resp_label) {
 #' @title Repeated stratified k-fold CV of the three arms (the cv_kfold block)
 #' @description Same folds, models and AUC as run_clinical_immune_added_value()'s
 #'   cv_kfold. Pins Mersenne-Twister and restores the caller's RNG kind and state.
-#' @return Mean AUCs per arm, the deltas and the per-repetition matrix R.
-av_cv_kfold <- function(A, reps = 50L, seed = 2026L + 977L) {
+#' @param single Also score each clinical var alone (1-var logistic, same folds, no RNG;
+#'   only when Cmat has > 1 column), as the step-06 cv_kfold does.
+#' @return Mean AUCs per arm, the deltas and the per-repetition matrix R (+ auc_single, Rs).
+av_cv_kfold <- function(A, reps = 50L, seed = 2026L + 977L, single = FALSE) {
   yb <- A$yb; comp <- A$comp; Cmat <- A$Cmat; y <- A$y
   n  <- length(yb)
   if (length(unique(yb)) < 2) return(NULL)
@@ -2491,6 +2511,8 @@ av_cv_kfold <- function(A, reps = 50L, seed = 2026L + 977L) {
   set.seed(seed)
   k <- min(10L, max(3L, floor(min(sum(yb), sum(1 - yb)) / 2)))
   R <- matrix(NA_real_, reps, 3, dimnames = list(NULL, c("clinical", "immune", "combined")))
+  sv <- if (isTRUE(single) && ncol(Cmat) > 1) colnames(Cmat) else character(0)
+  Rs <- matrix(NA_real_, reps, length(sv), dimnames = list(NULL, sv))
   for (r in seq_len(reps)) {
     fold <- integer(n)
     for (cl in unique(yb)) {
@@ -2498,19 +2520,23 @@ av_cv_kfold <- function(A, reps = 50L, seed = 2026L + 977L) {
       fold[ix] <- sample(rep(seq_len(k), length.out = length(ix)))
     }
     pc <- pk <- pi_ <- numeric(n)
+    ps <- matrix(0, n, length(sv), dimnames = list(NULL, sv))
     for (f in seq_len(k)) {
       te <- which(fold == f); tr <- which(fold != f)
-      if (length(unique(yb[tr])) < 2) { pc[te] <- pk[te] <- pi_[te] <- mean(yb[tr]); next }
+      if (length(unique(yb[tr])) < 2) { pc[te] <- pk[te] <- pi_[te] <- ps[te, ] <- mean(yb[tr]); next }
       pc[te] <- av_fit_predict(Cmat, comp, yb, tr, te, FALSE)
       pk[te] <- av_fit_predict(Cmat, comp, yb, tr, te, TRUE)
       di <- data.frame(yb = yb, comp = comp)
       fi <- suppressWarnings(glm(yb ~ comp, data = di[tr, , drop = FALSE], family = binomial()))
       pi_[te] <- as.numeric(predict(fi, newdata = di[te, , drop = FALSE], type = "response"))
+      for (v in sv) ps[te, v] <- av_fit_predict(Cmat[, v, drop = FALSE], comp, yb, tr, te, FALSE)
     }
     ap <- function(p) av_auc_pos(p, y, A$neg_label, A$resp_label)
     R[r, ] <- c(ap(pc), ap(pi_), ap(pk))
+    for (v in sv) Rs[r, v] <- ap(ps[, v])
   }
-  list(k = k, reps = reps, R = R,
+  list(k = k, reps = reps, R = R, Rs = Rs,
+       auc_single = if (length(sv)) as.list(colMeans(Rs)) else NULL,
        auc_clinical = unname(mean(R[, "clinical"])),
        auc_immune   = unname(mean(R[, "immune"])),
        auc_combined = unname(mean(R[, "combined"])),

@@ -4,7 +4,7 @@ An R-based, config-driven pipeline for immunological profiling of oncology cohor
 
 - **Cross-sectional analysis** (Steps 01–03): QC → visualization → sPLS-DA multivariate modeling
 - **Longitudinal analysis** (Steps 01 + 04): joint T0/T1 processing → Linear Mixed Models (LMM) with Leave-One-Out sensitivity and covariate adjustment
-- **Machine learning and added value** (Step 06): nested-LOOCV Elastic Net + SVM-RBF gated on LMM LOO-robust features; clinical + immune added-value layer with the selection-aware LRT (label permutation with full gate re-selection), patient-bootstrap CIs for the cross-validated AUCs, and the fixed-gate LRT leave-one-out
+- **Machine learning and added value** (Step 06): nested-LOOCV Elastic Net + SVM-RBF gated on LMM LOO-robust features; clinical + immune added-value layer with the selection-aware LRT (label permutation with full gate re-selection), patient-bootstrap CIs for the cross-validated AUCs (including each clinical variable alone when the clinical model has more than one, drawn in Figure 2b from the same CV folds), and the fixed-gate LRT leave-one-out
 - **Post hoc sensitivity** (Step 07): response grouping (PR / SD / PD), duplicated-row sensitivity, therapy regimen, Kaplan-Meier median split; descriptive, gate fixed
 
 Applied to NSCLC patients treated with immune checkpoint inhibitors (ICI) to identify response biomarkers. Converging evidence across three analytical layers (sPLS-DA, LMM, ML) points to a **KI67 proliferation axis that moves with early radiological response**. The reported result is the *incremental* value of that axis over a PD-L1 baseline — it is a single marker axis selected by the LMM, with family-level corroboration, **not a validated multi-marker signature and not a standalone classifier**.
