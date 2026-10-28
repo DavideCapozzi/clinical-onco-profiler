@@ -25,6 +25,10 @@ earlier run is superseded and is not quoted anywhere.
 - **2026-10-28**: refactor (below). Both canonical runs re-run on the refactored code and verified equal to the
   2026-10-23 / 2026-10-27 runs (`results/0final/VERIFICATION.md`: 136/136 and 129/129 checks pass; every stochastic
   quantity bit-identical).
+- **2026-10-28**: NLR run re-run on `6fab3a4` (each clinical variable alone in CV, with CI, and in Figure 2b): verified
+  129/129 against the reference; versus the previous NLR run only the new keys and rows were added. NLR alone
+  0.624 [0.426, 0.784], PD-L1 alone 0.339 [0.274, 0.619] (n = 50). The primary run was not re-run: with one clinical
+  variable the change adds nothing.
 
 ## Refactor 2026-10-28 (branch `refactor/final-results`, tag `pre-refactor-20261028` = state before)
 
