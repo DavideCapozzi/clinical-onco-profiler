@@ -161,7 +161,7 @@ if (status != 0) fail(sprintf("main.R exited with status %d", status))
 run_dir <- file.path(cfg$output_root, "smoke")
 exp_dir <- file.path(run_dir, "Synthetic")
 
-# The exit code is not trusted (a failed pass still exits 0): grep the logs.
+# main.R exits 1 on a failed pass; the log grep also names the failing log.
 logs <- c(file.path(work, "run.log"), list.files(exp_dir, pattern = "^log_.*\\.txt$", full.names = TRUE),
           list.files(run_dir, pattern = "^log_.*\\.txt$", full.names = TRUE))
 fatal <- logs[vapply(logs, function(f) any(grepl("FATAL ERROR", readLines(f, warn = FALSE), fixed = TRUE)), logical(1))]
@@ -213,6 +213,8 @@ for (role in c("main", "supplementary", "tables")) {
 man <- yaml::read_yaml(expected[["manifest"]])
 if (is.null(man$config_md5) || is.null(man$experiments$Synthetic$n_frames$delta))
   fail("run_manifest.yml lacks config_md5 or the frame Ns")
+if (!"failed_passes" %in% names(man) || length(man$failed_passes))
+  fail("run_manifest.yml: failed_passes missing or not empty")
 
 cat("\n[SMOKE] PASS — pipeline ran end-to-end on a synthetic config and emitted:\n")
 for (nm in names(expected)) cat(sprintf("  - %s\n", expected[[nm]]))
