@@ -276,6 +276,22 @@ for (exp_name in names(experiments_list)) {
   }
 }
 
+# Publication set: copy the mapped figures / tables into <run>/publication/ (+ INDEX.md).
+# A mapped main or supplementary file that is missing is FATAL (logged, like a failed pass).
+if (!is.null(base_config$publication)) {
+  log_file_pub <- file.path(run_root, paste0("log_publication_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".txt"))
+  cat(sprintf("=== PUBLICATION COLLECTOR STARTED: %s ===\n", Sys.time()), file = log_file_pub)
+  tryCatch(
+    withCallingHandlers(collect_publication(run_root, base_config, experiments = names(run_passes)),
+      message = function(m) cat(conditionMessage(m), file = log_file_pub, append = TRUE, sep = "\n"),
+      warning = function(w) cat(paste0("WARNING: ", conditionMessage(w)), file = log_file_pub, append = TRUE, sep = "\n")),
+    error = function(e) {
+      err_msg <- paste0("\n[FATAL ERROR] Publication collector stopped: ", e$message)
+      cat(err_msg, file = log_file_pub, append = TRUE, sep = "\n")
+      message(err_msg)
+    })
+}
+
 # Publish provenance once all experiments have run.
 write_run_manifest(file.path(run_root, "run_manifest.yml"), run_id, base_config, run_passes,
                    config_path = base_config_path, experiments_cfg = experiments_list)
