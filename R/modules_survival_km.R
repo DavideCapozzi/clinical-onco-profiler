@@ -5,8 +5,7 @@
 # (mean Δz of the fixed LMM gate markers); the split is at its median in the frame.
 #
 # Pure functions: vectors in, R objects out. No paths, no file I/O — the driver
-# (tools/km_median_split.R) owns all paths. Not sourced by main.R / src/
-# (user, 2026-10-27: post-hoc tool, not integrated into the main run).
+# (src/07_post_hoc.R, km/) owns all paths. Post hoc and descriptive.
 #
 # Landmark: Δ is only known at T1, so time runs from the landmark (T1) and patients
 # with OS <= landmark are excluded (recorded). With OS in whole months (min 1) and a

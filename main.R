@@ -102,11 +102,14 @@ for (exp_name in names(experiments_list)) {
   run_longitudinal    <- if (!is.null(exp_cfg$is_longitudinal))      as.logical(exp_cfg$is_longitudinal)      else FALSE
   # ML is a global flag (base_config), not per-experiment — Step 06 self-gates on LOO-robust feature availability
   run_machine_learning <- if (!is.null(base_config$run_machine_learning)) as.logical(base_config$run_machine_learning) else FALSE
+  # Post hoc (step 07) needs steps 04 and 06; it self-skips (logged) when their artifacts are missing.
+  run_post_hoc <- run_longitudinal && run_machine_learning && !isFALSE(base_config$run_post_hoc)
 
   run_passes[[exp_name]] <- c(
     if (run_standard)         "standard",
     if (run_longitudinal)     "longitudinal",
-    if (run_machine_learning) "machine_learning"
+    if (run_machine_learning) "machine_learning",
+    if (run_post_hoc)         "post_hoc"
   )
 
   # ============================================================================
@@ -241,6 +244,33 @@ for (exp_name in names(experiments_list)) {
     }, error = function(e) {
       err_msg <- paste0("\n[FATAL ERROR] Machine Learning Pipeline stopped: ", e$message)
       cat(err_msg, file = log_file_ml, append = TRUE, sep = "\n")
+      message(err_msg)
+    })
+  }
+
+  # ============================================================================
+  # PASS 4: POST HOC (07) — grouping, duplicated rows, therapy, KM on the
+  # finished step-04 / step-06 artifacts. Self-skips when they are missing.
+  # ============================================================================
+  if (run_post_hoc) {
+    config <- prepare_pass_config(base_config, exp_cfg, exp_name, "post_hoc", run_root)
+
+    log_file_ph <- file.path(config$output_root, paste0("log_post_hoc_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".txt"))
+
+    message(sprintf("\n--- [PASS 4] POST HOC: %s ---", config$project_name))
+    cat(sprintf("=== POST HOC STARTED: %s ===\n", Sys.time()), file = log_file_ph)
+
+    tryCatch({
+      withCallingHandlers({
+        message(">>> RUNNING PHASE 7: POST HOC ANALYSES <<<")
+        source(here("src/07_post_hoc.R"), echo = FALSE, local = FALSE)
+
+        message(sprintf("\n[SUCCESS] Post hoc completed for: %s", exp_name))
+      }, message = function(m) cat(conditionMessage(m), file = log_file_ph, append = TRUE, sep = "\n"),
+      warning = function(w) cat(paste0("WARNING: ", conditionMessage(w)), file = log_file_ph, append = TRUE, sep = "\n"))
+    }, error = function(e) {
+      err_msg <- paste0("\n[FATAL ERROR] Post Hoc Pipeline stopped: ", e$message)
+      cat(err_msg, file = log_file_ph, append = TRUE, sep = "\n")
       message(err_msg)
     })
   }
