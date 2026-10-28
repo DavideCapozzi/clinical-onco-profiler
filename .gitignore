@@ -34,3 +34,6 @@ docs/archive/
 
 # presentation workspace (pptx build, node_modules, figure PNGs)
 deck/
+
+# Identifiable exports (names) — local only, never committed
+private/
