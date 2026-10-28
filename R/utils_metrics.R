@@ -164,7 +164,7 @@ list_run_experiments <- function(run_root) {
 #     (correct nested test) permutation p < 0.05 AND the IDI 95% CI excluding 0,
 #     plus FDR-significant features > 0. The standalone classifier (SVM perm p /
 #     nested-LOO) is exploratory and does NOT gate here.
-#   - WITHOUT it (cross-sectional / univariate path, e.g. HNSCC): fall back to the
+#   - WITHOUT it (no clinical model in the experiment): fall back to the
 #     standalone classifier — perm p < 0.05 on the PRIMARY method + nested-LOO
 #     AUC > 0.6 (+ FDR count for the LMM-gated path).
 # ==============================================================================

@@ -92,7 +92,7 @@ resolve_run_dir <- function(output_root, label = NULL) {
 #' @return Named list of integers.
 collect_frame_ns <- function(exp_root, exp_name) {
   rd <- function(step, stem) {
-    f <- file.path(exp_root, .STEP_DIRS[[step]], sprintf("%s_%s.json", stem, exp_name))
+    f <- file.path(exp_root, step_dir_name(step), sprintf("%s_%s.json", stem, exp_name))
     if (file.exists(f)) tryCatch(jsonlite::fromJSON(f, simplifyVector = FALSE),
                                  error = function(e) NULL) else NULL
   }
@@ -180,25 +180,34 @@ write_run_manifest <- function(path, run_id, config, experiments_meta,
 }
 
 #' @title Per-Step Output Directory Names
-#' @description Single source of truth for the canonical step subdirectory names
-#'   (indexed by step number 1..6). Every step derives its paths from these, so a
-#'   rename happens in exactly one place.
+#' @description Single source of truth for the canonical step subdirectory names,
+#'   keyed by step number (there is no step 05). Every step derives its paths from
+#'   these, so a rename happens in exactly one place.
 .STEP_DIRS <- c(
-  "01_data_processing",
-  "02_visualization",
-  "03_statistical_analysis",
-  "04_longitudinal_analysis",
-  "05_network_analysis",
-  "06_machine_learning"
+  "1" = "01_data_processing",
+  "2" = "02_visualization",
+  "3" = "03_statistical_analysis",
+  "4" = "04_longitudinal_analysis",
+  "6" = "06_machine_learning"
 )
+
+#' @title Look up a Step Directory Name by Step Number
+#' @param step Integer step number (a key of \code{.STEP_DIRS}).
+#' @return The directory name; an error for an unknown step.
+step_dir_name <- function(step) {
+  key <- as.character(as.integer(step))
+  if (!key %in% names(.STEP_DIRS))
+    stop(sprintf("[FATAL] Unknown pipeline step %s (known: %s)", key, paste(names(.STEP_DIRS), collapse = ", ")))
+  .STEP_DIRS[[key]]
+}
 
 #' @title Resolve a Step's Output Directory
 #' @param config Pass config (uses \code{config$output_root}).
-#' @param step Integer step number (1..6).
+#' @param step Integer step number (a key of \code{.STEP_DIRS}).
 #' @param create If TRUE, create the directory (recursively) when missing.
 #' @return The step directory path under the run's experiment root.
 step_dir <- function(config, step, create = FALSE) {
-  d <- file.path(config$output_root, .STEP_DIRS[[step]])
+  d <- file.path(config$output_root, step_dir_name(step))
   if (isTRUE(create) && !dir.exists(d)) dir.create(d, recursive = TRUE)
   d
 }
@@ -208,7 +217,7 @@ step_dir <- function(config, step, create = FALSE) {
 #'   pattern repeated across \code{src/}. The step subdirectory name lives only in
 #'   \code{.STEP_DIRS}.
 #' @param config Pass config (uses \code{config$output_root}).
-#' @param step Integer step number (1..6) owning the artifact.
+#' @param step Integer step number (a key of \code{.STEP_DIRS}) owning the artifact.
 #' @param name File name without extension (or full name if \code{ext} is NULL).
 #' @param ext Optional extension (no dot), e.g. "rds", "json".
 #' @return The full artifact path.

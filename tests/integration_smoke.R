@@ -79,7 +79,6 @@ cfg$machine_learning$clinical_utility$n_boot <- 30
 cfg$experiments <- list(
   Synthetic = list(
     is_longitudinal = TRUE,
-    run_network     = FALSE,
     input_file      = t0_path,
     input_file_t0   = t0_path,
     input_file_t1   = t1_path,
