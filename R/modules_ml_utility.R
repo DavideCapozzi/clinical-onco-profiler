@@ -1847,7 +1847,7 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
   # exact same transform. The immune side reverses Step 01's pipeline: logit/log2 (frozen
   # epsilon, attached by the caller) -> z with FROZEN per-marker center/scale (recovered from
   # `hybrid_data_raw`, the pre-z transformed matrix) -> median-impute on the z scale. The
-  # clinical side stores per-variable medians (raw scale). See diagnostics/run_validation.R.
+  # clinical side stores per-variable medians (raw scale).
   #
   # Constants MUST come from the same rows Step 01's scale() saw, because it discards
   # `scaled:center`/`scaled:scale` (modules_coda.R:276-277) and recomputing from raw is the

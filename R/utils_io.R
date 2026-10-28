@@ -765,7 +765,7 @@ validate_experiment_columns <- function(cfg, exp, nm) {
 #' @title Build an Isolated Per-Pass Configuration
 #' @description
 #' Encapsulates the null-guarded config assembly repeated once per pass in
-#' \code{main.R} (and the single-step diagnostics runners). Starts from a copy of
+#' \code{main.R}. Starts from a copy of
 #' \code{base_config}, layers the per-experiment overrides relevant to the given
 #' pass, points \code{output_root} at the experiment's run subdirectory (creating
 #' it), and returns the isolated config. Mutations never leak back into
@@ -791,8 +791,8 @@ validate_experiment_columns <- function(cfg, exp, nm) {
 #'
 #' Single source of truth for the with-/without-NLR variants. `main.R` needs it early
 #' (it labels the run dir with_nlr/no_nlr), and `prepare_pass_config()` re-applies it so
-#' EVERY consumer — including the `diagnostics/` single-step runners, which read the YAML
-#' directly and never saw main.R's resolution — honours the env var. Idempotent: main.R
+#' EVERY consumer — including code that reads the YAML directly and never saw main.R's
+#' resolution — honours the env var. Idempotent: main.R
 #' writes the resolved value back into base_config, so re-resolving yields the same answer.
 #' Without this the runners silently ran the WITH-NLR model regardless of INCLUDE_NLR, and
 #' would happily write it into a `*_no_nlr` run dir — a mislabeled artifact with no error.
