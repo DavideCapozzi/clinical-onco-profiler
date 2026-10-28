@@ -4,8 +4,8 @@ An R-based, config-driven pipeline for immunological profiling of oncology cohor
 
 - **Cross-sectional analysis** (Steps 01–03): QC → visualization → sPLS-DA multivariate modeling
 - **Longitudinal analysis** (Steps 01 + 04): joint T0/T1 processing → Linear Mixed Models (LMM) with Leave-One-Out sensitivity and covariate adjustment
-- **Differential network analysis** (Step 05, optional): bootstrap partial correlation baselines per clinical group → permutation-tested differential overlay → Cytoscape-ready CSV exports
-- **Machine learning classification** (Step 06): nested-LOOCV Elastic Net + SVM-RBF classifier gated on LMM LOO-robust features
+- **Machine learning and added value** (Step 06): nested-LOOCV Elastic Net + SVM-RBF gated on LMM LOO-robust features; clinical + immune added-value layer with the selection-aware LRT (label permutation with full gate re-selection), patient-bootstrap CIs for the cross-validated AUCs, and the fixed-gate LRT leave-one-out
+- **Post hoc sensitivity** (Step 07): response grouping (PR / SD / PD), duplicated-row sensitivity, therapy regimen, Kaplan-Meier median split; descriptive, gate fixed
 
 Applied to NSCLC patients treated with immune checkpoint inhibitors (ICI) to identify response biomarkers. Converging evidence across three analytical layers (sPLS-DA, LMM, ML) points to a **KI67 proliferation axis that moves with early radiological response**. The reported result is the *incremental* value of that axis over a PD-L1 baseline — it is a single marker axis selected by the LMM, with family-level corroboration, **not a validated multi-marker signature and not a standalone classifier**.
 
@@ -43,24 +43,41 @@ micromamba create -f env/environment.lock.yml   # exact versions + build strings
 ## Usage
 
 ```bash
-# Full pipeline (reads config/global_params.yml)
-Rscript main.R
+# Canonical runs (~100 and ~90 min; the selection-aware LRT uses 15 cores)
+RUN_NAME=primary_PIregated_noPS CONFIG_PATH=config/global_params.yml Rscript main.R
+RUN_NAME=nlr_v2_cc50            CONFIG_PATH=config/nlr_v2_cc50.yml    Rscript main.R
 
-# With a custom config (e.g. a new cohort) — no repo edits
-CONFIG_PATH=/path/to/alt_config.yml Rscript main.R
-
-# Restrict a run to named experiments
-EXPERIMENTS=BestResponse_2v3_4 Rscript main.R
+# Any other config — no repo edits; restrict to named experiments
+RUN_NAME=my_run CONFIG_PATH=/path/to/alt_config.yml EXPERIMENTS=BestResponse_2v3_4 Rscript main.R
 ```
 
-The pipeline auto-detects whether the config is **nested multi-experiment** (has an `experiments:` key) or **flat single-cohort**, then runs each experiment through two independent passes (standard cross-sectional + longitudinal), followed by an optional ML pass. At startup `validate_config()` checks that each enabled experiment's outcome and clinical-model columns exist in its input Excel, so a misconfigured cohort fails fast. Set `enabled: false` on an experiment block to skip it without deleting it.
+The run directory is `<output_root>/<RUN_NAME>` (without `RUN_NAME`, a timestamped name). `main.R` refuses to
+write into an existing run directory unless `FORCE=1`. Each experiment runs Pass 1 standard (`01→02→03`), Pass 2
+longitudinal (`01→04`), Pass 3 ML (`06`) and Pass 4 post hoc (`07`); then `publication/` is collected and
+`run_manifest.yml` (git sha, config and input md5, seeds, N per frame) is written.
+
+**A failed pass logs `[FATAL ERROR]` but the process still exits 0**: always
+`grep -l "FATAL ERROR" <run>/*/log_*.txt` instead of trusting the exit code.
+
+The pipeline auto-detects whether the config is **nested multi-experiment** (has an `experiments:` key) or **flat single-cohort**. At startup `validate_config()` checks that each enabled experiment's outcome and clinical-model columns exist in its input Excel, so a misconfigured cohort fails fast. Set `enabled: false` on an experiment block to skip it without deleting it.
 
 ### Tests
 
 ```bash
-Rscript tests/integration_smoke.R           # end-to-end smoke test on a synthetic cohort (01→04→06)
-Rscript tools/metrics_report.R --new <run_id>  # headline metrics + publishability verdict for a run
+Rscript tests/integration_smoke.R              # end-to-end smoke test on a synthetic cohort (~10 min)
 ```
+
+### Tools (all read an existing run, named explicitly)
+
+```bash
+Rscript tools/metrics_report.R --new <run>        # headline metrics + publishability verdict
+Rscript tools/render_pub_figures.R --run <run>    # re-render the figures from publication_data (~10 s), re-collect publication/
+Rscript tools/compare_runs.R a=<run> b=<run> [--out f.md]   # side-by-side comparison of runs
+Rscript tools/data_integrity_audit.R --run <run> --raw <raw DB>   # raw DB → inputs → step-01 audit (output in private/)
+```
+
+`tools/patient_inclusion_map.R` and `tools/patient_delta_export.R` (local only) write identifiable files to
+`private/<run name>/`, which is gitignored.
 
 ---
 
@@ -68,13 +85,14 @@ Rscript tools/metrics_report.R --new <run_id>  # headline metrics + publishabili
 
 ```
 config/                    Pipeline configuration (YAML)
-  global_params.yml        Multi-experiment config (single source of truth)
+  global_params.yml        Primary run config
+  nlr_v2_cc50.yml          NLR run config (clinical model PD-L1 + NLR)
 
-data/                      Input Excel files (not tracked in git — add your own)
+data/                      Input Excel files (not tracked in git)
+  0final/                  Frozen inputs of the canonical runs, with MD5SUMS
 
-diagnostics/               Supplementary stand-alone analyses (gitignored — local only)
-  _av_common.R             Rebuilds the added-value objects outside the pipeline
-  diag_00_verify_harness.R Asserts the harness reproduces the published run — run this first
+docs/
+  CHANGELOG.md             Analysis history, refactor record, old → new names
 
 env/
   environment.yml          Conda environment specification (human-editable)
@@ -85,46 +103,63 @@ R/                         Reusable module library (sourced by main.R at startup
   modules_coda.R           Logit/log2 transformation, BPCA imputation
   modules_multivariate.R   sPLS-DA fitting and extraction
   modules_longitudinal.R   LMM fitting, LOO sensitivity, R² (Nakagawa 2013)
-  modules_network.R        Bootstrap partial correlations, differential overlay
   modules_split.R          Discovery/validation cohort split
   modules_ml.R             Aggregator — sources the four modules_ml_* files
   modules_ml_gate.R        LMM feature gate, per-fold gate selection
   modules_ml_cv.R          Nested-LOOCV classifiers, collinearity filter, metrics
-  modules_ml_utility.R     Clinical benchmark, added-value layer, utility, dissociation
-  modules_ml_plots.R       ML ggplot/PDF rendering
+  modules_ml_utility.R     Clinical benchmark, added-value layer, utility, dissociation, LRT leave-one-out
+  modules_ml_selection_aware.R  Selection-aware LRT (label permutation with gate re-selection)
+  modules_ml_bootstrap_ci.R     Patient-bootstrap CIs for the CV AUCs
+  modules_posthoc_grouping.R    Step 07: response grouping sensitivity
+  modules_posthoc_duplicates.R  Step 07: duplicated-row sensitivity
+  modules_therapy_sensitivity.R Step 07: therapy regimen sensitivity
+  modules_survival_km.R         Step 07: Kaplan-Meier median split
   modules_pub_figures.R    Manuscript figure set (pub_fig_*, pub_render_all)
   modules_pub_style.R      Publication theme, palette, figure saving
   modules_viz.R            ggplot rendering functions
   utils_io.R               Config loading, run dirs, cohort ledger, manifests
   utils_metrics.R          Headline metric extraction, publishability verdict, run compare
+  utils_figures.R          save_figure(): every figure export (formats / dpi from config)
+  utils_publication.R      collect_publication(): publication/ folder and INDEX.md
 
-tools/
-  metrics_report.R         Publishability verdict / run-to-run comparison CLI
+tools/                     Stand-alone CLIs on an existing run (see Tools above)
 
 src/                       Pipeline step scripts (sourced in order by main.R)
   01_data_processing.R
   02_visualization.R
   03_statistical_analysis.R
   04_longitudinal_lmm.R
-  05_network_analysis.R
   06_machine_learning.R
+  07_post_hoc.R
 
 tests/                     Test scripts
   integration_smoke.R      End-to-end smoke test on a synthetic cohort
 
 results/                   All pipeline outputs (not tracked in git)
-  latest_run.txt           Source of truth for "the last run"
-  <run_id>/                One timestamped dir per invocation, e.g. 20260822_173722_no_nlr
-    run_manifest.yml       run_id, git_sha, git_dirty, r_version, seed, passes
+  0final/                  The canonical runs, README.md and VERIFICATION.md
+  _archive/                Superseded runs kept for provenance (never quoted)
+  <run name>/
+    run_manifest.yml       git sha, config + input md5, seeds, N per frame, timestamp
+    publication/           Collected figures and tables (see below) + INDEX.md
     <experiment_name>/
-      01_data_processing/  Processed .rds objects
+      01_data_processing/  Processed .rds objects, cohort ledger
       02_visualization/    Distribution and PCA PDFs
       03_statistical_analysis/ sPLS-DA results, JSON drivers
       04_longitudinal_analysis/ LMM tables (Excel + JSON), volcano/trajectory PDFs
-      05_network_analysis/ Cytoscape CSVs, network PDFs
-      06_machine_learning/ Classifier results (Excel, PDFs, JSON)
-        publication/       Manuscript-ready PDFs + publication_data.rds
+      06_machine_learning/ Classifier and added-value results (Excel, JSON, csv)
+        publication/       Manuscript figures + publication_data.rds
+      07_post_hoc/{grouping,duplicate_rows,therapy,km}/
+
+private/                   Identifiable exports (names), local only
 ```
+
+### Publication layout
+
+`collect_publication()` copies files (it never re-renders) into `<run>/publication/`, following the `publication:`
+block of the config: `main/`, `supplementary/`, `supplementary/tables/` (LMM and ML xlsx reports) and `additional/`
+(other figures and the selection-aware LRT, patient-bootstrap and LRT leave-one-out csv summaries). `INDEX.md` has
+one row per file: role, paper label (provisional), file, producing function, frame and n. A missing main or
+supplementary file is a `[FATAL ERROR]`.
 
 ---
 
@@ -139,8 +174,13 @@ All pipeline parameters are controlled by `config/global_params.yml`. Key sectio
 | `clinical.target_column` | Column encoding the response group |
 | `clinical.mapping` | Maps raw integer codes to responder/non-responder labels |
 | `qc` | Missingness thresholds, outlier detection settings |
-| `network` | Bootstrap/permutation counts, edge thresholds, Cytoscape export filters |
 | `machine_learning` | FDR/LOO thresholds, collinearity filter, CV grids |
+| `machine_learning.clinical_immune_added_value.selection_aware_lrt` | B (10000), top-K rule, cores, seed |
+| `machine_learning.clinical_immune_added_value.patient_bootstrap` | B (2000), CV repetitions per resample, cores, seed |
+| `post_hoc` | Step 07 blocks: `grouping`, `duplicate_rows`, `therapy` (regimen files, B, seed), `km` (landmark) |
+| `figures` | Export formats (`pdf`, `png`, `tiff`, `svg`) and dpi |
+| `publication` | Mapping of figures and tables into `publication/` with labels and frames |
+| `stats.seed` | Global seed; B values and seeds behind reported numbers must not change |
 
 See `config/global_params.yml` for inline documentation of each parameter.
 
@@ -151,22 +191,6 @@ See `config/global_params.yml` for inline documentation of each parameter.
 Input files are Excel workbooks (`.xlsx`) with one row per patient, one column per marker. Required columns: `Patient_ID` plus all marker columns listed under `features.facs` and `features.soluble` in the config. Longitudinal analyses expect separate T0 and T1 files with matching `Patient_ID` values.
 
 Input files are **not tracked in git** (the `data/` directory is gitignored) to protect patient data.
-
----
-
-## Supplementary diagnostics
-
-Scripts in `diagnostics/` are stand-alone analyses that extend or validate the main pipeline results. They read processed `.rds` outputs from `results/` and can be run independently. The directory is **gitignored**, so its contents vary by working copy.
-
-`diagnostics/_av_common.R` rebuilds the added-value objects (composite, clinical design matrix, outcome) outside the pipeline, so a diagnostic can vary one thing at a time without re-implementing the composite or the cross-validation.
-
-```bash
-Rscript diagnostics/diag_00_verify_harness.R   # ALWAYS run first
-```
-
-`diag_00_verify_harness.R` asserts that the harness reproduces the published cross-validated AUCs and likelihood-ratio test **exactly**. If it fails, every downstream diagnostic is invalid — fix the assembly, never adjust the target.
-
-These scripts require the main pipeline to have been run first (so that `results/` outputs exist).
 
 ---
 
