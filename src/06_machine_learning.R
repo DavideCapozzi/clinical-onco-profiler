@@ -564,6 +564,77 @@ if (lmm_robust$n_robust == 0) {
         100 * nested_val$prespec_recovery))
   }
 
+  # 12e. Inference on the added-value increment (selection-aware LRT, patient-bootstrap
+  #      CIs, fixed-gate LRT leave-one-out). Config block
+  #      machine_learning.clinical_immune_added_value.{selection_aware_lrt, patient_bootstrap,
+  #      lrt_leave_one_out}. The frame they share is first checked to reproduce the cv_kfold
+  #      AUCs and the LRT of 12b (FATAL otherwise). Each saves/restores the RNG state, so
+  #      nothing above or below moves. Correctness failures are fatal by design.
+  # ------------------------------------------------------------------------------
+  sel_aware <- NULL; patient_boot <- NULL; lrt_loo <- NULL
+  inf_cfg <- if (!is.null(ml_cfg$clinical_immune_added_value)) ml_cfg$clinical_immune_added_value else list()
+  sa_cfg  <- inf_cfg$selection_aware_lrt
+  pb_cfg  <- inf_cfg$patient_bootstrap
+  loo_cfg <- inf_cfg$lrt_leave_one_out
+  if (!is.null(clin_addval) && exists("DATA_LONG_decomp") && !is.null(DATA_LONG_decomp) &&
+      (isTRUE(sa_cfg$enabled) || isTRUE(pb_cfg$enabled) || !isFALSE(loo_cfg$enabled))) {
+    av_cv_vars <- unlist(ml_cfg$clinical_model$vars)   # after the NLR toggle of 12b
+    av_seed    <- if (!is.null(config$stats$seed)) as.integer(config$stats$seed) else 2026L
+    n_cores    <- function(x) if (is.null(x)) max(1L, parallel::detectCores() - 1L)
+                              else max(1L, min(as.integer(x), parallel::detectCores()))
+    R_av <- av_context(DATA, DATA_LONG_decomp, config$clinical$responder_label,
+                       config$input_file_t0, av_cv_vars)
+    A_av <- av_assemble(R_av, clin_addval$composite_markers, clin_addval$composite_timepoint)
+    av_verify_frame(A_av, clin_addval, seed = av_seed)
+
+    if (isTRUE(sa_cfg$enabled)) {
+      if (!identical(clin_addval$composite_timepoint, "delta"))
+        stop("[FATAL] selection_aware_lrt is implemented for composite_timepoint = delta only")
+      sel_aware <- run_selection_aware_lrt(
+        DATA, DATA_LONG_decomp, clin_addval, config, av_cv_vars,
+        B     = if (!is.null(sa_cfg$B)) as.integer(sa_cfg$B) else 10000L,
+        topk  = if (!is.null(sa_cfg$topk)) sa_cfg$topk else "gate_size",
+        cores = n_cores(sa_cfg$cores),
+        seed  = if (!is.null(sa_cfg$seed)) as.integer(sa_cfg$seed) else av_seed,
+        fdr_thr  = fdr_thresh,
+        log_file = file.path(out_dir, sprintf("SelectionAware_LRT_progress_%s.log", config$project_name)))
+      saveRDS(sel_aware, file.path(out_dir, sprintf("SelectionAware_LRT_%s.rds", config$project_name)))
+      utils::write.csv(selection_aware_table(sel_aware),
+                       file.path(out_dir, sprintf("SelectionAware_LRT_%s.csv", config$project_name)),
+                       row.names = FALSE)
+      message(sprintf("[ML][SelAware] %s: p = %.4f (%d/%d null LR >= %.4f) | null 95th pct %.2f",
+                      sel_aware$rule, sel_aware$p_selection_aware, sel_aware$n_null_ge_obs,
+                      sel_aware$B_valid, sel_aware$lr_obs, sel_aware$null_q95))
+    }
+
+    if (isTRUE(pb_cfg$enabled)) {
+      patient_boot <- run_patient_bootstrap_auc(
+        DATA, DATA_LONG_decomp, clin_addval, config, av_cv_vars,
+        B            = if (!is.null(pb_cfg$B)) as.integer(pb_cfg$B) else 2000L,
+        reps_in_boot = if (!is.null(pb_cfg$reps_in_boot)) as.integer(pb_cfg$reps_in_boot) else 10L,
+        seed         = if (!is.null(pb_cfg$seed)) as.integer(pb_cfg$seed) else av_seed,
+        cores        = n_cores(pb_cfg$cores))
+      saveRDS(patient_boot, file.path(out_dir, sprintf("PatientBootstrap_AUC_%s.rds", config$project_name)))
+      utils::write.csv(patient_bootstrap_table(patient_boot),
+                       file.path(out_dir, sprintf("PatientBootstrap_AUC_%s.csv", config$project_name)),
+                       row.names = FALSE)
+      g <- patient_boot$results$gate
+      message(sprintf("[ML][PatientBoot] dAUC combined-clinical %+.4f [%+.3f, %+.3f] (B=%d)",
+                      g$point$delta_auc, g$bootA$delta_auc[1], g$bootA$delta_auc[2], patient_boot$B))
+    }
+
+    if (!isFALSE(loo_cfg$enabled)) {
+      lrt_loo <- run_lrt_leave_one_out(A_av, if (!is.null(sel_aware)) sel_aware$lr_null_topk else NULL)
+      utils::write.csv(lrt_loo$per_patient,
+                       file.path(out_dir, sprintf("LRT_LeaveOneOut_%s.csv", config$project_name)),
+                       row.names = FALSE)
+      message(sprintf("[ML][LRT-LOO] LR %.2f; leave-one-out %.2f (-%s) to %.2f (-%s); %s removals below the null 95th pct",
+                      lrt_loo$lr_all, lrt_loo$lr_min, lrt_loo$lr_min_dropped,
+                      lrt_loo$lr_max, lrt_loo$lr_max_dropped,
+                      if (is.na(lrt_loo$n_below_null_q95)) "n/a" else as.character(lrt_loo$n_below_null_q95)))
+    }
+  }
+
   # 13. Export Machine-Readable JSON
   # ------------------------------------------------------------------------------
   machine_output <- list(
@@ -670,7 +741,12 @@ if (lmm_robust$n_robust == 0) {
     } else NULL,
     clinical_utility = clinical_utility_json(clin_util),
     clinical_immune_added_value = clinical_immune_json(clin_addval),
-    nested_gate_validation = nested_validation_json(nested_val)
+    nested_gate_validation = nested_validation_json(nested_val),
+    # Inference on the added-value increment (12e). Full-precision values and the null
+    # vectors are in SelectionAware_LRT_<exp>.rds / PatientBootstrap_AUC_<exp>.rds.
+    selection_aware_lrt = selection_aware_json(sel_aware),
+    patient_bootstrap   = patient_boot,
+    lrt_leave_one_out   = if (!is.null(lrt_loo)) lrt_loo[setdiff(names(lrt_loo), "per_patient")] else NULL
   )
 
   # Additive secondary-timepoint added-value nodes (e.g. delta) — primary node above unchanged.

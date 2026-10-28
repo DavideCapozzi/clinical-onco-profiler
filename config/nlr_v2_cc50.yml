@@ -353,6 +353,24 @@ machine_learning:
   clinical_utility:            # Clinical-utility layer (run_clinical_utility) — calibration/DCA/optimism on the pre-specified composite
     n_boot: 2000               # Harrell enhanced-bootstrap reps for optimism correction
 
+  # Inference on the clinical+immune increment (step 06, section 12e). Seeds and B are the
+  # values behind the reported numbers; changing them changes the numbers.
+  clinical_immune_added_value:
+    selection_aware_lrt:       # THE reportable p: label permutation with full gate re-selection
+      enabled: true
+      B: 10000                 # ~40 min on 15 cores
+      topk: gate_size          # top-K rule, K = observed gate size (the rule the Methods describe)
+      cores: 15                # results do not depend on it (permutations drawn before the parallel loop)
+      seed: 2026
+    patient_bootstrap:         # THE reported CIs for the CV AUCs and dAUC (cv_kfold$delta_auc_ci is NOT a CI)
+      enabled: true
+      B: 2000                  # ~10 min on 15 cores
+      reps_in_boot: 10         # CV repetitions inside each resample
+      cores: 15
+      seed: 2026
+    lrt_leave_one_out:         # fixed-gate LRT dropping one patient at a time (deterministic)
+      enabled: true
+
   glmnet:
     alpha_grid: [0.0, 0.5, 1.0] # Tuned in inner CV: Ridge, Elastic Net, LASSO
     n_lambda: 100
