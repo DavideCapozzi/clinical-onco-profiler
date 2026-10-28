@@ -157,9 +157,11 @@ private/                   Identifiable exports (names), local only
 
 `collect_publication()` copies files (it never re-renders) into `<run>/publication/`, following the `publication:`
 block of the config: `main/`, `supplementary/`, `supplementary/tables/` (LMM and ML xlsx reports) and `additional/`
-(other figures and the selection-aware LRT, patient-bootstrap and LRT leave-one-out csv summaries). `INDEX.md` has
-one row per file: role, paper label (provisional), file, producing function, frame and n. A missing main or
-supplementary file is a `[FATAL ERROR]`.
+(other figures and the selection-aware LRT, patient-bootstrap and LRT leave-one-out csv summaries). Copies are named
+by their paper label (`main/Fig_2_AddedValue_CVcurves.pdf`, `supplementary/Fig_S1_CONSORT.pdf`,
+`supplementary/tables/Table_S1_Longitudinal_LMM_Report.xlsx`; unlabelled files keep only the descriptive part); the
+step outputs keep their original names. `INDEX.md` has one row per file: role, paper label (provisional), file,
+source step file, producing function, frame and n. A missing main or supplementary file is a `[FATAL ERROR]`.
 
 ---
 

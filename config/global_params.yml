@@ -305,7 +305,9 @@ figures:
 
 # --- Publication set (collect_publication(), R/utils_publication.R) ---
 # Copied from the step dirs into <run>/publication/{main,supplementary,supplementary/tables,
-# additional}/ at the end of main.R, with publication/INDEX.md. Labels are provisional.
+# additional}/ at the end of main.R, with publication/INDEX.md. Labels are provisional and
+# name the copies (label "Figure 2" -> Fig_2_<name>; name defaults to the stem without its
+# Figure<N>_ prefix); the step outputs keep their stems.
 # frame: {key} = N of this run (t0_standard, lmm_patients, lmm_obs, lmm_paired, delta,
 # delta_pos, delta_complete_case, t0_pdl1_valid). A missing main/supplementary file is FATAL.
 publication:
@@ -334,7 +336,7 @@ publication:
     - {stem: ML_Classification_Report, from: 06_machine_learning, type: xlsx, label: "Table S2",
        producer: "src/06_machine_learning.R", frame: "T0 n = {t0_standard}; Δ n = {delta}"}
   additional:
-    - {stem: Figure2_AddedValue, from: 06_machine_learning/publication, producer: "pub_fig_added_value(curves = \"loo\")", frame: "Δ frame, n = {delta}"}
+    - {stem: Figure2_AddedValue, name: AddedValue_LOOcurves, from: 06_machine_learning/publication, producer: "pub_fig_added_value(curves = \"loo\")", frame: "Δ frame, n = {delta}"}
     - {stem: Figure3_PDL1_context, from: 06_machine_learning/publication, producer: "pub_fig_pdl1_context", frame: "T0 frame, n = {t0_standard} ({t0_pdl1_valid} with PD-L1)"}
     - {stem: FigureS2_BaselineInvariance, from: 06_machine_learning/publication, producer: "pub_fig_baseline_invariance", frame: "Δ frame, n = {delta}"}
     - {stem: FigureS3_SpecificityNull, from: 06_machine_learning/publication, producer: "pub_fig_specificity_null", frame: "Δ frame, n = {delta}"}

@@ -86,7 +86,12 @@ retired before the refactor; their manifest was `diagnostics/archive/README.md`
   still run first) and `run_manifest.yml` lists them under `failed_passes` (empty list = clean run). Before this, a
   failed run exited 0 and only the log grep caught it.
 - Header and inline comments of `config/global_params.yml` and `config/nlr_v2_cc50.yml` rewritten: superseded numbers
-  (with-PS era AUCs and naive LRT p), ECOG PS wording and pointers to deleted diagnostics removed. The parsed YAML is
-  identical, but the file md5 changed: `global_params.yml` b5293bcd… → 2a6c0943…, `nlr_v2_cc50.yml` 4f09a9d9… →
-  f260b393…. The `config_md5` in the two canonical `run_manifest.yml` files is the pre-edit md5; the old files are
-  `git show 03fcb81:config/<file>`.
+  (with-PS era AUCs and naive LRT p), ECOG PS wording and pointers to deleted diagnostics removed. Apart from the
+  publication `name:` key below, the parsed YAML is identical (every analysis setting unchanged), but the file md5
+  changed: `global_params.yml` b5293bcd… → 11e967e4…, `nlr_v2_cc50.yml` 4f09a9d9… → 56365076…. The `config_md5` in
+  the two canonical `run_manifest.yml` files is the pre-edit md5; the old files are `git show 03fcb81:config/<file>`.
+- `publication/` copies are named by paper label (`Fig_1_Biology.pdf`, `Fig_S1_CONSORT.pdf`, `Table_S1_….xlsx`;
+  unlabelled files: descriptive part only, without the legacy `FigureN_` prefix and experiment suffix). The step
+  outputs keep their names; `INDEX.md` gained a source column. Both canonical `publication/` folders were re-collected
+  (same 25 files, byte-identical contents). Config entries accept an optional `name:` (used for
+  `AddedValue_LOOcurves`).
