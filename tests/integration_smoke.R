@@ -199,13 +199,15 @@ if (is.null(ml$clinical_immune_added_value))
 for (node in c("selection_aware_lrt", "patient_bootstrap", "lrt_leave_one_out"))
   if (is.null(ml[[node]])) fail(sprintf("ML JSON missing the %s node", node))
 
-# Publication set: every mapped main / supplementary / table entry was collected.
+# Publication set: every mapped main / supplementary / table entry was collected,
+# named by its paper label (e.g. main/Fig_1_Biology.pdf).
+source(here("R/utils_publication.R"))   # pub_dest_stem()
 pub <- file.path(run_dir, "publication")
 for (role in c("main", "supplementary", "tables")) {
   sub <- c(main = "main", supplementary = "supplementary", tables = "supplementary/tables")[[role]]
   for (e in cfg$publication[[role]]) {
-    hit <- list.files(file.path(pub, sub), pattern = sprintf("^%s(_Synthetic)?\\.", e$stem))
-    if (!length(hit)) fail(sprintf("publication/%s: %s not collected", sub, e$stem))
+    hit <- list.files(file.path(pub, sub), pattern = sprintf("^%s(_p[0-9]+)?\\.", pub_dest_stem(e)))
+    if (!length(hit)) fail(sprintf("publication/%s: %s (%s) not collected", sub, pub_dest_stem(e), e$stem))
   }
 }
 

@@ -7,12 +7,16 @@
 #   stem      file stem (the step output is <stem>_<EXP>.<ext> or <stem>.<ext>)
 #   from      directory under <run>/<EXP>/ (e.g. 06_machine_learning/publication)
 #   type      figure (default; formats from config figures.formats) | xlsx | csv
-#   label     paper label (provisional; numbering may change)
+#   label     paper label (provisional; numbering may change); names the copy:
+#             "Figure 2" -> Fig_2_<name>, "Figure S1" -> Fig_S1_<name>, "Table S1" -> Table_S1_<name>
+#   name      descriptive part of the copied file name (default: the stem without its
+#             legacy Figure<N>_ prefix); entries without a label are named <name> only
 #   producer  producing function (for INDEX.md)
 #   frame     cohort-frame text; {key} placeholders are filled from the run's JSONs
 #             (keys of collect_frame_ns() plus t0_pdl1_valid)
-# The collector COPIES, so the step directories stay complete. A missing main or
-# supplementary file is FATAL; a missing additional file is a warning.
+# The collector COPIES, so the step directories stay complete (step file names unchanged;
+# INDEX.md maps every copy to its source). A missing main or supplementary file is FATAL;
+# a missing additional file is a warning.
 # ==============================================================================
 
 PUBLICATION_ROLES <- c(main = "main", supplementary = "supplementary",
@@ -23,6 +27,23 @@ PUBLICATION_ROLES <- c(main = "main", supplementary = "supplementary",
   if (is.null(txt) || !nzchar(txt)) return("")
   for (k in names(ns)) txt <- gsub(sprintf("{%s}", k), as.character(ns[[k]]), txt, fixed = TRUE)
   txt
+}
+
+#' @title File-name stem of a collected copy (without extension / page suffix)
+#' @param e A mapping entry (uses \code{stem}, \code{label}, \code{name}).
+#' @return E.g. \code{"Fig_2_AddedValue_CVcurves"}; \code{"Coupling"} for an unlabelled entry.
+pub_dest_stem <- function(e) {
+  nm <- if (!is.null(e$name)) e$name else sub("^Figure[A-Z]*[0-9]*[a-z]?_", "", e$stem)
+  if (is.null(e$label) || !nzchar(e$label)) return(nm)
+  paste(gsub("\\s+", "_", sub("^Figure", "Fig", trimws(e$label))), nm, sep = "_")
+}
+
+#' @title Name of the copy of one step file: dest stem + the file's page suffix / extension
+.pub_dest_name <- function(f, e, exp) {
+  b <- basename(f)
+  for (src in c(sprintf("%s_%s", e$stem, exp), e$stem))
+    if (startsWith(b, src)) return(paste0(pub_dest_stem(e), substring(b, nchar(src) + 1)))
+  stop(sprintf("[FATAL] publication: %s does not start with stem %s", b, e$stem))
 }
 
 #' @title Files a mapping entry resolves to in a step directory
@@ -81,15 +102,18 @@ collect_publication <- function(run_dir, config, experiments = NULL) {
           if (role == "additional") { warning(sprintf("[Publication] %s", msg)); if (!length(found)) next }
           else { missing_req <- c(missing_req, msg); next }
         }
-        ok <- file.copy(found, file.path(dest, basename(found)), overwrite = TRUE, copy.date = TRUE)
+        out <- vapply(found, .pub_dest_name, character(1), e = e, exp = exp, USE.NAMES = FALSE)
+        clash <- file.exists(file.path(dest, out))
+        if (any(clash)) stop(sprintf("[FATAL] publication: two entries map to %s", paste(out[clash], collapse = ", ")))
+        ok <- file.copy(found, file.path(dest, out), copy.date = TRUE)
         if (!all(ok)) stop(sprintf("[FATAL] publication: copy failed for %s", paste(found[!ok], collapse = ", ")))
-        for (f in found)
+        for (i in seq_along(found))
           rows[[length(rows) + 1]] <- data.frame(
             experiment = exp, role = PUBLICATION_ROLES[[role]],
             label = if (!is.null(e$label)) e$label else "—",
-            file = if (length(exps) > 1) file.path(exp, PUBLICATION_ROLES[[role]], basename(f))
-                   else file.path(PUBLICATION_ROLES[[role]], basename(f)),
-            source = file.path(exp, e$from, basename(f)),
+            file = if (length(exps) > 1) file.path(exp, PUBLICATION_ROLES[[role]], out[i])
+                   else file.path(PUBLICATION_ROLES[[role]], out[i]),
+            source = file.path(exp, e$from, basename(found[i])),
             producer = if (!is.null(e$producer)) e$producer else "—",
             frame = .pub_fill_frame(e$frame, ns), stringsAsFactors = FALSE)
       }
@@ -109,10 +133,10 @@ collect_publication <- function(run_dir, config, experiments = NULL) {
     "the step outputs stay in place). Paper labels are provisional: numbering may still change.",
     sprintf("Figure formats: %s. Frames are named with the n of this run.", paste(formats, collapse = ", ")),
     "",
-    "| role | paper label | file | producing function | n / frame |",
-    "|---|---|---|---|---|",
-    sprintf("| %s | %s | `%s` | %s | %s |", esc(idx$role), esc(idx$label), esc(idx$file),
-            esc(idx$producer), esc(idx$frame)),
+    "| role | paper label | file | source (step output) | producing function | n / frame |",
+    "|---|---|---|---|---|---|",
+    sprintf("| %s | %s | `%s` | `%s` | %s | %s |", esc(idx$role), esc(idx$label), esc(idx$file),
+            esc(idx$source), esc(idx$producer), esc(idx$frame)),
     "")
   writeLines(lines, file.path(pub_root, "INDEX.md"))
   message(sprintf("[Publication] %d file(s) collected -> %s (INDEX.md)", nrow(idx), pub_root))
