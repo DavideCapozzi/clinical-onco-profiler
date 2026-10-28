@@ -10,6 +10,7 @@
 # ==============================================================================
 
 source("R/utils_io.R")
+source("R/utils_figures.R")
 source("R/modules_ml.R")
 source("R/modules_viz.R")
 source("R/modules_pub_style.R")
@@ -956,7 +957,7 @@ if (lmm_robust$n_robust == 0) {
         positive_label    = res_glmnet$positive_label,
         perm              = list(en = perm_glmnet$p_value, svm = perm_svm$p_value))
       saveRDS(pub_objs, file.path(pub_dir, sprintf("publication_data_%s.rds", config$project_name)))
-      pub_render_all(pub_objs, pub_dir, config$project_name)
+      pub_render_all(pub_objs, pub_dir, config$project_name, fig_cfg = config)
       message(sprintf("   [Output] Publication figure set -> %s/", basename(pub_dir)))
     }, error = function(e) warning(paste("Publication figure set failed:", e$message)))
   }

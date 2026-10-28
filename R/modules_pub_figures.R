@@ -1132,15 +1132,16 @@ pub_fig_foldchange <- function(gate_decomp, resp_label = NULL) {
           theme(legend.position = "bottom"))
 }
 
-pub_render_all <- function(objs, out_dir, project_name) {
+# fig_cfg = pass config or its `figures` block (formats / dpi for save_figure()).
+pub_render_all <- function(objs, out_dir, project_name, fig_cfg = NULL) {
   dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
-  pf <- function(n) file.path(out_dir, sprintf("%s_%s.pdf", n, project_name))
+  pf <- function(n) file.path(out_dir, sprintf("%s_%s", n, project_name))
   # Every attempted figure is logged: save_pub_figure() no-ops on a NULL plot, so
   # without this a builder that bails out simply leaves a figure missing.
   log <- list()
   sv  <- function(plot, name, w, h)
     log[[length(log) + 1]] <<- data.frame(figure = name,
-                                          saved = !is.null(save_pub_figure(plot, pf(name), w, h)))
+                                          saved = !is.null(save_pub_figure(plot, pf(name), w, h, config = fig_cfg)))
   av <- objs$clin_addval
   # MAIN (3) — Fig1 biology (cells + forest) / Fig2 added-value / Fig3 PD-L1 context.
   # SUPP (S1–S12, contiguous) — S1 CONSORT, S2 baseline-inv, S3 specificity, S4 standalone,

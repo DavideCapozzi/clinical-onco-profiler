@@ -26,6 +26,7 @@
 
 suppressPackageStartupMessages({ library(here); library(jsonlite); library(readxl); library(lmerTest) })
 source(here("R/utils_io.R"))
+source(here("R/utils_figures.R"))
 source(here("R/utils_metrics.R"))            # list_run_experiments()
 source(here("R/modules_longitudinal.R"))     # fit_feature_lmm()
 source(here("R/modules_pub_style.R"))

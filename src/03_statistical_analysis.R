@@ -5,6 +5,7 @@
 # ==============================================================================
 
 source("R/utils_io.R")          
+source("R/utils_figures.R")
 source("R/modules_multivariate.R")
 source("R/modules_viz.R") 
 
@@ -164,9 +165,10 @@ tryCatch({
       drivers_df = top_drivers, 
       metadata_viz = meta_stats, 
       colors_viz = colors_viz, 
-      out_path = file.path(results_dir, sprintf("Hybrid_sPLSDA_Results_%s.pdf", config$project_name)),
+      out_path = file.path(results_dir, sprintf("Hybrid_sPLSDA_Results_%s", config$project_name)),
       group_col = "Group", 
-      n_top_boxplots = safe_top_n
+      n_top_boxplots = safe_top_n,
+      fig_cfg = config
     )
   }
 }, error = function(e) message(paste("   [ERROR] sPLS-DA computation failed:", e$message)))
