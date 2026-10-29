@@ -106,8 +106,11 @@ therapy_adjusted_change <- function(w) {
 #' @param gate character vector of fixed gate markers
 #' @param regimen output of therapy_regimen_table()
 #' @param B permutations; @param seed permutation seed
+#' @param delta_ids optional Patient_IDs of the Δ frame (complete-case option): the paired-Δ
+#'   analyses ([2] Wilcoxon / ANCOVA, [3], [4] permutation, adjusted change) use only these;
+#'   the LMM rows stay on the full frame. NULL = all paired patients.
 #' @return list(regimen, counts, markers = per-marker list, tests = tidy table)
-run_therapy_sensitivity <- function(df_long, gate, regimen, B = 10000, seed = 56) {
+run_therapy_sensitivity <- function(df_long, gate, regimen, B = 10000, seed = 56, delta_ids = NULL) {
   df <- df_long
   df$Patient_ID <- as.character(df$Patient_ID)
   df$Timepoint  <- factor(df$Timepoint, levels = c("T0", "T1"))
@@ -132,15 +135,16 @@ run_therapy_sensitivity <- function(df_long, gate, regimen, B = 10000, seed = 56
     lrt <- .ts_lrt(dm, m)
     a0 <- .ts_term(F0, .TG); a1 <- .ts_term(F1, .TG); tr <- .ts_term(F1, "TimepointT1:RxIOmono")
     h  <- .ts_term(F2, "TimepointT1:GroupRP:RxIOmono")
-    w  <- .ts_delta(dm, m)
-    np <- nrow(w)
+    w_all <- .ts_delta(dm, m)
+    w  <- if (is.null(delta_ids)) w_all else w_all[w_all$Patient_ID %in% delta_ids, , drop = FALSE]
+    np <- nrow(w); np_lmm <- nrow(w_all)
     Fa <- .ts_fit(dall, m, "Timepoint * Group"); aa <- .ts_term(Fa, .TG)
     add(m, "reference LMM, all patients", Fa$n_pts, Fa$n_obs, sum(table(dall$Patient_ID) == 2), aa[1], aa[2], aa[3])
-    add(m, "reference LMM, regimen known", F0$n_pts, F0$n_obs, np, a0[1], a0[2], a0[3])
-    add(m, "[1] + Time x regimen", F1$n_pts, F1$n_obs, np, a1[1], a1[2], a1[3])
-    add(m, "[1] Time x regimen (ICI mono vs chemo-IO change)", F1$n_pts, F1$n_obs, np, tr[1], tr[2], tr[3])
-    add(m, "heterogeneity Time x response x regimen, Wald", F2$n_pts, F2$n_obs, np, h[1], h[2], h[3])
-    add(m, "heterogeneity Time x response x regimen, LRT 1 df", F2$n_pts, F2$n_obs, np,
+    add(m, "reference LMM, regimen known", F0$n_pts, F0$n_obs, np_lmm, a0[1], a0[2], a0[3])
+    add(m, "[1] + Time x regimen", F1$n_pts, F1$n_obs, np_lmm, a1[1], a1[2], a1[3])
+    add(m, "[1] Time x regimen (ICI mono vs chemo-IO change)", F1$n_pts, F1$n_obs, np_lmm, tr[1], tr[2], tr[3])
+    add(m, "heterogeneity Time x response x regimen, Wald", F2$n_pts, F2$n_obs, np_lmm, h[1], h[2], h[3])
+    add(m, "heterogeneity Time x response x regimen, LRT 1 df", F2$n_pts, F2$n_obs, np_lmm,
         lrt$Chisq[2], NA, lrt$`Pr(>Chisq)`[2])
     # [2] strata
     strat <- list()
@@ -153,9 +157,10 @@ run_therapy_sensitivity <- function(df_long, gate, regimen, B = 10000, seed = 56
                                n_paired_PR = sum(s$Group == "RP"), beta = a[1], se = a[2], p = a[3],
                                sdpd_change = tt[1], sdpd_change_se = tt[2], p_wilcox = wx,
                                ancova_beta = an[1], p_ancova = an[4], row.names = NULL)
-      add(m, sprintf("[2] stratum %s: Time x response", RX_LABELS[[r]]), Fs$n_pts, Fs$n_obs, nrow(s), a[1], a[2], a[3])
+      s_all <- w_all[w_all$Rx == r, ]   # LMM rows report the full frame's pairs
+      add(m, sprintf("[2] stratum %s: Time x response", RX_LABELS[[r]]), Fs$n_pts, Fs$n_obs, nrow(s_all), a[1], a[2], a[3])
       add(m, sprintf("[2] stratum %s: SD/PD change", RX_LABELS[[r]]), Fs$n_pts, Fs$n_obs,
-          sum(s$Group == "SD_PD"), tt[1], tt[2], tt[3])
+          sum(s_all$Group == "SD_PD"), tt[1], tt[2], tt[3])
     }
     sall <- data.frame(marker = m, stratum = "all", n_pts = Fa$n_pts, n_obs = Fa$n_obs,
                        n_paired = sum(table(dall$Patient_ID) == 2), n_paired_PR = NA, beta = aa[1], se = aa[2],
@@ -175,11 +180,12 @@ run_therapy_sensitivity <- function(df_long, gate, regimen, B = 10000, seed = 56
     no_rad <- NULL
     if (length(rad) > 0) {
       dr <- dm[!dm$Patient_ID %in% rad, ]; wr <- w[!w$Patient_ID %in% rad, ]
+      nr_lmm <- sum(!w_all$Patient_ID %in% rad)
       F4 <- .ts_fit(dr, m, "Timepoint * Group + Timepoint * Rx"); a4 <- .ts_term(F4, .TG)
       l4 <- .ts_lrt(dr, m); p4 <- .ts_strat_perm(wr, B, seed)
-      add(m, "[4] no radiotherapy T0-T1: + Time x regimen", F4$n_pts, F4$n_obs, nrow(wr), a4[1], a4[2], a4[3])
+      add(m, "[4] no radiotherapy T0-T1: + Time x regimen", F4$n_pts, F4$n_obs, nr_lmm, a4[1], a4[2], a4[3])
       add(m, "[4] no radiotherapy T0-T1: permutation", NA, NA, nrow(wr), p4[["obs"]], NA, p4[["p"]])
-      add(m, "[4] no radiotherapy T0-T1: heterogeneity LRT", F4$n_pts, F4$n_obs, nrow(wr),
+      add(m, "[4] no radiotherapy T0-T1: heterogeneity LRT", F4$n_pts, F4$n_obs, nr_lmm,
           l4$Chisq[2], NA, l4$`Pr(>Chisq)`[2])
       no_rad <- list(excluded = rad, adj = a4, lrt = l4, perm = p4)
     }
@@ -195,8 +201,10 @@ run_therapy_sensitivity <- function(df_long, gate, regimen, B = 10000, seed = 56
                  rx_by_group_paired = table(Rx = pt$Rx[pt$Patient_ID %in% paired],
                                             Group = pt$Group[pt$Patient_ID %in% paired], useNA = "ifany"),
                  no_regimen = pt$Patient_ID[is.na(pt$Rx)], radio = rad)
-  list(regimen = regimen, counts = counts, markers = res, tests = do.call(rbind, tests),
-       B = B, seed = seed)
+  out <- list(regimen = regimen, counts = counts, markers = res, tests = do.call(rbind, tests),
+              B = B, seed = seed)
+  if (!is.null(delta_ids)) out$delta_ids <- delta_ids
+  out
 }
 
 #' @title Figure: baseline-adjusted T0->T1 change by response within regimen

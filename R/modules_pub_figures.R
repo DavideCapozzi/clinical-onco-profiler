@@ -345,7 +345,8 @@ CONSORT_STAGE_LABELS <- c(
   outcome_eligibility = "Evaluable best response",
   missingness         = "Marker missingness ≤ 40%",
   pca_outlier         = "Baseline (T0) analysis set",
-  paired_timepoint    = "Paired Δ (T1−T0) analysis set")
+  paired_timepoint    = "Paired Δ (T1−T0) analysis set",
+  clinical_complete_case = "Paired Δ (T1−T0) analysis set")
 CONSORT_REASON_LABELS <- c(
   outcome_eligibility = "response value outside the endpoint mapping")
 #' @param led Cohort ledger data.frame: stage, n_in, n_out, n_dropped, reason, n_resp, n_nonresp.
@@ -371,7 +372,11 @@ pub_fig_consort <- function(led, terminal = NULL, title = NULL, inflow = NULL,
   XI <- -1.3; WI <- 3.4                         # inflow + LMM frame (left)
   grp  <- function(i) if (is.na(led$n_resp[i]) || is.na(led$n_nonresp[i])) "" else
     sprintf("  ·  %d / %d", led$n_resp[i], led$n_nonresp[i])
-  nice <- function(s) if (s %in% names(CONSORT_STAGE_LABELS)) CONSORT_STAGE_LABELS[[s]] else gsub("_", " ", s)
+  nice <- function(s) {
+    # With the complete-case option the paired stage is no longer the analysis set.
+    if (s == "paired_timepoint" && "clinical_complete_case" %in% led$stage) return("Paired T0 + T1 samples")
+    if (s %in% names(CONSORT_STAGE_LABELS)) CONSORT_STAGE_LABELS[[s]] else gsub("_", " ", s)
+  }
   why_out <- function(i) {
     r <- if (led$stage[i] %in% names(CONSORT_REASON_LABELS)) CONSORT_REASON_LABELS[[led$stage[i]]] else led$reason[i]
     uv <- if ("unmapped_values" %in% names(led)) led$unmapped_values[i] else NA
@@ -1245,7 +1250,10 @@ pub_consort_terminal <- function(av) {
   if (!is.null(av$n_complete_case))
     tl[[sprintf("Complete-case %s",
                 gsub("_", "-", paste(names(av$clinical_vars), collapse = "+")))]] <-
-      sprintf("n = %d (NAs median-imputed in-fold; nobody excluded)", av$n_complete_case)
+      if (is.null(av$complete_case))
+        sprintf("n = %d (NAs median-imputed in-fold; nobody excluded)", av$n_complete_case)
+      else sprintf("n = %d (other NAs median-imputed in-fold; missing %s excluded above)",
+                   av$n_complete_case, paste(unlist(av$complete_case$vars), collapse = " / "))
   if (!is.null(av$survival$OS$n))
     tl[["Survival follow-up"]] <- sprintf("n = %d (%d OS / %s PFS events)",
       av$survival$OS$n, av$survival$OS$events,

@@ -389,6 +389,18 @@ if (lmm_robust$n_robust == 0) {
   rds_long_decomp  <- step_output_path(config, 1, sprintf("data_processed_%s_longitudinal", config$project_name), "rds")
   if (file.exists(rds_long_decomp)) {
     DATA_LONG_decomp <- tryCatch(readRDS(rds_long_decomp), error = function(e) NULL)
+    # Complete-case option for the Δ frame (clinical_model.complete_case_vars; absent = off):
+    # resolved once here, so the gate decomposition, the added-value layer and every
+    # inference on it share one patient set. Clinical vars as after the NLR toggle of 12b.
+    cc_vars_cfg <- ml_cfg$clinical_model$complete_case_vars
+    if (!is.null(DATA_LONG_decomp) && length(unlist(cc_vars_cfg))) {
+      cv_run <- ml_cfg$clinical_model$vars
+      if (!isTRUE(config$include_nlr)) cv_run <- cv_run[setdiff(names(cv_run), "NLR")]
+      DATA_LONG_decomp$complete_case <- resolve_complete_case(config$input_file_t0, unlist(cv_run), cc_vars_cfg)
+      message(sprintf("[ML] Δ-frame complete-case on {%s}: %d patients of the T0 file complete",
+                      paste(DATA_LONG_decomp$complete_case$vars, collapse = "+"),
+                      length(DATA_LONG_decomp$complete_case$ids)))
+    }
     if (!is.null(DATA_LONG_decomp)) {
       gate_decomp <- tryCatch(
         run_gate_signal_decomposition(
