@@ -7,7 +7,7 @@ An R-based, config-driven pipeline for immunological profiling of oncology cohor
 - **Machine learning and added value** (Step 06): nested-LOOCV Elastic Net + SVM-RBF gated on LMM LOO-robust features; clinical + immune added-value layer with the selection-aware LRT (label permutation with full gate re-selection), patient-bootstrap CIs for the cross-validated AUCs (including each clinical variable alone when the clinical model has more than one, drawn in Figure 2b from the same CV folds), and the fixed-gate LRT leave-one-out
 - **Post hoc sensitivity** (Step 07): response grouping (PR / SD / PD), duplicated-row sensitivity, therapy regimen, Kaplan-Meier median split; descriptive, gate fixed
 
-Applied to NSCLC patients treated with immune checkpoint inhibitors (ICI) to identify response biomarkers. Converging evidence across three analytical layers (sPLS-DA, LMM, ML) points to a **KI67 proliferation axis that moves with early radiological response**. The reported result is the *incremental* value of that axis over a PD-L1 baseline — it is a single marker axis selected by the LMM, with family-level corroboration, **not a validated multi-marker signature and not a standalone classifier**.
+Applied to NSCLC patients treated with immune checkpoint inhibitors (ICI) to identify response biomarkers. Converging evidence across three analytical layers (sPLS-DA, LMM, ML) points to a **KI67 proliferation axis that moves with early radiological response**. The reported result is the *incremental* value of that axis over a clinical baseline (PD-L1 + NLR) — it is a single marker axis selected by the LMM, with family-level corroboration, **not a validated multi-marker signature and not a standalone classifier**.
 
 ---
 
@@ -43,9 +43,10 @@ micromamba create -f env/environment.lock.yml   # exact versions + build strings
 ## Usage
 
 ```bash
-# Canonical runs (~100 and ~90 min; the selection-aware LRT uses 15 cores)
-RUN_NAME=primary_PIregated_noPS CONFIG_PATH=config/global_params.yml Rscript main.R
-RUN_NAME=nlr_v2_cc50            CONFIG_PATH=config/nlr_v2_cc50.yml    Rscript main.R
+# Final run and its two sensitivity runs (~90-105 min each; one at a time, the selection-aware LRT uses 15 cores)
+RUN_NAME=final_gate84_nlr50     CONFIG_PATH=config/final_gate84_nlr50.yml Rscript main.R
+RUN_NAME=primary_PIregated_noPS CONFIG_PATH=config/global_params.yml      Rscript main.R
+RUN_NAME=nlr_v2_cc50            CONFIG_PATH=config/nlr_v2_cc50.yml        Rscript main.R
 
 # Any other config — no repo edits; restrict to named experiments
 RUN_NAME=my_run CONFIG_PATH=/path/to/alt_config.yml EXPERIMENTS=BestResponse_2v3_4 Rscript main.R
@@ -85,11 +86,12 @@ Rscript tools/data_integrity_audit.R --run <run> --raw <raw DB>   # raw DB → i
 
 ```
 config/                    Pipeline configuration (YAML)
-  global_params.yml        Primary run config
-  nlr_v2_cc50.yml          NLR run config (clinical model PD-L1 + NLR)
+  final_gate84_nlr50.yml   Final run config (gate on all LMM data; added value on the paired patients with NLR)
+  global_params.yml        Base config; sensitivity run on all paired patients, PD-L1 alone
+  nlr_v2_cc50.yml          Sensitivity run: whole pipeline on the NLR patients (PD-L1 + NLR)
 
 data/                      Input Excel files (not tracked in git)
-  0final/                  Frozen inputs of the canonical runs, with MD5SUMS
+  0final/                  Frozen inputs of the final and sensitivity runs, with MD5SUMS
 
 docs/
   CHANGELOG.md             Analysis history, refactor record, old → new names
@@ -136,7 +138,7 @@ tests/                     Test scripts
   integration_smoke.R      End-to-end smoke test on a synthetic cohort
 
 results/                   All pipeline outputs (not tracked in git)
-  0final/                  The canonical runs, README.md and VERIFICATION.md
+  0final/                  The final and sensitivity runs, README.md and VERIFICATION.md
   _archive/                Superseded runs kept for provenance (never quoted)
   <run name>/
     run_manifest.yml       git sha, config + input md5, seeds, N per frame, timestamp

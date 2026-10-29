@@ -1,8 +1,9 @@
 # Changelog
 
-Analysis history of the NSCLC response study and the record of the 2026-10-28 refactor. The canonical runs are
-`results/0final/primary_PIregated_noPS` (primary) and `results/0final/nlr_v2_cc50` (NLR cohort). Every number from an
-earlier run is superseded and is not quoted anywhere.
+Analysis history of the NSCLC response study and the record of the 2026-10-28 refactor. The final run is
+`results/0final/final_gate84_nlr50` (2026-10-29); `results/0final/primary_PIregated_noPS` and
+`results/0final/nlr_v2_cc50` are its sensitivity analyses. Every number from an earlier run is superseded and is not
+quoted anywhere.
 
 ## Analysis history
 
@@ -26,9 +27,20 @@ earlier run is superseded and is not quoted anywhere.
   2026-10-23 / 2026-10-27 runs (`results/0final/VERIFICATION.md`: 136/136 and 129/129 checks pass; every stochastic
   quantity bit-identical).
 - **2026-10-28**: NLR run re-run on `6fab3a4` (each clinical variable alone in CV, with CI, and in Figure 2b): verified
-  129/129 against the reference; versus the previous NLR run only the new keys and rows were added. NLR alone
+  129/129 against the reference; versus the previous NLR run only the new keys and rows were added (that run was
+  then deleted). NLR alone
   0.624 [0.426, 0.784], PD-L1 alone 0.339 [0.274, 0.619] (n = 50). The primary run was not re-run: with one clinical
   variable the change adds nothing.
+- **2026-10-29**: final design. Gate selected on all longitudinal data (LMM 84 / 144, as in the primary); added value
+  tested on the 50 paired patients with a pre-therapy NLR, clinical model PD-L1 + NLR, NLR not imputed. Rationale:
+  selection uses every sample; the clinical-vs-immune comparison is made only where the clinical model is complete.
+  This is the NLR v1 design (first run 2026-10-27, selection-aware p 0.022), now in the pipeline as the config option
+  `clinical_model.complete_case_vars` (default off; off = byte-identical to before) and run end-to-end as
+  `results/0final/final_gate84_nlr50` (`config/final_gate84_nlr50.yml`, inputs `data/0final/final_gate84_nlr50/`).
+  Verified A1–A11 (`results/0final/VERIFICATION.md`): steps 01–04 identical to the primary; CV 0.570 / 0.751 / 0.764;
+  LR 12.98; selection-aware p 0.022 (223/10000, same count as v1); LOO 0/50 below the null q95. The primary (Δ 60,
+  PD-L1 alone, p 0.044) and NLR v2 (whole pipeline on the 50, p 0.037) are reported as sensitivity analyses; the
+  three are nested analyses of the same patients, never compared as improvements.
 
 ## Refactor 2026-10-28 (branch `refactor/final-results`, tag `pre-refactor-20261028` = state before)
 
