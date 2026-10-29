@@ -238,6 +238,10 @@ run_gate_signal_decomposition <- function(DATA_T0, DATA_LONG,
   z_t1 <- z_long[z_long$Timepoint == "T1", ]
 
   paired_ids <- intersect(z_t0$Patient_ID, z_t1$Patient_ID)
+  # Complete-case option (clinical_model.complete_case_vars): same Δ frame as the
+  # added-value layer. No imputation here (complete cases per marker), so nothing else moves.
+  cc_keep    <- av_cc_keep(paired_ids, DATA_LONG)
+  if (!is.null(cc_keep)) paired_ids <- paired_ids[cc_keep]
   n_paired   <- length(paired_ids)
 
   if (n_paired < 10) {

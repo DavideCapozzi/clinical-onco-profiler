@@ -48,6 +48,10 @@ if (!all(file.exists(needed))) {
   out_root <- step_dir(config, 7, create = TRUE)
   DATA      <- readRDS(rds_std)
   DATA_LONG <- readRDS(rds_long)
+  # Complete-case option: the Δ frame of step 06 (recorded in its JSON); LMM frames unchanged.
+  delta_cc_ids <- if (!is.null(ml_av$complete_case)) as.character(unlist(ml_av$complete_case$ids)) else NULL
+  if (!is.null(delta_cc_ids))
+    DATA_LONG$complete_case <- list(vars = as.character(unlist(ml_av$complete_case$vars)), ids = delta_cc_ids)
   J4   <- jsonlite::fromJSON(lmm_json)
   gate <- as.character(unlist(ml_av$composite_markers))
   seed <- if (!is.null(config$stats$seed)) as.integer(config$stats$seed) else 2026L
@@ -149,7 +153,10 @@ if (!all(file.exists(needed))) {
     }
 
     reg <- therapy_regimen_table(sheets, df)
-    res <- run_therapy_sensitivity(df, gate_th, reg, B = B_th, seed = seed_t)
+    res <- run_therapy_sensitivity(df, gate_th, reg, B = B_th, seed = seed_t, delta_ids = delta_cc_ids)
+    if (!is.null(delta_cc_ids))
+      L$say("paired-Δ analyses restricted to the step-06 Δ frame (complete case on %s); LMM rows on the full frame",
+            paste(unlist(ml_av$complete_case$vars), collapse = "+"))
     L$say("T1-only patients (regimen from the T1 sheet): %s", paste(reg$Patient_ID[reg$first_sheet == "T1"], collapse = ", "))
     L$say("without regimen: %s", paste(res$counts$no_regimen, collapse = ", "))
     L$say("radiotherapy between T0 and T1 (annotated): %s", paste(res$counts$radio, collapse = ", "))
@@ -176,7 +183,10 @@ if (!all(file.exists(needed))) {
       therapy_files = as.list(th_files), therapy_md5 = as.list(setNames(unname(tools::md5sum(th_files)), names(th_files))),
       parser = "data/therapy_fix/database_parser_nsclc_v3_therapy.R",
       B = B_th, seed = res$seed, gate = gate_th,
-      frame = list(n_pts = n_pts, n_obs = n_obs, n_paired = n_pair),
+      frame = c(list(n_pts = n_pts, n_obs = n_obs, n_paired = n_pair),
+                if (!is.null(delta_cc_ids)) list(delta_complete_case_vars = unlist(ml_av$complete_case$vars),
+                                                 n_paired_delta_frame = length(intersect(delta_cc_ids,
+                                                   names(which(table(df$Patient_ID) == 2)))))),
       regimen_known = list(n_pts = sum(!is.na(reg$Rx)), no_regimen = res$counts$no_regimen,
                            radio = res$counts$radio),
       step04_reproduced = TRUE), file.path(d, "manifest.json"), auto_unbox = TRUE, pretty = TRUE)

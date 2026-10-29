@@ -819,6 +819,49 @@ build_timepoint_composite_data <- function(DATA_T0, DATA_LONG, timepoint = "T0")
 }
 
 # =============================================================================
+# Complete-case option for the clinical variables of the Δ/T1 added-value frame
+# -----------------------------------------------------------------------------
+# `clinical_model.complete_case_vars` (labels of `clinical_model.vars`; absent = off):
+# Δ/T1-frame patients missing any listed variable leave the frame; other clinical NAs
+# stay median-imputed in-fold. Resolved once per step into `DATA_LONG$complete_case`,
+# which every Δ consumer already receives (the LMM code ignores it, so the selection
+# frame is unchanged). Rows are removed AFTER the z-scores and the composite are built
+# on the full paired frame, so each patient's composite equals the option-off value.
+# =============================================================================
+
+#' @title Resolve the complete-case patient set
+#' @param input_file T0 Excel holding the clinical columns.
+#' @param clinical_vars Named clinical-model columns of this run (after the NLR toggle).
+#' @param cc_vars Labels (names of \code{clinical_vars}) required to be non-missing.
+#' @return NULL when \code{cc_vars} is empty (option off), else list(vars, ids) with the
+#'   IDs of \code{input_file} complete on every listed variable.
+resolve_complete_case <- function(input_file, clinical_vars, cc_vars) {
+  cc_vars <- as.character(unlist(cc_vars))
+  if (!length(cc_vars)) return(NULL)
+  clinical_vars <- unlist(clinical_vars)
+  bad <- setdiff(cc_vars, names(clinical_vars))
+  if (length(bad))
+    stop(sprintf("[FATAL] complete_case_vars {%s} not in this run's clinical model {%s}",
+                 paste(bad, collapse = ", "), paste(names(clinical_vars), collapse = ", ")))
+  raw <- as.data.frame(readxl::read_excel(input_file, sheet = 1))
+  names(raw) <- trimws(names(raw))
+  cols <- unname(clinical_vars[cc_vars])
+  if (!all(cols %in% names(raw)))
+    stop(sprintf("[FATAL] complete_case_vars: column(s) absent from %s: %s", input_file,
+                 paste(setdiff(cols, names(raw)), collapse = ", ")))
+  ok <- Reduce(`&`, lapply(cols, function(col) !is.na(suppressWarnings(as.numeric(raw[[col]])))))
+  list(vars = cc_vars, ids = as.character(raw$Patient_ID)[ok])
+}
+
+#' @title Complete-case mask for Δ/T1-frame patients
+#' @return NULL when the option is off (callers keep their default path), else a logical
+#'   vector over \code{pid}.
+av_cc_keep <- function(pid, DATA_LONG) {
+  cc <- DATA_LONG$complete_case
+  if (is.null(cc)) NULL else as.character(pid) %in% cc$ids
+}
+
+# =============================================================================
 # Clinical + cytometric ADDED-VALUE layer
 # -----------------------------------------------------------------------------
 # Pre-specified question: does the immune composite (gate markers) add predictive
@@ -1297,6 +1340,36 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
                    composite_timepoint),
       by_group = c(sum(1 - yb), sum(yb)),
       dropped_ids = setdiff(.ledger_ids0, as.character(pid)))
+  }
+
+  # ── Optional complete-case restriction on clinical vars (Δ/T1 frame only) ───
+  # Panel z of the full frame is median-imputed first, so every downstream z (gate
+  # composite, random composites, coupling) keeps its option-off value for the patients
+  # who stay; then the rows are removed and recorded as a ledger stage.
+  cc_ok <- if (identical(composite_timepoint, "T0")) NULL else av_cc_keep(meta_ids, DATA_LONG)
+  cc_info <- NULL
+  if (!is.null(cc_ok)) {
+    cc_vars <- DATA_LONG$complete_case$vars
+    if (length(setdiff(cc_vars, names(clinical_vars))))
+      stop(sprintf("[FATAL] complete_case_vars {%s} not in the clinical model {%s}",
+                   paste(cc_vars, collapse = ", "), paste(names(clinical_vars), collapse = ", ")))
+    z[] <- lapply(z, function(x) { x <- as.numeric(x); x[is.na(x) & keep] <- median(x[keep], na.rm = TRUE); x })
+    sel <- cc_ok[keep]
+    reason <- sprintf("%s missing", paste(cc_vars, collapse = " / "))
+    if (!is.null(cohort_ledger) && nrow(cohort_ledger))
+      cohort_ledger <- ledger_add(cohort_ledger, "clinical_complete_case", n, sum(sel),
+                                  reason = reason, by_group = c(sum(1 - yb[sel]), sum(yb[sel])),
+                                  dropped_ids = pid[!sel])
+    cc_info <- list(vars = cc_vars, n_in = n, n_out = sum(sel),
+                    dropped_ids = pid[!sel], dropped_pos = sum(yb[!sel]), dropped_neg = sum(1 - yb[!sel]),
+                    reason = reason, ids = DATA_LONG$complete_case$ids)
+    keep <- keep & cc_ok
+    Cmat <- Cmat[sel, , drop = FALSE]; comp <- comp[sel]
+    grp  <- grp[sel]; yb <- yb[sel]; y <- y[sel]; pid <- pid[sel]
+    n    <- length(yb)
+    message(sprintf("[ML][AV] complete-case on {%s}: %d -> %d (dropped %d: %d %s / %d %s)",
+                    paste(cc_vars, collapse = "+"), cc_info$n_in, n, length(cc_info$dropped_ids),
+                    cc_info$dropped_pos, resp_label, cc_info$dropped_neg, neg_label))
   }
 
   # ── Optional: drop var(s) from the FORMAL clinical baseline, keep FULL model as a
@@ -2113,13 +2186,15 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
   # CONSORT would draw cannot be reconciled with the data, which is fatal by design.
   # NB `n_complete_case` is deliberately NOT a ledger stage — clinical NAs are
   # median-imputed in-fold, so nobody is dropped for them. It travels as a terminal
-  # annotation instead; recording it as an exclusion would misstate the flow.
+  # annotation instead; recording it as an exclusion would misstate the flow. The
+  # complete_case_vars option is the exception: those patients ARE dropped, and their
+  # stage (`clinical_complete_case`) was recorded above.
   if (!is.null(cohort_ledger)) ledger_validate(cohort_ledger, context = "added-value layer")
   # PS sub-model columns are all-NA when PS is not a clinical var — leave them out of the export.
   drop_ps_cols <- function(d) if ("PS" %in% cl_names) d else
     d[setdiff(names(d), c("Prob_PS_APP", "Prob_PDL1PS_APP"))]
 
-  list(
+  out <- list(
     clinical_vars   = as.list(clinical_vars),
     formal_vars     = as.list(colnames(Cmat)),   # vars actually in the FORMAL baseline
     nomogram        = nomo,
@@ -2179,6 +2254,9 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
       Prob_Immune_APP = round(pa_imm, 4),
       stringsAsFactors = FALSE))
   )
+  # Present only when the complete-case option is on (option off: object unchanged).
+  if (!is.null(cc_info)) out$complete_case <- cc_info
+  out
 }
 
 #' JSON-serializable view of an added-value result (drops per-patient + curve).
@@ -2458,6 +2536,9 @@ av_assemble <- function(R, gate_markers, timepoint = "delta") {
   Cmat <- matrix(Cmat, nrow = length(meta_ids), dimnames = list(NULL, names(cv_)))
 
   keep <- group %in% c(resp, neg_label) & !is.na(composite)
+  # Complete-case option: rows leave after the composite is built on the full frame.
+  cc <- if (identical(timepoint, "T0")) NULL else av_cc_keep(meta_ids, R$DATA_LONG)
+  if (!is.null(cc)) keep <- keep & cc
   list(comp = composite[keep],
        Cmat = Cmat[keep, , drop = FALSE],
        yb   = as.integer(group[keep] == resp),

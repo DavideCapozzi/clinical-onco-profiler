@@ -83,6 +83,9 @@ run_selection_aware_lrt <- function(DATA_T0, DATA_LONG, av, config, clinical_var
   Zd    <- as.data.frame(Dd$hybrid_data_z)[, markers, drop = FALSE]
   Zd[]  <- lapply(Zd, function(x) { x <- as.numeric(x); x[is.na(x)] <- median(x, na.rm = TRUE); x })
   pid_d <- as.character(Dd$metadata$Patient_ID)
+  # Complete-case option: Zd is imputed on the full paired frame, then rows leave (as A_pub).
+  cc_d  <- av_cc_keep(pid_d, R$DATA_LONG)
+  if (!is.null(cc_d)) { Zd <- Zd[cc_d, , drop = FALSE]; pid_d <- pid_d[cc_d] }
 
   raw <- as.data.frame(readxl::read_excel(R$input_file, sheet = 1))
   names(raw) <- trimws(names(raw)); raw$Patient_ID <- as.character(raw$Patient_ID)
