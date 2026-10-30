@@ -41,6 +41,18 @@ quoted anywhere.
   LR 12.98; selection-aware p 0.022 (223/10000, same count as v1); LOO 0/50 below the null q95. The primary (Δ 60,
   PD-L1 alone, p 0.044) and NLR v2 (whole pipeline on the 50, p 0.037) are reported as sensitivity analyses; the
   three are nested analyses of the same patients, never compared as improvements.
+- **2026-10-30**: figure labels and layout changed at the PI's request (presentation only, no analysis re-run). PD-L1
+  is shown as TPS in every figure; the immune composite is shown as "Immune score". Figure 2 key: TPS · NLR ·
+  Immune score · TPS + NLR · TPS + NLR + immune score. Figure 1: panel A is now the LMM forest, panel B the cell
+  frequencies. The final run and `nlr_v2_cc50` (its Figure 1 = Supplementary Fig. 1) were re-rendered with
+  `tools/render_pub_figures.R`; the text of every other figure is unchanged and no number changed. The Figure 1
+  `frame` string in the publication block of both configs was updated to the new panel order, so their md5 no longer
+  matches `config_md5` in the two run manifests (re-render with `--config`). The primary run was not re-rendered.
+- **2026-10-30**: supplementary figures renumbered in the final run. New Figure S1 = LMM forest of `nlr_v2_cc50` (gate
+  on its own 50 patients / 100 obs; its cell-frequency panel duplicated Figure 1 B pixel for pixel, so only the forest
+  is shown), drawn into `final_gate84_nlr50/BestResponse_2v3_4/07_post_hoc/sensitivity_lmm/` by the new
+  `tools/render_sensitivity_forest.R` (source report md5 in `source.txt`). CONSORT, calibration/IDI and therapy are
+  now S2, S3, S4. Nothing re-run.
 
 ## Refactor 2026-10-28 (branch `refactor/final-results`, tag `pre-refactor-20261028` = state before)
 

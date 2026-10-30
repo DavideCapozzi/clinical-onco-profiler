@@ -314,7 +314,7 @@ publication:
   main:
     - {stem: Figure1_Biology, from: 06_machine_learning/publication, label: "Figure 1",
        producer: "pub_fig_biology + pub_fig_lmm_forest",
-       frame: "A: Δ frame, n = {delta}; B: LMM frame, {lmm_patients} patients / {lmm_obs} obs"}
+       frame: "A: LMM frame, {lmm_patients} patients / {lmm_obs} obs; B: Δ frame, n = {delta}"}
     - {stem: Figure2b_AddedValue_CVcurves, from: 06_machine_learning/publication, label: "Figure 2",
        producer: "pub_fig_added_value(curves = \"cv\")", frame: "Δ frame, n = {delta} ({delta_pos} PR)"}
     - {stem: FigureS9b_Nomogram_FullRangeAxes, from: 06_machine_learning/publication, label: "Figure 3",
