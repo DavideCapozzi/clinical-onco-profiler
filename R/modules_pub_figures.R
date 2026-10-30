@@ -66,10 +66,10 @@ pub_fig_lmm_forest <- function(boot_df, obs_df = NULL, markers = NULL, ref_label
 }
 
 # ── MAIN Fig 1 (biology) — gate-marker cell frequencies (T0/T1 × group) + forest ─
-#' Panel A: per-patient raw cell frequencies of the immune-gate markers at baseline
-#' (T0) vs on-treatment (T1), split by response group, with within-patient spaghetti
-#' lines (responders start higher and contract more). Panel B: the LMM Time×Group
-#' interaction forest restricted to the same gate markers. Falls back to forest-only
+#' Panel A: the LMM Time×Group interaction forest of the immune-gate markers. Panel B:
+#' per-patient raw cell frequencies of the same markers at baseline (T0) vs
+#' on-treatment (T1), split by response group, with within-patient spaghetti lines
+#' (responders start higher and contract more). Falls back to forest-only
 #' when per-patient values are unavailable.
 #' @param gate_decomp result of run_gate_signal_decomposition() (uses $per_patient_values)
 #' @param boot_df,obs_df LMM bootstrap-CI and observed-interaction frames (forest)
@@ -109,7 +109,8 @@ pub_fig_biology <- function(gate_decomp, boot_df, obs_df = NULL, resp_label = NU
     labs(x = NULL, y = "Frequency (% of parent population)") +
     theme_publication() + theme(panel.grid = element_blank())
   if (is.null(forest)) return(pub_tag(pA))
-  pub_tag((pA | forest) + patchwork::plot_layout(widths = c(1.9, 1.1)))
+  # Forest first (panel A), cell frequencies second (panel B) — PI, 2026-10-30.
+  pub_tag((forest | pA) + patchwork::plot_layout(widths = c(1.1, 1.9)))
 }
 
 # ── MAIN Fig 2 — Added value (LRT-led): ROC + decision curve ──────────────────
@@ -120,12 +121,13 @@ pub_fig_added_value <- function(av, curves = c("loo", "cv")) {
   y   <- as.integer(pp$True_Group == pos)
   PDL1_RED <- "#B2182B"; COMP_COL <- "#CC79A7"      # PD-L1 dark red; comparator reddish-purple
   clab <- if (!is.null(av$comparator$label)) av$comparator$label else "Clinical + immune + NLR"
-  # Name the base clinical model by its constituents (e.g. "Clinical (PD-L1+PS)") so the
-  # reader sees what 'clinical' contains; downstream curves build on it verbally.
+  # Name each model by its constituents (e.g. "TPS + NLR", "TPS + NLR + immune score"; PI,
+  # 2026-10-30) so the reader sees what each curve contains.
   clin_str <- if (!is.null(av$formal_vars) && length(av$formal_vars))
-                pub_relabel_var(paste(unlist(av$formal_vars), collapse = "+")) else NULL
-  clin_nm  <- if (!is.null(clin_str)) sprintf("Clinical (%s)", clin_str) else "Clinical"
-  IMM_NM   <- "Immune composite alone"
+                paste(pub_relabel_var(unlist(av$formal_vars)), collapse = " + ") else NULL
+  clin_nm  <- if (!is.null(clin_str)) clin_str else "Clinical"
+  COMB_NM  <- sprintf("%s + immune score", clin_nm)
+  IMM_NM   <- "Immune score"
   # The PD-L1 benchmark is the 1st clinical var, so a 1-var clinical model IS the benchmark:
   # drawing both would put two near-identical PD-L1 curves on each panel (no-PS run).
   pdl1_dup <- length(unlist(av$formal_vars)) == 1L
@@ -140,9 +142,9 @@ pub_fig_added_value <- function(av, curves = c("loo", "cv")) {
   cv_df <- function(col) list(df = data.frame(FPR = av$roc_cv$fpr, TPR = av$roc_cv[[col]]))
   # CV curves of each clinical var ALONE (cv_kfold, same folds; only when the clinical model
   # has > 1 var). They replace the LOO "PD-L1 alone" curve, so every curve on a CV panel
-  # comes from the same CV. Labels: "<var> alone"; PD-L1 keeps its red.
+  # comes from the same CV. Labels: the var's display name; PD-L1 (TPS) keeps its red.
   single_v <- if (cv_curves) sub("^single_", "", grep("^single_", names(av$roc_cv), value = TRUE)) else character(0)
-  single_lab <- setNames(sprintf("%s alone", pub_relabel_var(single_v)), single_v)
+  single_lab <- setNames(pub_relabel_var(single_v), single_v)
   single_col <- setNames(rep(PDL1_RED, length(single_v)), single_v)
   other_v    <- setdiff(single_v, "PD_L1")         # sky blue, vermillion, grey: Okabe-Ito, unused here
   single_col[other_v] <- rep_len(c("#56B4E9", "#D55E00", "#999999"), length(other_v))
@@ -156,7 +158,7 @@ pub_fig_added_value <- function(av, curves = c("loo", "cv")) {
   rc  <- if (cv_curves) cv_df("clinical") else pub_roc_df(pp$Prob_Clinical, y)
   ro  <- if (cv_curves) cv_df("combined") else pub_roc_df(pp$Prob_Combined, y)
   lc  <- clin_nm
-  lk  <- "Clinical + immune"
+  lk  <- COMB_NM
   roc_l <- list(data.frame(rc$df, M = lc), data.frame(ro$df, M = lk))
   lev   <- c(lc, lk); cols <- c(pub_palette[["clinical"]], pub_palette[["combined"]]); lts <- c(2, 1)
   if (comp_ok) {                                # display-only 'clinical + NLR' comparator
@@ -172,7 +174,7 @@ pub_fig_added_value <- function(av, curves = c("loo", "cv")) {
   if (pdl1_ok) {
     fin <- is.finite(pp$Prob_PDL1)              # complete-case only (PD-L1 missingness)
     rp <- pub_roc_df(pp$Prob_PDL1[fin], y[fin])
-    lp <- "PD-L1 alone"
+    lp <- "TPS"
     roc_l <- c(list(data.frame(rp$df, M = lp)), roc_l)
     lev <- c(lp, lev); cols <- c(PDL1_RED, cols); lts <- c(4, lts)
   }
@@ -186,7 +188,9 @@ pub_fig_added_value <- function(av, curves = c("loo", "cv")) {
     roc_l <- c(roc_l, list(data.frame(ri$df, M = IMM_NM)))
     lev <- c(lev, IMM_NM); cols <- c(cols, pub_palette[["immune"]]); lts <- c(lts, 6)
   }
-  roc <- do.call(rbind, roc_l); roc$M <- factor(roc$M, levels = lev)
+  # Legend order: single predictors, immune score, then the combinations (PI, 2026-10-30).
+  lev_ord <- c(setdiff(lev, c(lc, lk, IMM_NM)), intersect(IMM_NM, lev), lc, lk)
+  roc <- do.call(rbind, roc_l); roc$M <- factor(roc$M, levels = lev_ord)
   # Reportable discrimination = repeated stratified k-fold; the curves above are LOO.
   # Stated on the panel so the reader never reads the increment off the LOO curves.
   # Guarded: runs / persisted rds predating the cv_kfold node simply omit the block.
@@ -199,15 +203,17 @@ pub_fig_added_value <- function(av, curves = c("loo", "cv")) {
   cv_clin <- cv_num(cv$auc_clinical); cv_comb <- cv_num(cv$auc_combined)
   cv_imm  <- cv_num(cv$auc_immune);   cv_k    <- cv_num(cv$k); cv_r <- cv_num(cv$reps)
   cv_lab  <- if (isTRUE(is.finite(cv_clin)) && isTRUE(is.finite(cv_comb)))
-    sprintf("Reported AUC: %d-fold CV%s, n = %d\nclinical %.2f · combined %.2f%s%s\ncurves: %s",
+    # Same names and order as the key: single predictors + immune score, then combinations.
+    sprintf("Reported AUC: %d-fold CV%s, n = %d\n%s\n%s %.2f · %s %.2f\ncurves: %s",
             if (isTRUE(is.finite(cv_k))) as.integer(cv_k) else 10L,
             if (isTRUE(is.finite(cv_r))) sprintf(" × %d", as.integer(cv_r)) else "",
-            as.integer(av$n), cv_clin, cv_comb,
-            if (isTRUE(is.finite(cv_imm))) sprintf(" · immune %.2f", cv_imm) else "",
-            if (length(single_v) && !is.null(cv$auc_single))
-              paste0("\n", paste(sprintf("%s %.2f", single_lab[single_v],
-                                          vapply(single_v, function(v) cv_num(cv$auc_single[[v]]), numeric(1))),
-                                  collapse = " · ")) else "",
+            as.integer(av$n),
+            paste(c(if (length(single_v) && !is.null(cv$auc_single))
+                      sprintf("%s %.2f", single_lab[single_v],
+                              vapply(single_v, function(v) cv_num(cv$auc_single[[v]]), numeric(1))),
+                    if (isTRUE(is.finite(cv_imm))) sprintf("%s %.2f", tolower(IMM_NM), cv_imm)),
+                  collapse = " · "),
+            clin_nm, cv_clin, COMB_NM, cv_comb,
             if (cv_curves) "mean of the CV ROC curves" else "leave-one-out predictions") else NULL
   pA <- ggplot(roc, aes(FPR, TPR, colour = M, linetype = M)) +
     geom_abline(slope = 1, intercept = 0, linetype = "dotted", colour = pub_palette[["ref"]]) +
@@ -226,17 +232,17 @@ pub_fig_added_value <- function(av, curves = c("loo", "cv")) {
   cur <- if (cv_curves && !is.null(av$decision_curve$curve_cv)) av$decision_curve$curve_cv
          else av$decision_curve$curve
   nb_l <- list(data.frame(t = cur$threshold, nb = cur$clinical, s = clin_nm),
-               data.frame(t = cur$threshold, nb = cur$combined, s = "Clinical + immune"))
-  b_cols <- setNames(c(pub_palette[["clinical"]], pub_palette[["combined"]]), c(clin_nm, "Clinical + immune"))
-  b_lts  <- setNames(c(2, 1), c(clin_nm, "Clinical + immune"))
+               data.frame(t = cur$threshold, nb = cur$combined, s = COMB_NM))
+  b_cols <- setNames(c(pub_palette[["clinical"]], pub_palette[["combined"]]), c(clin_nm, COMB_NM))
+  b_lts  <- setNames(c(2, 1), c(clin_nm, COMB_NM))
   if (!is.null(cur$comparator)) {
     nb_l <- c(nb_l, list(data.frame(t = cur$threshold, nb = cur$comparator, s = clab)))
     b_cols <- c(b_cols, setNames(COMP_COL, clab)); b_lts <- c(b_lts, setNames(5, clab))
   }
   pdl1_nb <- !is.null(cur$pdl1) && !pdl1_dup && !length(single_v)
   if (pdl1_nb) {
-    nb_l <- c(nb_l, list(data.frame(t = cur$threshold, nb = cur$pdl1, s = "PD-L1 alone")))
-    b_cols <- c(b_cols, "PD-L1 alone" = PDL1_RED); b_lts <- c(b_lts, "PD-L1 alone" = 4)
+    nb_l <- c(nb_l, list(data.frame(t = cur$threshold, nb = cur$pdl1, s = "TPS")))
+    b_cols <- c(b_cols, "TPS" = PDL1_RED); b_lts <- c(b_lts, "TPS" = 4)
   }
   single_nb <- single_v[paste0("single_", single_v) %in% names(cur)]
   for (v in single_nb) {
@@ -256,10 +262,10 @@ pub_fig_added_value <- function(av, curves = c("loo", "cv")) {
   b_cols <- c(b_cols, "Treat all" = pub_palette[["treat_all"]], "Treat none" = pub_palette[["treat_none"]])
   b_lts  <- c(b_lts, "Treat all" = 1, "Treat none" = 3)
   nb <- do.call(rbind, nb_l)
-  nb$s <- factor(nb$s, levels = c(clin_nm, "Clinical + immune",
-                                  if (!is.null(cur$comparator)) clab,
-                                  if (pdl1_nb) "PD-L1 alone", unname(single_lab[single_nb]),
+  nb$s <- factor(nb$s, levels = c(if (pdl1_nb) "TPS", unname(single_lab[single_nb]),
                                   if (!is.null(cur$immune)) IMM_NM,
+                                  if (!is.null(cur$comparator)) clab,
+                                  clin_nm, COMB_NM,
                                   "Treat all", "Treat none"))
   pB <- ggplot(nb, aes(t, nb, colour = s, linetype = s)) +
     geom_line(linewidth = 0.8) +
@@ -435,6 +441,8 @@ pub_fig_consort <- function(led, terminal = NULL, title = NULL, inflow = NULL,
   # be drawn in the vertical flow (nobody is dropped for an imputed clinical value).
   y_end <- ys[k] - 0.6
   if (length(terminal)) {
+    # Persisted terminal labels predate the TPS display name (PI, 2026-10-30).
+    names(terminal) <- gsub("PD-L1", "TPS", names(terminal), fixed = TRUE)
     tl <- paste(vapply(sprintf("%s: %s", names(terminal), unlist(terminal)),
                        strwrap_lab, "", w = 50), collapse = "\n")
     nl <- length(strsplit(tl, "\n")[[1]])
@@ -919,9 +927,9 @@ pub_fig_nomogram <- function(nomo, header_suffix = "", compact_header = FALSE) {
   imm_scale <- if (!identical(tp, "delta")) "% of parent gate"
                else if (compact_header) "Ki67⁺:Ki67⁻ ratio fold change"
                else "fold change of the Ki67⁺:Ki67⁻ ratio"
-  clab <- if (!is.null(nomo$clinical_vars)) pub_relabel_var(paste(nomo$clinical_vars, collapse = " + ")) else "clinical"
+  clab <- if (!is.null(nomo$clinical_vars)) paste(pub_relabel_var(nomo$clinical_vars), collapse = " + ") else "clinical"
   pub_nomo_panel(nomo$clinical_immune,
-                 header = paste0(sprintf("Immune composite [%s; %s] + %s", tpl, imm_scale, clab),
+                 header = paste0(sprintf("Immune score [%s; %s] + %s", tpl, imm_scale, clab),
                                  header_suffix))
 }
 
@@ -1249,7 +1257,7 @@ pub_consort_terminal <- function(av) {
   tl <- list()
   if (!is.null(av$n_complete_case))
     tl[[sprintf("Complete-case %s",
-                gsub("_", "-", paste(names(av$clinical_vars), collapse = "+")))]] <-
+                paste(pub_relabel_var(names(av$clinical_vars)), collapse = "+"))]] <-
       if (is.null(av$complete_case))
         sprintf("n = %d (NAs median-imputed in-fold; nobody excluded)", av$n_complete_case)
       else sprintf("n = %d (other NAs median-imputed in-fold; missing %s excluded above)",

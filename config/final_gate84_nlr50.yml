@@ -315,7 +315,7 @@ publication:
   main:
     - {stem: Figure1_Biology, from: 06_machine_learning/publication, label: "Figure 1",
        producer: "pub_fig_biology + pub_fig_lmm_forest",
-       frame: "A: Δ frame, n = {delta}; B: LMM frame, {lmm_patients} patients / {lmm_obs} obs"}
+       frame: "A: LMM frame, {lmm_patients} patients / {lmm_obs} obs; B: Δ frame, n = {delta}"}
     - {stem: Figure2b_AddedValue_CVcurves, from: 06_machine_learning/publication, label: "Figure 2",
        producer: "pub_fig_added_value(curves = \"cv\")", frame: "Δ frame, n = {delta} ({delta_pos} PR)"}
     - {stem: FigureS9b_Nomogram_FullRangeAxes, from: 06_machine_learning/publication, label: "Figure 3",
@@ -323,12 +323,17 @@ publication:
     - {stem: FigureKM_DeltaComposite_OS_PFS, from: 07_post_hoc/km, label: "Figure 4",
        producer: "pub_fig_km_panels (src/07_post_hoc.R)", frame: "Δ frame, n = {delta}; post hoc, descriptive"}
   supplementary:
-    - {stem: FigureS1_CONSORT, from: 06_machine_learning/publication, label: "Figure S1",
+    # Figure S1: the LMM forest of the nlr_v2_cc50 sensitivity run (gate on its own 50 / 100), drawn into
+    # this run by tools/render_sensitivity_forest.R (PI, 2026-10-30); frame text is that run's, not this one's.
+    - {stem: FigureSens_LMMForest, name: LMMForest_50pts, from: 07_post_hoc/sensitivity_lmm, label: "Figure S1",
+       producer: "pub_fig_lmm_forest via tools/render_sensitivity_forest.R (source: results/0final/nlr_v2_cc50 step 04)",
+       frame: "sensitivity: LMM frame of nlr_v2_cc50, 50 patients / 100 obs (see sensitivity_lmm/source.txt)"}
+    - {stem: FigureS1_CONSORT, from: 06_machine_learning/publication, label: "Figure S2",
        producer: "pub_fig_consort",
        frame: "T0 n = {t0_standard}; LMM {lmm_patients} patients / {lmm_obs} obs; Δ n = {delta}"}
-    - {stem: FigureS7_Calibration_IDI, from: 06_machine_learning/publication, label: "Figure S2",
+    - {stem: FigureS7_Calibration_IDI, from: 06_machine_learning/publication, label: "Figure S3",
        producer: "pub_fig_calibration_idi", frame: "Δ frame, n = {delta}"}
-    - {stem: FigureT_TherapyChange, from: 07_post_hoc/therapy, label: "Figure S3",
+    - {stem: FigureT_TherapyChange, from: 07_post_hoc/therapy, label: "Figure S4",
        producer: "pub_fig_therapy_change(adjusted = TRUE) (src/07_post_hoc.R)",
        frame: "paired LMM patients with a known regimen (of {lmm_paired} paired); n per group in therapy/console.txt"}
   tables:

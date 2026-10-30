@@ -105,7 +105,14 @@ pub_relabel_marker <- function(x) {
   x[hit] <- PUB_MARKER_LABELS[x[hit]]
   x
 }
-pub_relabel_var <- function(x) gsub("_", "-", as.character(x), fixed = TRUE)
+# PD-L1 is shown as TPS and the immune composite as "Immune score" (PI, 2026-10-30).
+PUB_VAR_LABELS <- c("PD_L1" = "TPS", "PD-L1" = "TPS", "Immune composite" = "Immune score")
+pub_relabel_var <- function(x) {
+  x  <- as.character(x)
+  hit <- x %in% names(PUB_VAR_LABELS)
+  x[hit] <- PUB_VAR_LABELS[x[hit]]
+  gsub("_", "-", x, fixed = TRUE)
+}
 
 #' ROC data.frame + AUC from a probability vector and a 0/1 positive indicator.
 pub_roc_df <- function(prob, y_pos) {
