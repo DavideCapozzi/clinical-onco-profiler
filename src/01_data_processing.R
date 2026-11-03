@@ -210,6 +210,52 @@ cohort_ledger <- ledger_add(
   dropped_ids = if (exists("out_pids", inherits = FALSE)) out_pids else NULL)
 ledger_validate(cohort_ledger, context = sprintf("Step 01 / %s", config$project_name))
 
+# ── Cohort ledger, stage 4 (option): T1 samples restricted to the Δ frame ─────
+# longitudinal.t1_restrict_to_delta_frame (default off; absent = off): keep every T0
+# sample and the T1 sample only of the patients of the step-06 Δ added-value frame =
+# paired T0 + T1 after QC AND complete on clinical_model.complete_case_vars (same resolver
+# and T0 file as step 06). Applied after QC (same panel, same dropped samples) and before
+# the transformation, so the z-scores are computed on the reduced frame. The other T1
+# samples (paired patients outside the Δ frame, T1-only patients) are not used anywhere.
+.t1_delta <- NULL   # reset per experiment: main.R loops experiments in one session
+if (isTRUE(config$is_longitudinal) && isTRUE(config$longitudinal$t1_restrict_to_delta_frame)) {
+  if (!exists("resolve_complete_case", mode = "function")) source("R/modules_ml_utility.R")
+  .cm <- config$machine_learning$clinical_model
+  .cv <- .cm$vars
+  if (!isTRUE(config$include_nlr)) .cv <- .cv[setdiff(names(.cv), "NLR")]   # NLR toggle, as step 06
+  .cc <- resolve_complete_case(config$input_file_t0, unlist(.cv), .cm$complete_case_vars)
+  .pid <- as.character(meta_clean_basic$Patient_ID); .tp <- as.character(meta_clean_basic$Timepoint)
+  .paired <- intersect(.pid[.tp == "T0"], .pid[.tp == "T1"])
+  .keep_ids <- if (is.null(.cc)) .paired else intersect(.paired, .cc$ids)
+  .keep <- .tp == "T0" | .pid %in% .keep_ids
+  .reason <- sprintf("T1 sample outside the paired Δ frame (paired T0 + T1%s)",
+                     if (is.null(.cc)) "" else sprintf(" with %s", paste(.cc$vars, collapse = " / ")))
+  cohort_ledger <- ledger_add(
+    cohort_ledger, "t1_delta_frame", nrow(mat_clean_basic), sum(.keep), reason = .reason,
+    by_group = table(meta_clean_basic$Group[.keep]), dropped_ids = rownames(mat_clean_basic)[!.keep])
+  if (any(!.keep)) {
+    qc_result$report$dropped_rows_detail <- rbind(qc_result$report$dropped_rows_detail, data.frame(
+      Patient_ID = rownames(mat_clean_basic)[!.keep],
+      NA_Percent = round(rowMeans(is.na(mat_clean_basic[!.keep, , drop = FALSE])) * 100, 2),
+      Reason = "T1 outside Δ frame", Original_Source = as.character(meta_clean_basic$Group[!.keep]),
+      stringsAsFactors = FALSE))
+    qc_result$report$n_row_dropped <- nrow(qc_result$report$dropped_rows_detail)
+  }
+  .t1_delta <- list(
+    complete_case_vars = if (is.null(.cc)) character(0) else .cc$vars,
+    delta_frame_ids = sort(.keep_ids),
+    dropped_t1_paired = sort(setdiff(.paired, .keep_ids)),                 # paired, outside the Δ frame
+    dropped_t1_only   = sort(setdiff(.pid[.tp == "T1"], .paired)))         # no T0 sample after QC
+  mat_clean_basic  <- mat_clean_basic[.keep, , drop = FALSE]
+  meta_clean_basic <- meta_clean_basic[.keep, , drop = FALSE]
+  qc_result$report$breakdown_final <- table(meta_clean_basic$Group)
+  ledger_validate(cohort_ledger, context = sprintf("Step 01 / %s", config$project_name))
+  message(sprintf("[Data] T1 restricted to the Δ frame: %d paired%s -> kept %d T1; dropped T1 of %d paired outside the frame + %d T1-only -> %d patients / %d samples",
+                  length(.paired), if (is.null(.cc)) "" else sprintf(" (%d with %s)", length(.keep_ids), paste(.cc$vars, collapse = "+")),
+                  length(.keep_ids), length(.t1_delta$dropped_t1_paired), length(.t1_delta$dropped_t1_only),
+                  length(unique(meta_clean_basic$Patient_ID)), nrow(meta_clean_basic)))
+}
+
 mat_raw <- mat_clean_basic
 metadata_raw <- meta_clean_basic
 message(sprintf("[QC] Final Matrix Dimensions: %d Samples x %d Markers", nrow(mat_raw), ncol(mat_raw)))
@@ -247,6 +293,8 @@ processed_data <- list(
   cohort_ledger   = cohort_ledger,
   config          = config
 )
+# Option longitudinal.t1_restrict_to_delta_frame only (absent otherwise: option-off rds unchanged).
+if (!is.null(.t1_delta)) processed_data$t1_delta_frame <- .t1_delta
 
 out_file_data <- file.path(out_dir, sprintf("data_processed_%s_%s.rds", config$project_name, config$run_mode))
 out_file_qc   <- file.path(out_dir, sprintf("QC_Filtering_Report_%s_%s.xlsx", config$project_name, config$run_mode))

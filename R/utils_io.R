@@ -841,6 +841,12 @@ prepare_pass_config <- function(base_config, exp_cfg, exp_name, pass_mode, run_r
     config$qc$remove_outliers <- FALSE
     if (!is.null(exp_cfg$input_file_t0)) config$input_file_t0 <- exp_cfg$input_file_t0
     if (!is.null(exp_cfg$input_file_t1)) config$input_file_t1 <- exp_cfg$input_file_t1
+    # longitudinal.t1_restrict_to_delta_frame: step 01 resolves the Δ frame from the
+    # experiment's clinical_model as step 06 does, so it needs the merged block (option only).
+    if (isTRUE(config$longitudinal$t1_restrict_to_delta_frame) && !is.null(exp_cfg$machine_learning))
+      config$machine_learning <- modifyList(
+        if (!is.null(config$machine_learning)) config$machine_learning else list(),
+        exp_cfg$machine_learning)
 
   } else if (pass_mode %in% c("machine_learning", "post_hoc")) {
     # post_hoc (step 07) reads the same inputs and machine_learning block as step 06.
