@@ -10,28 +10,30 @@
 #                  guarantee-time sensitivity: BOR is only known after restaging.
 #   3. score       OS / PFS by the Δ composite dichotomised at fixed (0 = decreased vs
 #                  stable/increased) and quantile cut-offs, from the T1 landmark of
-#                  post_hoc.km (as Figure 4); continuous Cox; the same within regimen.
+#                  post_hoc.km; continuous Cox; the same within regimen. Kaplan-Meier
+#                  figure of the 0 split (decreased vs stable/increased) = Figure S3, drawn
+#                  with the post_hoc km builders (km_median_split(cut = 0), pub_fig_km_panels).
 #
-# Standalone: tools/survival_bor.R --run <run> (no re-run; writes into the run's
-# 07_post_hoc/bor_survival/). Not wired into src/07_post_hoc.R yet; to integrate, add
-# inside its post hoc block (after 7d):
-#   bs_cfg <- ph_cfg$bor_survival
-#   if (!is.null(bs_cfg) && !isFALSE(bs_cfg$enabled))
-#     bor_survival_run(config, file.path(out_root, "bor_survival"), by = "src/07_post_hoc.R (bor_survival)")
-# with source("R/modules_survival_bor.R") at the top and, in the config,
-#   post_hoc: {bor_survival: {enabled: true, landmark_months: 3}}
+# Pipeline: src/07_post_hoc.R block 7f, on when the config has post_hoc.bor_survival
+# (enabled: true; landmark_months, score_quantiles optional). Standalone, on a finished
+# run (same pass config, same output): tools/survival_bor.R --run <run>.
+# Output: <run>/<exp>/07_post_hoc/bor_survival/ (FigureKM_ScoreDecreased_OS_PFS = Figure S3,
+# FigureBOR_KM_OS_PFS = Figure S4, csv tables, console.txt, manifest.json).
 #
 # Asserts (FATAL otherwise): frame n / groups = step-06 JSON; OS / PFS n and events =
 # JSON survival; Cox OS PR vs SD/PD = JSON mediation response_to_survival_hr; Cox
 # clinical + composite = JSON immune_hr; median split = post_hoc km/km_tests.csv (when
-# present). No random numbers (no seed).
+# present); 0-split KM = the 0 row of the cut-off table. No random numbers (no seed).
 # Dependencies: survival, readxl, jsonlite, ggplot2, patchwork (+ modules_pub_style.R,
-# utils_io.R for step_output_path / step_dir_name).
+# modules_survival_km.R, utils_io.R for step_output_path / step_dir_name).
 # ==============================================================================
 
 BOR_LEVELS <- c("PR", "SD", "PD")
 BOR_COLS   <- c(PR = "#0072B2", SD = "#E69F00", PD = "#D55E00")   # Okabe-Ito
 BOR_REGIMENS <- c("1" = "ICI monotherapy", "2" = "chemo-immunotherapy")
+# Figure S3 arms (score <= 0 / > 0); colours = KM_COLS of the median split (blue / red)
+SCORE_ARMS <- c(low = "Immune score decreased", high = "Immune score stable or increased")
+SCORE_COLS <- setNames(c("#2166AC", "#B2182B"), unname(SCORE_ARMS))
 
 .bor_lr_p <- function(sd) pchisq(sd$chisq, df = length(sd$n) - 1L, lower.tail = FALSE)
 
@@ -160,7 +162,7 @@ pub_fig_bor_km <- function(res_list, y_labs) {
     ggplot(curve, aes(time, surv, colour = group)) +
       geom_step(linewidth = 0.7) +
       geom_point(data = cens, aes(time, surv, colour = group), shape = 3, size = 1.6, stroke = 0.6,
-                 inherit.aes = FALSE, show.legend = FALSE) +   # PD has no censoring in PFS: legends would not merge
+                 inherit.aes = FALSE, show.legend = TRUE) +    # key for every group (PD has no censoring in PFS), as pub_fig_km_median
       annotate("text", x = x_max, y = 1, label = lab, hjust = 1, vjust = 1, size = 3.2) +
       scale_colour_manual(values = BOR_COLS[lv]) +
       scale_x_continuous(breaks = seq(0, x_max, by = 6), limits = c(0, x_max),
@@ -268,7 +270,7 @@ bor_survival_run <- function(config, out_dir, by = "tools/survival_bor.R") {
     say("\ncheck: Cox OS PR vs SD/PD HR %.4f = JSON dissociation.mediation.response_to_survival_hr %.4f: PASS", hr_os, J_hr)
   } else say("\ncheck: JSON response_to_survival_hr absent (mediation off): not checked")
 
-  # 3. Score (Δ composite) from the T1 landmark, as Figure 4
+  # 3. Score (Δ composite) from the T1 landmark, as Figure S3
   x <- pts$Composite
   cuts <- c(c("0 (decreased vs stable/increased)" = 0),
             setNames(stats::quantile(x, q_cuts, names = FALSE), sprintf("quantile %.3g", q_cuts)))
@@ -285,6 +287,16 @@ bor_survival_run <- function(config, out_dir, by = "tools/survival_bor.R") {
     SC[[e]]  <- rbind(cbind(endpoint = e, do.call(rbind, lapply(cr, `[[`, "test"))),
                       sc_row(e, "continuous (per unit)", bor_score_continuous(t_lm, EP[[e]]$event, x)))
     SCm[[e]] <- cbind(endpoint = e, do.call(rbind, lapply(cr, `[[`, "medians")))
+  }
+  # Kaplan-Meier of the 0 split (Figure S3), with the post_hoc km builder; stratified row by
+  # PR vs SD/PD as in km/. Must equal the 0 row of the cut-off table (HR reciprocal).
+  KS <- list()
+  for (e in names(EP)) {
+    KS[[e]] <- km_median_split(EP[[e]]$time, EP[[e]]$event, x, ids, pts$True_Group,
+                               landmark_months = lm_score, cut = 0, arms = SCORE_ARMS)
+    k0 <- KS[[e]]$tests[KS[[e]]$tests$analysis == "primary", ]; s0r <- SC[[e]][SC[[e]]$cutoff == names(cuts)[1], ]
+    if (KS[[e]]$n_excluded > 0 || abs(1 / k0$hr - s0r$hr) > 1e-6 || abs(k0$p - s0r$logrank_p) > 1e-8)
+      fatal("%s 0-split KM (HR %.6f, p %.6g) != cut-off table (1/HR %.6f, p %.6g)", e, k0$hr, k0$p, 1 / s0r$hr, s0r$logrank_p)
   }
   # check: median split = post_hoc km (HR there is high vs low -> reciprocal)
   km_csv <- file.path(step_dir(config, 7), "km", "km_tests.csv")
@@ -332,6 +344,12 @@ bor_survival_run <- function(config, out_dir, by = "tools/survival_bor.R") {
           paste(ids[is.na(reg)], collapse = ", "))
       show(rnd(SR[[e]][, -1])); say("interaction score x regimen (LRT, continuous): p = %.3g", inter[[e]])
     }
+    r <- KS[[e]]; pr <- r$tests[r$tests$analysis == "primary", ]
+    say("Kaplan-Meier, score <= 0 vs > 0 (Figure S3; = row 0 above: PASS):"); show(rnd(r$medians)); show(rnd(r$tests[, -2]))
+    say("split x response:"); show(r$split_by_group)
+    say("caption values %s: Δ frame, n = %d, %d events; split at Δ composite 0 (%s n = %d / %s n = %d); log-rank p = %.3f; HR %.2f [%.2f, %.2f] (stable/increased vs decreased)",
+        e, nrow(r$patients), sum(r$patients$event), SCORE_ARMS[["low"]], pr$n_low, SCORE_ARMS[["high"]], pr$n_high,
+        pr$p, pr$hr, pr$hr_lo, pr$hr_hi)
   }
 
   # Paste-ready values
@@ -366,11 +384,19 @@ bor_survival_run <- function(config, out_dir, by = "tools/survival_bor.R") {
   utils::write.csv(data.frame(Patient_ID = ids, BOR = bor, regimen = reg, composite = x, OS = os, death = dth,
                               PFS = pfs, pfs_event = pfs_ev),
                    file.path(out_dir, "bor_patients.csv"), row.names = FALSE)
-  saveRDS(list(followup = fu, bor = BOR, score = SC, score_medians = SCm, regimen = SR), file.path(out_dir, "bor_survival.rds"))
+  kbind <- function(k) do.call(rbind, lapply(names(KS), function(e) cbind(endpoint = e, KS[[e]][[k]])))
+  utils::write.csv(kbind("tests"), file.path(out_dir, "score0_km_tests.csv"), row.names = FALSE)
+  utils::write.csv(kbind("medians"), file.path(out_dir, "score0_km_medians.csv"), row.names = FALSE)
+  utils::write.csv(kbind("risk"), file.path(out_dir, "score0_km_risk_table.csv"), row.names = FALSE)
+  saveRDS(list(followup = fu, bor = BOR, score = SC, score_medians = SCm, regimen = SR, score0_km = KS),
+          file.path(out_dir, "bor_survival.rds"))
   save_pub_figure(pub_fig_bor_km(BOR[c("OS_landmark0", "PFS_landmark0")], c(EP$OS$label, EP$PFS$label)),
                   file.path(out_dir, "FigureBOR_KM_OS_PFS"), PUB_W2, 95, config = config)
+  save_pub_figure(pub_fig_km_panels(KS, c(EP$OS$label, EP$PFS$label), arms = SCORE_ARMS, cols = SCORE_COLS),
+                  file.path(out_dir, "FigureKM_ScoreDecreased_OS_PFS"), PUB_W2, 95, config = config)
   sha <- tryCatch(system2("git", c("rev-parse", "HEAD"), stdout = TRUE, stderr = FALSE), error = function(e) NA_character_)
-  dirty <- tryCatch(length(system2("git", c("status", "--porcelain", "R/modules_survival_bor.R", "tools/survival_bor.R"),
+  dirty <- tryCatch(length(system2("git", c("status", "--porcelain", "R/modules_survival_bor.R", "R/modules_survival_km.R",
+                                                "tools/survival_bor.R", "src/07_post_hoc.R"),
                                    stdout = TRUE, stderr = FALSE)) > 0, error = function(e) NA)
   jsonlite::write_json(list(
     step = by, module = "R/modules_survival_bor.R", date = format(Sys.time(), "%Y-%m-%d %H:%M:%S %Z"),
@@ -383,7 +409,8 @@ bor_survival_run <- function(config, out_dir, by = "tools/survival_bor.R") {
     bor_landmark_months = lm_bor, score_landmark_days = lm_days, score_cuts = as.list(cuts),
     km_ci = "log (survfit default, as post_hoc km)",
     checks = list(frame_and_events_vs_step06 = TRUE, response_to_survival_hr = !is.null(J_hr),
-                  median_split_vs_km = file.exists(km_csv), step06_cox_immune_hr = TRUE)),
+                  median_split_vs_km = file.exists(km_csv), step06_cox_immune_hr = TRUE,
+                  score0_km_vs_cutoff_table = TRUE)),
     file.path(out_dir, "manifest.json"), auto_unbox = TRUE, pretty = TRUE)
   message(sprintf("   [PostHoc] bor_survival -> %s", out_dir))
   invisible(list(followup = fu, bor = BOR, score = SC, regimen = SR))

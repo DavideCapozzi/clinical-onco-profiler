@@ -101,7 +101,8 @@ cfg$post_hoc <- list(
   duplicate_rows = list(enabled = TRUE, drop_t1 = list("SYN_001", "SYN_021")),
   therapy        = list(enabled = TRUE, file_t0 = th_paths[1], file_t1 = th_paths[2],
                         tag = "synthetic", B = 100, seed = 56),
-  km             = list(enabled = TRUE, landmark_days = 21))
+  km             = list(enabled = TRUE, landmark_days = 21),
+  bor_survival   = list(enabled = TRUE, landmark_months = 3))
 
 cfg$experiments <- list(
   Synthetic = list(
@@ -181,6 +182,8 @@ expected <- c(
   dup      = file.path(ph_dir, "duplicate_rows", "duplicate_rows_scenarios.csv"),
   therapy  = file.path(ph_dir, "therapy", "therapy_tests.csv"),
   km       = file.path(ph_dir, "km", "km_tests.csv"),
+  bor      = file.path(ph_dir, "bor_survival", "bor_tests.csv"),
+  bor_fig4 = file.path(ph_dir, "bor_survival", "FigureKM_ScoreDecreased_OS_PFS.pdf"),
   manifest = file.path(run_dir, "run_manifest.yml"),
   index    = file.path(run_dir, "publication", "INDEX.md")
 )

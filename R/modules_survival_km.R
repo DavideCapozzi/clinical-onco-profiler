@@ -1,6 +1,7 @@
 # R/modules_survival_km.R
 # ==============================================================================
-# KAPLAN-MEIER MODULE — OS / PFS by median split of the Δ immune composite
+# KAPLAN-MEIER MODULE — OS / PFS by median split of the Δ immune composite (or a fixed
+# cut: modules_survival_bor.R splits at 0, decreased vs stable/increased, for Figure S3)
 # (post hoc, descriptive). The composite is the step-06 added-value composite
 # (mean Δz of the fixed LMM gate markers); the split is at its median in the frame.
 #
@@ -39,9 +40,11 @@ KM_COLS <- setNames(c("#2166AC", "#B2182B"), unname(KM_ARMS))   # blue / red (us
 #' @param landmark_months landmark in months (T1); 0 = no landmark
 #' @param risk_times times (months from the landmark) for the number-at-risk table
 #'   (default every 6 months up to the first multiple of 6 past the last follow-up)
-#' @return list(patients, tests, km, medians, risk, split_by_group, median_x, n_excluded, ...)
+#' @param cut split point (default NULL = the median of x); arm "high" = x > cut
+#' @param arms arm labels c(low = , high = ) (default KM_ARMS)
+#' @return list(patients, tests, km, medians, risk, split_by_group, median_x, cut, n_excluded, ...)
 km_median_split <- function(time, event, x, ids, group, landmark_months = 0,
-                            risk_times = NULL) {
+                            risk_times = NULL, cut = NULL, arms = KM_ARMS) {
   stopifnot(length(time) == length(x), length(event) == length(x), length(ids) == length(x),
             length(group) == length(x))
   ok_data <- is.finite(time) & !is.na(event) & is.finite(x)
@@ -52,8 +55,9 @@ km_median_split <- function(time, event, x, ids, group, landmark_months = 0,
                   time_start = time[ok_lm], time = time[ok_lm] - landmark_months,
                   event = as.integer(event[ok_lm]), stringsAsFactors = FALSE)
   med <- median(d$x)
-  d$high <- d$x > med
-  d$arm  <- factor(ifelse(d$high, KM_ARMS[["high"]], KM_ARMS[["low"]]), levels = unname(KM_ARMS))
+  if (is.null(cut)) cut <- med
+  d$high <- d$x > cut
+  d$arm  <- factor(ifelse(d$high, arms[["high"]], arms[["low"]]), levels = unname(arms))
 
   S   <- survival::Surv(d$time, d$event)
   sd0 <- survival::survdiff(S ~ d$high)
@@ -64,7 +68,7 @@ km_median_split <- function(time, event, x, ids, group, landmark_months = 0,
   arm_n <- function() c(n_low = sum(!d$high), events_low = sum(d$event[!d$high]),
                          n_high = sum(d$high), events_high = sum(d$event[d$high]))
   tests <- rbind(
-    data.frame(analysis = "primary", test = "log-rank, Δ > median vs Δ ≤ median",
+    data.frame(analysis = "primary", test = sprintf("log-rank, %s vs %s", arms[["high"]], arms[["low"]]),
                t(arm_n()), chisq = sd0$chisq, p = .km_logrank_p(sd0),
                t(.km_cox_row(c0)), cox_zph_p = zph, check.names = FALSE),
     data.frame(analysis = "secondary (post hoc)", test = "log-rank stratified by best response",
@@ -86,7 +90,7 @@ km_median_split <- function(time, event, x, ids, group, landmark_months = 0,
   risk <- data.frame(arm = arm_of(rs$strata), time = rs$time, n_risk = rs$n.risk)
 
   list(patients = d, tests = tests, km = km, medians = medians, risk = risk,
-       split_by_group = table(arm = d$arm, group = d$group), median_x = med,
+       split_by_group = table(arm = d$arm, group = d$group), median_x = med, cut = cut,
        landmark_months = landmark_months, n_excluded = nrow(excluded), excluded = excluded,
        fit = fit, cox = c0, cox_strat = cs)
 }
@@ -98,21 +102,26 @@ km_median_split <- function(time, event, x, ids, group, landmark_months = 0,
 #' @param res output of km_median_split()
 #' @param y_lab y-axis title (endpoint name)
 #' @param x_max last month on the axis (default: first multiple of 6 past the last follow-up)
-pub_fig_km_median <- function(res, y_lab = "Overall survival", x_max = max(res$risk$time)) {
+#' @param arms,cols arm labels and their colours (default KM_ARMS / KM_COLS; must match the
+#'   arms given to km_median_split)
+pub_fig_km_median <- function(res, y_lab = "Overall survival", x_max = max(res$risk$time),
+                              arms = KM_ARMS, cols = KM_COLS) {
   km <- res$km
   # step curves need the (0, 1) start of each arm
-  curve <- rbind(data.frame(arm = unname(KM_ARMS), time = 0, surv = 1), km[, c("arm", "time", "surv")])
+  curve <- rbind(data.frame(arm = unname(arms), time = 0, surv = 1), km[, c("arm", "time", "surv")])
   curve <- curve[order(curve$arm, curve$time), ]
   cens  <- km[km$n_censor > 0, ]
-  for (v in c("curve", "cens")) { z <- get(v); z$arm <- factor(z$arm, levels = unname(KM_ARMS)); assign(v, z) }
+  for (v in c("curve", "cens")) { z <- get(v); z$arm <- factor(z$arm, levels = unname(arms)); assign(v, z) }
   p_lr <- res$tests$p[res$tests$analysis == "primary"]
   lab  <- if (p_lr < 0.001) "Log-rank p < 0.001" else sprintf("Log-rank p = %.3f", p_lr)
   ggplot(curve, aes(time, surv, colour = arm)) +
     geom_step(linewidth = 0.7) +
+    # show.legend = TRUE: a censor key for every arm, also when one arm has no censoring
+    # (else the two panels' legends differ and patchwork does not merge them)
     geom_point(data = cens, aes(time, surv, colour = arm), shape = 3, size = 1.6, stroke = 0.6,
-               inherit.aes = FALSE) +
+               inherit.aes = FALSE, show.legend = TRUE) +
     annotate("text", x = x_max, y = 1, label = lab, hjust = 1, vjust = 1, size = 3.2) +
-    scale_colour_manual(values = KM_COLS) +
+    scale_colour_manual(values = cols) +
     scale_x_continuous(breaks = seq(0, x_max, by = 6), limits = c(0, x_max),
                        expand = expansion(mult = c(0.02, 0.02))) +
     scale_y_continuous(limits = c(0, 1), labels = function(b) paste0(b * 100, "%"),
@@ -124,8 +133,9 @@ pub_fig_km_median <- function(res, y_lab = "Overall survival", x_max = max(res$r
 #' @title Figure: one Kaplan-Meier panel per endpoint (A, B, ...), shared bottom legend
 #' @param res_list named list of km_median_split() results, in panel order
 #' @param y_labs y-axis titles, same order
-pub_fig_km_panels <- function(res_list, y_labs) {
-  ps <- Map(pub_fig_km_median, res_list, y_labs)
+#' @param ... passed to pub_fig_km_median (arms, cols)
+pub_fig_km_panels <- function(res_list, y_labs, ...) {
+  ps <- Map(function(r, y) pub_fig_km_median(r, y, ...), res_list, y_labs)
   pub_tag(patchwork::wrap_plots(ps, nrow = 1) + patchwork::plot_layout(guides = "collect")) &
     theme(legend.position = "bottom")
 }

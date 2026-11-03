@@ -7,9 +7,13 @@
 #   duplicate_rows/  drop the T1 rows listed in post_hoc.duplicate_rows.drop_t1
 #   therapy/         ICI monotherapy vs chemo-immunotherapy (gate change)
 #   km/              Kaplan-Meier OS / PFS by median split of the Δ composite
+#   bor_survival/    OS / PFS by best overall response; Δ composite cut-offs (0 split =
+#                    Figure S3), continuous, by regimen; follow-up (off unless configured)
+#   sensitivity_lmm/ LMM forest of another (sensitivity) run, drawn from a frozen
+#                    snapshot of its step-04 report (off unless configured)
 # Every analysis asserts that it reproduces its step-04 / step-06 inputs (FATAL
 # otherwise). Self-skips, with a logged reason, when those artifacts are missing.
-# Config block: post_hoc.{grouping, duplicate_rows, therapy, km}.
+# Config block: post_hoc.{grouping, duplicate_rows, therapy, km, bor_survival, sensitivity_lmm}.
 # ==============================================================================
 
 source("R/utils_io.R")
@@ -21,6 +25,8 @@ source("R/modules_posthoc_grouping.R")
 source("R/modules_posthoc_duplicates.R")
 source("R/modules_therapy_sensitivity.R")
 source("R/modules_survival_km.R")
+source("R/modules_survival_bor.R")
+source("R/modules_pub_figures.R")
 
 message("\n=== PIPELINE STEP 7: POST HOC ANALYSES ===")
 
@@ -332,6 +338,25 @@ if (!all(file.exists(needed))) {
       step06_cox_reproduced = TRUE), file.path(d, "manifest.json"), auto_unbox = TRUE, pretty = TRUE)
     close(L$con)
     message(sprintf("   [PostHoc] km -> %s", d))
+  }
+
+  # --- 7e. Survival by best overall response and by Δ composite cut-off ----------------
+  # post_hoc.bor_survival (absent = off). After 7d: checks its median split against km/.
+  # Same driver as tools/survival_bor.R (R/modules_survival_bor.R).
+  bs_cfg <- ph_cfg$bor_survival
+  if (!is.null(bs_cfg) && !isFALSE(bs_cfg$enabled))
+    bor_survival_run(config, file.path(out_root, "bor_survival"), by = "src/07_post_hoc.R (bor_survival)")
+
+  # --- 7f. LMM forest of a sensitivity run, from a frozen snapshot ---------------------
+  # post_hoc.sensitivity_lmm.snapshot (absent = off): the final run's Figure S1 is the
+  # LMM forest of nlr_v2_cc50; drawn here from its frozen, md5-checked inputs, so no
+  # other run has to exist (snapshot made once by tools/render_sensitivity_forest.R).
+  sl_cfg <- ph_cfg$sensitivity_lmm
+  if (!is.null(sl_cfg$snapshot) && !isFALSE(sl_cfg$enabled)) {
+    d <- file.path(out_root, "sensitivity_lmm")
+    r <- pub_draw_sensitivity_lmm(sl_cfg$snapshot, exp, d, fig_cfg = config, by = "src/07_post_hoc.R (sensitivity_lmm)")
+    message(sprintf("   [PostHoc] sensitivity LMM forest of %s (LMM %d / %d; %s) -> %s", r$source_run,
+                    r$frame$n_patients, r$frame$n_observations, paste(r$markers, collapse = ", "), d))
   }
 }
 

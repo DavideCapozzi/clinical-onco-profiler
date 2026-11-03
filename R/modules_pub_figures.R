@@ -1271,9 +1271,14 @@ pub_consort_terminal <- function(av) {
 
 # ── helper: read same-run Step-04 LMM bootstrap frames for the forest ─────────
 pub_read_lmm_bootstrap <- function(config) {
+  f <- tryCatch(file.path(step_dir(config, 4, create = FALSE),
+                          sprintf("Longitudinal_LMM_Report_%s.xlsx", config$project_name)),
+                error = function(e) NULL)
+  if (is.null(f)) NULL else pub_read_lmm_report(f)
+}
+#' @param f A Step-04 LMM report xlsx (a run's own, or a frozen snapshot copy).
+pub_read_lmm_report <- function(f) {
   tryCatch({
-    f <- file.path(step_dir(config, 4, create = FALSE),
-                   sprintf("Longitudinal_LMM_Report_%s.xlsx", config$project_name))
     if (!file.exists(f)) return(NULL)
     sheets <- readxl::excel_sheets(f)
     if (!"LMM_Bootstrap_CI" %in% sheets) return(NULL)
@@ -1289,12 +1294,91 @@ pub_read_lmm_bootstrap <- function(config) {
 # The selection frame counts PATIENTS (the longitudinal ledger counts samples, so no
 # ledger row can show it); Step 04 records it in its metrics JSON.
 pub_read_lmm_frame <- function(config) {
+  f <- tryCatch(step_output_path(config, 4, sprintf("Machine_Metrics_LMM_%s", config$project_name), "json"),
+                error = function(e) NULL)
+  if (is.null(f)) NULL else pub_read_lmm_frame_json(f)
+}
+#' @param f A Step-04 LMM metrics JSON (a run's own, or a frozen snapshot copy).
+pub_read_lmm_frame_json <- function(f) {
   tryCatch({
-    f <- step_output_path(config, 4, sprintf("Machine_Metrics_LMM_%s", config$project_name), "json")
     if (!file.exists(f)) return(NULL)
     j <- jsonlite::fromJSON(f, simplifyVector = TRUE)
     keys <- c("n_patients", "n_observations", "n_paired", "n_only_T0", "n_only_T1")
     if (!all(keys %in% names(j))) return(NULL)
     lapply(setNames(keys, keys), function(k) as.integer(j[[k]]))
   }, error = function(e) NULL)
+}
+
+# ── Sensitivity-run LMM forest from a frozen snapshot (final run's Figure S1) ──
+# Figure S1 of the final run is the LMM forest of another run (nlr_v2_cc50). Drawing it
+# from that run's step dirs made a from-scratch re-run depend on the other run existing.
+# Its inputs are frozen once instead (pub_snapshot_sensitivity_lmm: byte copies of the
+# Step-04 report + LMM JSON, SOURCE.yml with that run's gate and reference group, MD5SUMS);
+# step 07 (post_hoc.sensitivity_lmm) and tools/render_sensitivity_forest.R draw from the
+# snapshot only, after checking every md5. A snapshot is never overwritten.
+SENS_LMM_FILES <- function(exp) c(report = sprintf("Longitudinal_LMM_Report_%s.xlsx", exp),
+                                  json   = sprintf("Machine_Metrics_LMM_%s.json", exp))
+
+#' @title Freeze the inputs of a sensitivity-run LMM forest
+#' @param from Finished run whose Step-04 LMM is drawn; @param exp Experiment.
+#' @param dest New snapshot directory (refused if it exists and is not empty).
+pub_snapshot_sensitivity_lmm <- function(from, exp, dest) {
+  if (dir.exists(dest) && length(list.files(dest, all.files = TRUE, no.. = TRUE)))
+    stop(sprintf("[FATAL] snapshot %s exists: frozen, never overwritten", dest))
+  from_cfg <- list(output_root = file.path(from, exp), project_name = exp)
+  src <- file.path(step_dir(from_cfg, 4, create = FALSE), SENS_LMM_FILES(exp)); names(src) <- names(SENS_LMM_FILES(exp))
+  rds <- file.path(step_dir(from_cfg, 6, create = FALSE), "publication", sprintf("publication_data_%s.rds", exp))
+  if (!all(file.exists(c(src, rds))))
+    stop(sprintf("[FATAL] snapshot: Step-04 report / LMM JSON / Step-06 rds missing in %s", from))
+  objs    <- readRDS(rds)
+  markers <- unique(objs$gate_decomp$per_patient_values$Marker)     # that run's own gate
+  if (!length(markers)) stop(sprintf("[FATAL] snapshot: no gate markers in %s", rds))
+  dir.create(dest, recursive = TRUE, showWarnings = FALSE)
+  if (!all(file.copy(src, dest, copy.date = TRUE))) stop(sprintf("[FATAL] snapshot: copy into %s failed", dest))
+  yaml::write_yaml(list(
+    purpose = "inputs of the LMM forest of a sensitivity run, frozen for another run's publication set",
+    source_run = basename(normalizePath(from)), experiment = exp,
+    created = format(Sys.time(), "%Y-%m-%d %H:%M:%S %Z"), created_by = "pub_snapshot_sensitivity_lmm()",
+    source_files = as.list(src), source_md5 = as.list(setNames(unname(tools::md5sum(src)), names(src))),
+    gate_source = rds, gate_markers = as.list(markers),
+    reference_group = pub_relabel_group(objs$clin_addval$negative_label)), file.path(dest, "SOURCE.yml"))
+  files <- c(unname(SENS_LMM_FILES(exp)), "SOURCE.yml")
+  writeLines(sprintf("%s  %s", unname(tools::md5sum(file.path(dest, files))), files), file.path(dest, "MD5SUMS"))
+  invisible(dest)
+}
+
+#' @title Draw a sensitivity-run LMM forest from a frozen snapshot
+#' @param snap Snapshot directory (pub_snapshot_sensitivity_lmm()); @param exp Experiment.
+#' @param out_dir Output directory (FigureSens_LMMForest.<ext> + source.txt).
+#' @param fig_cfg Config (or its figures block) for formats / dpi.
+#' @param by Writer named in source.txt.
+pub_draw_sensitivity_lmm <- function(snap, exp, out_dir, fig_cfg = NULL, by = "pub_draw_sensitivity_lmm()") {
+  ms <- file.path(snap, "MD5SUMS")
+  if (!file.exists(ms)) stop(sprintf("[FATAL] sensitivity forest: no MD5SUMS in snapshot %s", snap))
+  sums <- read.table(ms, col.names = c("md5", "file"), colClasses = "character")
+  got  <- unname(tools::md5sum(file.path(snap, sums$file)))
+  bad  <- sums$file[is.na(got) | got != sums$md5]
+  if (length(bad)) stop(sprintf("[FATAL] sensitivity forest: snapshot %s altered or incomplete: %s",
+                                snap, paste(bad, collapse = ", ")))
+  meta <- yaml::read_yaml(file.path(snap, "SOURCE.yml"))
+  if (!identical(meta$experiment, exp))
+    stop(sprintf("[FATAL] sensitivity forest: snapshot %s is for experiment %s, not %s", snap, meta$experiment, exp))
+  f   <- file.path(snap, SENS_LMM_FILES(exp))
+  lmm <- pub_read_lmm_report(f[1])
+  frm <- pub_read_lmm_frame_json(f[2])
+  if (is.null(lmm) || is.null(frm)) stop(sprintf("[FATAL] sensitivity forest: unreadable report / JSON in %s", snap))
+  markers <- as.character(unlist(meta$gate_markers))
+  p <- pub_fig_lmm_forest(lmm$boot, lmm$obs, markers = markers, ref_label = meta$reference_group)
+  if (is.null(p)) stop(sprintf("[FATAL] sensitivity forest: forest came back NULL (%s)", snap))
+  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+  save_pub_figure(p, file.path(out_dir, "FigureSens_LMMForest"), PUB_W1, 95, config = fig_cfg)
+  writeLines(c(
+    sprintf("written: %s by %s", format(Sys.time(), "%Y-%m-%d %H:%M"), by),
+    sprintf("source: %s (md5 %s)", meta$source_files$report, meta$source_md5$report),
+    sprintf("snapshot: %s (MD5SUMS verified; frozen %s)", snap, meta$created),
+    sprintf("frame: LMM %d patients / %d obs (%d paired) of %s", frm$n_patients, frm$n_observations,
+            frm$n_paired, meta$source_run),
+    sprintf("markers: %s; reference group: %s", paste(markers, collapse = ", "), meta$reference_group)),
+    file.path(out_dir, "source.txt"))
+  invisible(list(markers = markers, frame = frm, source_run = meta$source_run))
 }

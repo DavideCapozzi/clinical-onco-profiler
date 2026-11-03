@@ -293,9 +293,14 @@ post_hoc:
     tag: "v3.1"                # therapy data version (parser v3.1, 2026-10-27)
     B: 10000                   # within-regimen permutations
     seed: 56
-  km:                          # Kaplan-Meier OS / PFS by median split of the Δ composite
+  km:                          # Kaplan-Meier OS / PFS by median split of the Δ composite (additional figure)
     enabled: true
     landmark_days: 21          # T1 landmark (after the 1st cycle)
+  bor_survival:                # OS / PFS by best overall response (Figure S5) and by Δ composite cut-off
+    enabled: true              # (0 split = Figure 4, from the km T1 landmark); follow-up; by regimen
+    landmark_months: 3         # BOR guarantee-time sensitivity (BOR known only after restaging)
+  sensitivity_lmm:             # Figure S1: LMM forest of nlr_v2_cc50 (its own 50 / 100), drawn from a frozen
+    snapshot: "data/snapshots/fig_s1_nlr_v2_cc50"   # md5-checked copy of its step-04 report (no cross-run read)
 
 # --- Figure export (save_figure(), R/utils_figures.R) ---
 # formats: any of pdf (cairo, default), png / tiff (ragg; tiff LZW), svg (cairo).
@@ -320,13 +325,14 @@ publication:
        producer: "pub_fig_added_value(curves = \"cv\")", frame: "Δ frame, n = {delta} ({delta_pos} PR)"}
     - {stem: FigureS9b_Nomogram_FullRangeAxes, from: 06_machine_learning/publication, label: "Figure 3",
        producer: "pub_fig_nomogram_hybrid", frame: "Δ frame, n = {delta} (apparent fit, not validated)"}
-    - {stem: FigureKM_DeltaComposite_OS_PFS, from: 07_post_hoc/km, label: "Figure 4",
-       producer: "pub_fig_km_panels (src/07_post_hoc.R)", frame: "Δ frame, n = {delta}; post hoc, descriptive"}
+    - {stem: FigureKM_ScoreDecreased_OS_PFS, from: 07_post_hoc/bor_survival, label: "Figure 4",
+       producer: "pub_fig_km_panels, split at Δ composite 0 (bor_survival_run, R/modules_survival_bor.R)",
+       frame: "Δ frame, n = {delta}; post hoc, descriptive"}
   supplementary:
-    # Figure S1: the LMM forest of the nlr_v2_cc50 sensitivity run (gate on its own 50 / 100), drawn into
-    # this run by tools/render_sensitivity_forest.R (PI, 2026-10-30); frame text is that run's, not this one's.
+    # Figure S1: the LMM forest of the nlr_v2_cc50 sensitivity run (gate on its own 50 / 100), drawn by step 07
+    # from the frozen snapshot of post_hoc.sensitivity_lmm (PI, 2026-10-30); frame text is that run's, not this one's.
     - {stem: FigureSens_LMMForest, name: LMMForest_50pts, from: 07_post_hoc/sensitivity_lmm, label: "Figure S1",
-       producer: "pub_fig_lmm_forest via tools/render_sensitivity_forest.R (source: results/0final/nlr_v2_cc50 step 04)",
+       producer: "pub_fig_lmm_forest via pub_draw_sensitivity_lmm (src/07_post_hoc.R; snapshot data/snapshots/fig_s1_nlr_v2_cc50 of nlr_v2_cc50 step 04)",
        frame: "sensitivity: LMM frame of nlr_v2_cc50, 50 patients / 100 obs (see sensitivity_lmm/source.txt)"}
     - {stem: FigureS1_CONSORT, from: 06_machine_learning/publication, label: "Figure S2",
        producer: "pub_fig_consort",
@@ -336,6 +342,9 @@ publication:
     - {stem: FigureT_TherapyChange, from: 07_post_hoc/therapy, label: "Figure S4",
        producer: "pub_fig_therapy_change(adjusted = TRUE) (src/07_post_hoc.R)",
        frame: "paired LMM patients with a known regimen (of {lmm_paired} paired); n per group in therapy/console.txt"}
+    - {stem: FigureBOR_KM_OS_PFS, name: BOR_KM_OS_PFS, from: 07_post_hoc/bor_survival, label: "Figure S5",
+       producer: "pub_fig_bor_km (bor_survival_run, R/modules_survival_bor.R)",
+       frame: "Δ frame, n = {delta}; from the start of therapy; post hoc, descriptive"}
   tables:
     - {stem: Longitudinal_LMM_Report, from: 04_longitudinal_analysis, type: xlsx, label: "Table S1",
        producer: "src/04_longitudinal_lmm.R", frame: "LMM frame, {lmm_patients} patients / {lmm_obs} obs"}
@@ -355,6 +364,7 @@ publication:
     - {stem: FigureS11_FoldChange, from: 06_machine_learning/publication, producer: "pub_fig_foldchange", frame: "paired patients, n = {delta}"}
     - {stem: FigureS12_Dissociation, from: 06_machine_learning/publication, producer: "pub_fig_dissociation", frame: "Δ frame, n = {delta}; descriptive"}
     - {stem: FigureT_TherapyChange_unadjusted, from: 07_post_hoc/therapy, producer: "pub_fig_therapy_change(adjusted = FALSE)", frame: "paired LMM patients with a known regimen; raw means (not a valid ranking)"}
+    - {stem: FigureKM_DeltaComposite_OS_PFS, name: KM_MedianSplit_OS_PFS, from: 07_post_hoc/km, producer: "pub_fig_km_panels (src/07_post_hoc.R)", frame: "Δ frame, n = {delta}; median split (former Figure 4)"}
     - {stem: SelectionAware_LRT, from: 06_machine_learning, type: csv, producer: "run_selection_aware_lrt", frame: "LMM {lmm_patients} patients (selection); Δ n = {delta} (LRT)"}
     - {stem: PatientBootstrap_AUC, from: 06_machine_learning, type: csv, producer: "run_patient_bootstrap_auc", frame: "Δ frame, n = {delta}"}
     - {stem: LRT_LeaveOneOut, from: 06_machine_learning, type: csv, producer: "run_lrt_leave_one_out", frame: "Δ frame, n = {delta}"}

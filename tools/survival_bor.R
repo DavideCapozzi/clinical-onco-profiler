@@ -21,6 +21,7 @@ source("R/utils_io.R")
 source("R/utils_figures.R")
 source("R/utils_metrics.R")        # list_run_experiments()
 source("R/modules_pub_style.R")
+source("R/modules_survival_km.R")
 source("R/modules_survival_bor.R")
 
 args <- commandArgs(trailingOnly = TRUE)
