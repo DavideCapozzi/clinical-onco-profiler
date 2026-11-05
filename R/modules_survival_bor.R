@@ -11,14 +11,15 @@
 #   3. score       OS / PFS by the Δ composite dichotomised at fixed (0 = decreased vs
 #                  stable/increased) and quantile cut-offs, from the T1 landmark of
 #                  post_hoc.km; continuous Cox; the same within regimen. Kaplan-Meier
-#                  figure of the 0 split (decreased vs stable/increased) = Figure S3, drawn
-#                  with the post_hoc km builders (km_median_split(cut = 0), pub_fig_km_panels).
+#                  of the 0 split (decreased vs stable/increased), drawn with the post_hoc
+#                  km builders (km_median_split(cut = 0), pub_fig_km_median).
 #
 # Pipeline: src/07_post_hoc.R block 7f, on when the config has post_hoc.bor_survival
 # (enabled: true; landmark_months, score_quantiles optional). Standalone, on a finished
 # run (same pass config, same output): tools/survival_bor.R --run <run>.
-# Output: <run>/<exp>/07_post_hoc/bor_survival/ (FigureKM_ScoreDecreased_OS_PFS = Figure S3,
-# FigureBOR_KM_OS_PFS = Figure S4, csv tables, console.txt, manifest.json).
+# Output: <run>/<exp>/07_post_hoc/bor_survival/ (FigureKM_BOR_Score_OS_PFS = Figure S3, A-B by
+# BOR, C-D score split at 0 (user, 2026-11-04); the two halves also alone: FigureBOR_KM_OS_PFS,
+# FigureKM_ScoreDecreased_OS_PFS; csv tables, console.txt, manifest.json).
 #
 # Asserts (FATAL otherwise): frame n / groups = step-06 JSON; OS / PFS n and events =
 # JSON survival; Cox OS PR vs SD/PD = JSON mediation response_to_survival_hr; Cox
@@ -31,7 +32,7 @@
 BOR_LEVELS <- c("PR", "SD", "PD")
 BOR_COLS   <- c(PR = "#0072B2", SD = "#E69F00", PD = "#D55E00")   # Okabe-Ito
 BOR_REGIMENS <- c("1" = "ICI monotherapy", "2" = "chemo-immunotherapy")
-# Figure S3 arms (score <= 0 / > 0); colours = KM_COLS of the median split (blue / red)
+# Figure S3 C-D arms (score <= 0 / > 0); colours = KM_COLS of the median split (blue / red)
 SCORE_ARMS <- c(low = "Immune score decreased", high = "Immune score stable or increased")
 SCORE_COLS <- setNames(c("#2166AC", "#B2182B"), unname(SCORE_ARMS))
 
@@ -148,10 +149,9 @@ bor_score_by_stratum <- function(time, event, x, cut, stratum) {
   res
 }
 
-#' @title Figure: KM by best overall response, one panel per endpoint (A, B)
-#' @param res_list named list of bor_group_survival() results; @param y_labs y-axis titles
-pub_fig_bor_km <- function(res_list, y_labs) {
-  panel <- function(res, y_lab) {
+#' @title One KM panel by best overall response (PR / SD / PD)
+#' @param res a bor_group_survival() result; @param y_lab y-axis title
+pub_fig_bor_km_panel <- function(res, y_lab) {
     km <- res$km; lv <- levels(res$patients$group)
     curve <- rbind(data.frame(group = lv, time = 0, surv = 1), km[, c("group", "time", "surv")])
     curve$group <- factor(curve$group, levels = lv)
@@ -172,10 +172,26 @@ pub_fig_bor_km <- function(res_list, y_labs) {
       labs(x = if (res$landmark_months > 0) sprintf("Months from landmark (%g months)", res$landmark_months)
                else "Months from start of therapy", y = y_lab) +
       theme_publication(9) + theme(panel.grid = element_blank())
-  }
-  ps <- Map(panel, res_list, y_labs)
+}
+
+#' @title Figure: KM by best overall response, one panel per endpoint (A, B)
+#' @param res_list named list of bor_group_survival() results; @param y_labs y-axis titles
+pub_fig_bor_km <- function(res_list, y_labs) {
+  ps <- Map(pub_fig_bor_km_panel, res_list, y_labs)
   pub_tag(patchwork::wrap_plots(ps, nrow = 1) + patchwork::plot_layout(guides = "collect")) &
     theme(legend.position = "bottom")
+}
+
+#' @title Figure S3: all survival KM in one figure (user, 2026-11-04)
+#' @description Row 1 = by best overall response from the start of therapy (A OS, B PFS);
+#'   row 2 = Δ immune score <= 0 vs > 0 from the T1 landmark (C OS, D PFS). One legend per row.
+#' @param bor_list two bor_group_survival() results; @param km_list two km_median_split() results
+#' @param y_labs y-axis titles (OS, PFS); @param ... passed to pub_fig_km_median (arms, cols)
+pub_fig_survival_4 <- function(bor_list, km_list, y_labs, ...) {
+  row <- function(ps) patchwork::wrap_plots(ps, nrow = 1) + patchwork::plot_layout(guides = "collect")
+  top <- row(Map(pub_fig_bor_km_panel, bor_list, y_labs))
+  bot <- row(Map(function(r, y) pub_fig_km_median(r, y, ...), km_list, y_labs))
+  pub_tag(top / bot) & theme(legend.position = "bottom")
 }
 
 #' @title Driver: run the whole analysis on a finished run and write it to out_dir
@@ -270,7 +286,7 @@ bor_survival_run <- function(config, out_dir, by = "tools/survival_bor.R") {
     say("\ncheck: Cox OS PR vs SD/PD HR %.4f = JSON dissociation.mediation.response_to_survival_hr %.4f: PASS", hr_os, J_hr)
   } else say("\ncheck: JSON response_to_survival_hr absent (mediation off): not checked")
 
-  # 3. Score (Δ composite) from the T1 landmark, as Figure S3
+  # 3. Score (Δ composite) from the T1 landmark, as Figure S3 C-D
   x <- pts$Composite
   cuts <- c(c("0 (decreased vs stable/increased)" = 0),
             setNames(stats::quantile(x, q_cuts, names = FALSE), sprintf("quantile %.3g", q_cuts)))
@@ -288,7 +304,7 @@ bor_survival_run <- function(config, out_dir, by = "tools/survival_bor.R") {
                       sc_row(e, "continuous (per unit)", bor_score_continuous(t_lm, EP[[e]]$event, x)))
     SCm[[e]] <- cbind(endpoint = e, do.call(rbind, lapply(cr, `[[`, "medians")))
   }
-  # Kaplan-Meier of the 0 split (Figure S3), with the post_hoc km builder; stratified row by
+  # Kaplan-Meier of the 0 split (Figure S3 C-D), with the post_hoc km builder; stratified row by
   # PR vs SD/PD as in km/. Must equal the 0 row of the cut-off table (HR reciprocal).
   KS <- list()
   for (e in names(EP)) {
@@ -345,7 +361,7 @@ bor_survival_run <- function(config, out_dir, by = "tools/survival_bor.R") {
       show(rnd(SR[[e]][, -1])); say("interaction score x regimen (LRT, continuous): p = %.3g", inter[[e]])
     }
     r <- KS[[e]]; pr <- r$tests[r$tests$analysis == "primary", ]
-    say("Kaplan-Meier, score <= 0 vs > 0 (Figure S3; = row 0 above: PASS):"); show(rnd(r$medians)); show(rnd(r$tests[, -2]))
+    say("Kaplan-Meier, score <= 0 vs > 0 (Figure S3 C-D; = row 0 above: PASS):"); show(rnd(r$medians)); show(rnd(r$tests[, -2]))
     say("split x response:"); show(r$split_by_group)
     say("caption values %s: Δ frame, n = %d, %d events; split at Δ composite 0 (%s n = %d / %s n = %d); log-rank p = %.3f; HR %.2f [%.2f, %.2f] (stable/increased vs decreased)",
         e, nrow(r$patients), sum(r$patients$event), SCORE_ARMS[["low"]], pr$n_low, SCORE_ARMS[["high"]], pr$n_high,
@@ -394,6 +410,9 @@ bor_survival_run <- function(config, out_dir, by = "tools/survival_bor.R") {
                   file.path(out_dir, "FigureBOR_KM_OS_PFS"), PUB_W2, 95, config = config)
   save_pub_figure(pub_fig_km_panels(KS, c(EP$OS$label, EP$PFS$label), arms = SCORE_ARMS, cols = SCORE_COLS),
                   file.path(out_dir, "FigureKM_ScoreDecreased_OS_PFS"), PUB_W2, 95, config = config)
+  save_pub_figure(pub_fig_survival_4(BOR[c("OS_landmark0", "PFS_landmark0")], KS, c(EP$OS$label, EP$PFS$label),
+                                     arms = SCORE_ARMS, cols = SCORE_COLS),
+                  file.path(out_dir, "FigureKM_BOR_Score_OS_PFS"), PUB_W2, 190, config = config)
   sha <- tryCatch(system2("git", c("rev-parse", "HEAD"), stdout = TRUE, stderr = FALSE), error = function(e) NA_character_)
   dirty <- tryCatch(length(system2("git", c("status", "--porcelain", "R/modules_survival_bor.R", "R/modules_survival_km.R",
                                                 "tools/survival_bor.R", "src/07_post_hoc.R"),

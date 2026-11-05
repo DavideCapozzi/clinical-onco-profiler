@@ -8,7 +8,7 @@
 #   therapy/         ICI monotherapy vs chemo-immunotherapy (gate change)
 #   km/              Kaplan-Meier OS / PFS by median split of the Δ composite
 #   bor_survival/    OS / PFS by best overall response; Δ composite cut-offs (0 split =
-#                    Figure S3), continuous, by regimen; follow-up (off unless configured)
+#                    Figure S3 C-D), continuous, by regimen; follow-up (off unless configured)
 #   sensitivity_lmm/ LMM forest of another (sensitivity) run, drawn from a frozen
 #                    snapshot of its step-04 report (off unless configured)
 # Every analysis asserts that it reproduces its step-04 / step-06 inputs (FATAL

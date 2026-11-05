@@ -1,9 +1,9 @@
 # Changelog
 
 Analysis history of the NSCLC response study and the record of the 2026-10-28 refactor. The final run is
-`results/0final/final_gate84_nlr50` (2026-10-29); `results/0final/primary_PIregated_noPS` and
-`results/0final/nlr_v2_cc50` are its sensitivity analyses. Every number from an earlier run is superseded and is not
-quoted anywhere.
+`results/0final/0final` (2026-11-04, `config/0final.yml`); `results/0final/nlr_v2_cc50` is its only citable
+sensitivity analysis. `results/0final/final_gate84_nlr50` and `results/0final/primary_PIregated_noPS` are internal
+runs. Every number from an earlier run is superseded and is not quoted anywhere.
 
 ## Analysis history
 
@@ -53,6 +53,19 @@ quoted anywhere.
   is shown), drawn into `final_gate84_nlr50/BestResponse_2v3_4/07_post_hoc/sensitivity_lmm/` by the new
   `tools/render_sensitivity_forest.R` (source report md5 in `source.txt`). CONSORT, calibration/IDI and therapy are
   now S2, S3, S4. Nothing re-run.
+- **2026-11-02**: T1 restricted to the 50 paired patients with a pre-therapy NLR (PI). New config option
+  `longitudinal.t1_restrict_to_delta_frame` (default off): the LMM uses all T0 + the T1 of the Δ frame; the Δ 50 frame
+  is unchanged. Run as `results/0final/final_gate81_t1nlr50` (LMM 81 / 131, same two markers, selection-aware
+  p 0.028). Kaplan-Meier of the Δ immune score split at 0 (decreased vs stable/increased) and survival by best response
+  (`07_post_hoc/bor_survival/`, `tools/survival_bor.R`).
+- **2026-11-04**: final run `results/0final/0final` (`config/0final.yml`, code `54f3df9` + the Figure S3 change). Inputs
+  `data/0final/november_final_gate84_t1nlr50/`: 3 T0-only patients whose best response (clinical progression) the
+  parser had dropped are re-admitted as PD (84 patients; LMM 84 / 134; T0 standard 78; Δ 50 unchanged). Therapy files
+  v3.2 = v3.1 + one regimen supplied by the PI (regimen known for all). Figure S3 = all survival Kaplan-Meier in one
+  4-panel figure (A–B by best response, C–D score split at 0); no S4. Same two markers (FDR 0.042); LR 13.01,
+  selection-aware p 0.024 (236/10000); every Δ-50 AUC and CI unchanged at reported precision. The full run reproduces
+  the preview `results/_check/0final_preview` (verified 2026-11-05; old-vs-new table in its `PHASE_D_REPORT.md`).
+  Superseded: `final_gate81_t1nlr50`, `november_final_gate84_t1nlr50` (same as 0final with therapy v3.1).
 
 ## Refactor 2026-10-28 (branch `refactor/final-results`, tag `pre-refactor-20261028` = state before)
 
