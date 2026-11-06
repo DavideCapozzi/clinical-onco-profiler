@@ -1,4 +1,4 @@
-# R/modules_coda.R
+# R/modules_transform.R
 # ==============================================================================
 # DATA TRANSFORMATION MODULE
 # Description: Handling imputation (BPCA) and transformation (Logit & Log2).

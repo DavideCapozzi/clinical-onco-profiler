@@ -1,9 +1,11 @@
 # main.R
 # ==============================================================================
-# MAIN PIPELINE ORCHESTRATOR: clinical-onco-profiler
-# Description: End-to-end execution for Hybrid Data (FACS + Solubles)
-#              Goal: Identify drivers of clinical response via sPLS-DA & LMM.
-#              Supports nested multi-experiment and flat single-cohort configs.
+# Pipeline orchestrator: clinical-onco-profiler
+# Runs, for each experiment of the config: pass 1 (steps 01-03, cross-sectional),
+# pass 2 (01 + 04, longitudinal LMM), pass 3 (06, machine learning / added value),
+# pass 4 (07, post hoc), then collects the publication set and writes the run
+# manifest. Usage (from the repository root):
+#   RUN_NAME=<run> CONFIG_PATH=config/<config>.yml Rscript main.R
 # ==============================================================================
 
 # 1. Environment Setup
@@ -19,11 +21,9 @@ suppressPackageStartupMessages({
 
 options(crayon.enabled = FALSE)
 
-# Load BASE Configuration
-# CONFIG_PATH env var overrides the default config (used by the integration
-# smoke-test and to run an alternate cohort config without editing the repo).
+# Configuration: CONFIG_PATH overrides the default (config/0final.yml).
 .config_override <- Sys.getenv("CONFIG_PATH")
-base_config_path <- if (nzchar(.config_override)) .config_override else here("config/global_params.yml")
+base_config_path <- if (nzchar(.config_override)) .config_override else here("config/0final.yml")
 if (!file.exists(base_config_path)) stop("[FATAL] Base Config file not found at expected path.")
 base_config <- yaml::read_yaml(base_config_path)
 
@@ -59,11 +59,9 @@ list.files(here("R"), pattern = "\\.R$", full.names = TRUE) %>% purrr::walk(sour
 message("[System] Modules loaded successfully.")
 validate_config(base_config)
 
-# NLR toggle: single switch selecting whether the clinical model includes NLR.
-# Env INCLUDE_NLR overrides the config default; run the with-/without-NLR variants
-# as SEPARATE invocations. A timestamped run dir (no RUN_NAME) is auto-labeled
-# with_nlr / no_nlr so each configuration lands in its own self-describing directory. Applied in Step 06
-# (drops the NLR clinical var when false); reaches every pass via base_config.
+# NLR switch: whether the clinical model includes NLR (config `include_nlr`; the
+# INCLUDE_NLR environment variable overrides it). A timestamped run dir (no RUN_NAME)
+# is labelled with_nlr / no_nlr. Applied in step 06; reaches every pass via base_config.
 include_nlr <- resolve_include_nlr(base_config)   # R/utils_io.R — shared with prepare_pass_config()
 base_config$include_nlr <- include_nlr
 .variant <- if (include_nlr) "with_nlr" else "no_nlr"
@@ -91,8 +89,7 @@ for (exp_name in names(experiments_list)) {
 
   exp_cfg <- experiments_list[[exp_name]]
 
-  # Skip experiments explicitly disabled in config (e.g. closed NO-GO endpoints
-  # retained for record). Absence of the key means enabled. Mirrors validation_split.enabled.
+  # Skip experiments disabled in the config (absence of the key means enabled).
   if (!is.null(exp_cfg$enabled) && !isTRUE(exp_cfg$enabled)) {
     message(sprintf("[System] Skipping disabled experiment: %s", exp_name))
     next
@@ -112,47 +109,6 @@ for (exp_name in names(experiments_list)) {
     if (run_machine_learning) "machine_learning",
     if (run_post_hoc)         "post_hoc"
   )
-
-  # ============================================================================
-  # PASS 0: COHORT SPLIT (discovery / validation)
-  # Runs once per experiment when validation_split is enabled. Materializes the
-  # discovery + held-out validation Excel snapshots, then redirects every
-  # downstream pass to the discovery files. Fatal on failure by design: a broken
-  # split must never silently fall back to the full cohort.
-  # ============================================================================
-  split_cfg <- exp_cfg$validation_split
-  if (!is.null(split_cfg) && isTRUE(split_cfg$enabled)) {
-    message(sprintf("\n--- [PASS 0] COHORT SPLIT: %s ---", exp_name))
-
-    split_config <- base_config
-    if (!is.null(exp_cfg$clinical)) split_config$clinical <- exp_cfg$clinical
-    if (!is.null(exp_cfg$features)) split_config$features <- exp_cfg$features
-
-    t0_path <- if (!is.null(exp_cfg$input_file_t0)) exp_cfg$input_file_t0 else base_config$input_file_t0
-    t1_path <- if (!is.null(exp_cfg$input_file_t1)) exp_cfg$input_file_t1 else base_config$input_file_t1
-    if (!file.exists(t0_path)) stop(sprintf("[SPLIT] T0 input not found: %s", t0_path))
-
-    split <- compute_cohort_split(readxl::read_excel(t0_path), split_config, split_cfg)
-
-    split_dir <- file.path(run_root, exp_name, "00_cohort_split")
-    if (!dir.exists(split_dir)) dir.create(split_dir, recursive = TRUE)
-
-    paths_t0 <- write_split_excels(t0_path, "T0", split, split_dir, exp_name)
-    if (run_longitudinal && !is.null(t1_path) && file.exists(t1_path))
-      write_split_excels(t1_path, "T1", split, split_dir, exp_name)
-
-    write.csv(split$report,
-              file.path(split_dir, sprintf("split_manifest_%s.csv", exp_name)),
-              row.names = FALSE)
-
-    # Redirect every downstream pass to the discovery snapshot.
-    exp_cfg$input_file    <- paths_t0$discovery
-    exp_cfg$input_file_t0 <- paths_t0$discovery
-    if (run_longitudinal)
-      exp_cfg$input_file_t1 <- file.path(split_dir, sprintf("%s_discovery_T1.xlsx", exp_name))
-
-    run_passes[[exp_name]] <- c("cohort_split", run_passes[[exp_name]])
-  }
 
   message(sprintf("\n========================================================"))
   message(sprintf("STARTING EXPERIMENT BLOCK: %s", exp_name))

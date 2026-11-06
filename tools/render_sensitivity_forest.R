@@ -9,7 +9,7 @@
 # The inputs are FROZEN in a snapshot (byte copies of the Step-04 report + LMM JSON,
 # SOURCE.yml with the gate and reference group, MD5SUMS), so the receiving run no longer
 # depends on the sensitivity run existing. Step 07 draws the figure itself when the
-# config has post_hoc.sensitivity_lmm.snapshot (as config/final_gate84_nlr50.yml does).
+# config has post_hoc.sensitivity_lmm.snapshot (as config/0final.yml does).
 #
 # Usage:
 #   Rscript tools/render_sensitivity_forest.R --from <sensitivity run> --snapshot <dir>
@@ -26,7 +26,6 @@
 suppressPackageStartupMessages({ library(here); library(jsonlite) })
 source(here("R/utils_io.R"))
 source(here("R/utils_figures.R"))
-source(here("R/utils_metrics.R"))        # list_run_experiments()
 source(here("R/modules_pub_style.R"))
 source(here("R/modules_pub_figures.R"))
 

@@ -10,7 +10,7 @@
 # driver (src/07_post_hoc.R, therapy/) owns all paths. Sensitivity analysis only:
 # its numbers never feed the step-04 / step-06 results.
 #
-# Tests per marker (numbering as in diagnostics/diag_56, which this replaces):
+# Tests per marker:
 #   [1] LMM V ~ Time*Group + Time*Rx + (1|ID); heterogeneity Time:Group:Rx
 #       (Wald + 1-df LRT, ML)
 #   [2] per-stratum LMM; paired delta exact Wilcoxon and ANCOVA (delta ~ Group + T0)
@@ -29,8 +29,7 @@ RX_LABELS <- c(ChemoIO = "Chemo-immunotherapy", IOmono = "ICI monotherapy")
 
 #' @title Per-patient regimen table for the LMM frame
 #' @description One row per patient of `df_long`. The regimen is read from the sheet
-#'   of the patient's FIRST sample in the frame (T0, or T1 for T1-only patients such
-#'   as NSCLC_64, whose T0 and T1 rows are two persons).
+#'   of the patient's FIRST sample in the frame (T0, or T1 for T1-only patients).
 #' @param sheets named list (T0, T1) of data frames with Patient_ID, code, regime
 #'   (1 = ICI monotherapy, 2 = chemo-immunotherapy, NA = unknown), radio (1 = annotated
 #'   radiotherapy between T0 and T1)
@@ -61,7 +60,7 @@ therapy_regimen_table <- function(sheets, df_long) {
 .TG <- "TimepointT1:GroupRP"
 
 # Group permuted within Rx strata; statistic = stratum-size-weighted mean PR - SD/PD delta.
-# The seed is set on every call (as diag_56 did), so each call is reproducible on its own.
+# The seed is set on every call, so each call is reproducible on its own.
 .ts_strat_perm <- function(w, B, seed) {
   st <- function(g) sum(sapply(levels(w$Rx), function(r) {
     i <- w$Rx == r; (mean(w$delta[i & g == "RP"]) - mean(w$delta[i & g == "SD_PD"])) * sum(i) })) / nrow(w)
@@ -210,7 +209,7 @@ run_therapy_sensitivity <- function(df_long, gate, regimen, B = 10000, seed = 56
 #' @title Figure: baseline-adjusted T0->T1 change by response within regimen
 #' @description Points = adjusted cell means with 95% CI (therapy_adjusted_change);
 #'   faint dots = per-patient baseline-adjusted changes. Facet per gate marker. No n or
-#'   p is printed on the panels (user, 2026-10-27): both go in the caption.
+#'   p is printed on the panels: both go in the caption.
 #'   Requires modules_pub_style.R (theme_publication, pub_palette, pub_relabel_*).
 #' @param res output of run_therapy_sensitivity()
 #' @param adjusted FALSE draws raw (unadjusted) mean changes instead (supplementary)

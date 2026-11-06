@@ -4,7 +4,7 @@
 # Description: Generates standard overview graphics (Distributions, PCA, Heatmap).
 # ==============================================================================
 
-source("R/utils_io.R")          
+source("R/utils_io.R")
 source("R/utils_figures.R")
 source("R/modules_viz.R")
 
@@ -12,11 +12,7 @@ message("\n=== PIPELINE STEP 2: VISUALIZATION ===")
 
 # 1. Load Configuration & Data Objects
 # ------------------------------------------------------------------------------
-if (!exists("config")) {
-  args <- commandArgs(trailingOnly = TRUE)
-  config_path <- if (length(args) > 0) args[1] else "config/global_params.yml"
-  config <- load_config(config_path)
-}
+if (!exists("config")) stop("[FATAL] Global configuration object not detected in environment (run through main.R).")
 
 input_file <- step_output_path(config, 1, sprintf("data_processed_%s_standard", config$project_name), "rds")
 if (!file.exists(input_file)) stop("[FATAL] Standard data processing output not found.")
@@ -39,9 +35,9 @@ message("[Viz] Compiling raw distribution boxplots...")
 df_raw_viz <- cbind(meta_viz, as.data.frame(raw_matrix))
 
 viz_save_distribution_report(
-  data_df = df_raw_viz, 
-  markers = DATA$markers, 
-  file_path = file.path(out_dir, sprintf("Distributions_Raw_Hybrid_%s", config$project_name)), 
+  data_df = df_raw_viz,
+  markers = DATA$markers,
+  file_path = file.path(out_dir, sprintf("Distributions_Raw_Hybrid_%s", config$project_name)),
   colors = colors_viz,
   fig_cfg = config
 )
@@ -62,7 +58,7 @@ save_figure(function() {
   tryCatch({ print(plot_pca_variance_dashboard(res_pca, n_list = 10)) }, error = function(e) warning(e$message))
 
   for (dims in target_dims_list) {
-    p_var <- factoextra::fviz_pca_var(res_pca, axes = dims, col.var = "contrib", 
+    p_var <- factoextra::fviz_pca_var(res_pca, axes = dims, col.var = "contrib",
                                       gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"), repel = TRUE) +
       ggplot2::labs(title = sprintf("Marker Contribution Matrix (PC%d vs PC%d)", dims[1], dims[2])) +
       theme_coda()

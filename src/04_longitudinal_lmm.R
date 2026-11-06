@@ -134,8 +134,8 @@ if (n_sig_fdr > 0) {
     }
   }
 
-  # Flag LMM singular fits among the FDR-significant set so reviewers can see
-  # them at a glance. Singular RE => random-intercept variance estimated as 0
+  # Flag LMM singular fits among the FDR-significant set so they are visible
+  # at a glance. Singular RE => random-intercept variance estimated as 0
   # (LMM degenerates to OLS-with-clustering). Fixed-effect inference remains
   # valid but the paired-only sensitivity below is the relevant cross-check.
   sing_mask <- df_results$Marker %in% sig_markers & isTRUE(df_results$Is_Singular)
@@ -272,7 +272,7 @@ if (!is.null(sensitivity_covariates) && length(sensitivity_covariates) > 0) {
 # 5b. Split-Group Supplementary LMM (optional, config-driven)
 # When the non-responder label collapses several raw clinical codes (e.g.
 # SD_PD = {SD=3, PD=4}), this block re-fits the LMM with the non-responder
-# side split into its sub-levels, so reviewers can see whether the primary
+# side split into its sub-levels, to show whether the primary
 # interaction is graded across response severity or driven by one sub-group.
 # Gated by clinical.split_nonresponder: true in config.
 # ------------------------------------------------------------------------------
@@ -304,7 +304,7 @@ if (split_cfg && n_sig_fdr > 0) {
         patient_subgroup <- setNames(lab_vec, pid_vec)
         # Reference: clinically "most adverse" sub-code. For outcome scales
         # where higher integer = worse (e.g. RECIST 1=RC, 2=RP, 3=SD, 4=PD),
-        # max == PD. The user can override this via config$clinical$split_reference_code.
+        # max == PD. Override with config$clinical$split_reference_code.
         ref_lvl <- if (!is.null(config$clinical$split_reference_code)) {
           as.character(config$clinical$split_reference_code)
         } else {

@@ -1065,9 +1065,8 @@ build_nomogram_spec <- function(y01, X, resp_label = NULL, var_scale = NULL,
 #' @title Predictive-vs-prognostic dissociation (response vs survival, rank scale)
 #' @description Tests whether the immune composite is **response-specific** rather than a
 #'   proxy for general prognosis, by scoring every predictor on BOTH endpoints with the same
-#'   rank statistic and testing the DIFFERENCE. Was `diagnostics/diag_40_dissociation.R`,
-#'   which went stale twice (the cohort AND the gate definition moved under it) because it
-#'   lived outside the pipeline; wired in here so it regenerates with every run.
+#'   rank statistic and testing the DIFFERENCE. Part of the pipeline so it regenerates with
+#'   every run.
 #'
 #'   Method notes that must survive any refactor:
 #'   * "significant here, not significant there" is NOT a dissociation (Gelman & Stern 2006)
@@ -1462,16 +1461,10 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
     pl_comp <- numeric(n)
     for (i in all_rows) pl_comp[i] <- fit_predict(Cmat_full, comp, all_rows[-i], i, TRUE)
   }
-  # ── Apparent clinical sub-model probabilities (PD-L1 / PS / PD-L1+PS vs clinical+immune),
-  #    retained as the DESCRIPTIVE PD-L1/PS/PD-L1+PS benchmark in the _Patients Excel sheet
-  #    (diag_28: report this split descriptively, NOT as the formal LOO baseline). The
-  #    exploratory Figure2CLONE that used to plot these was removed 2026-07-01. NB: leakage-
-  #    free LOO of these weak / missing-heavy single clinical predictors (PD-L1 ~20% missing)
-  #    is numerically DEGENERATE — per-fold coefficient sign is unstable and the LOO ranking
-  #    inverts (AUC→0), the same pathology the PD-L1 benchmark below avoids with complete-case
-  #    fits — hence these are APPARENT (in-sample) only.
-  #    Deterministic (no RNG) and BEFORE the bootstrap loops → primary numbers reproduce.
-  #    Columns selected BY NAME for new-dataset versatility; absent column → all-NA (skipped).
+  # ── Apparent PD-L1 sub-model probability, a descriptive benchmark in the _Patients sheet
+  #    (not the formal baseline). Leakage-free LOO of a weak, missing-heavy single predictor
+  #    is numerically degenerate (unstable per-fold coefficient sign), hence apparent
+  #    (in-sample) only. Deterministic (no RNG). Absent column -> all-NA.
   app_submodel <- function(cols) {
     if (!all(cols %in% cl_names)) return(rep(NA_real_, n))
     Ci <- impute_median(Cmat[, cols, drop = FALSE], all_rows)
@@ -1480,8 +1473,7 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
     f  <- suppressWarnings(glm(reformulate(cn, "yb"), data = d, family = binomial()))
     as.numeric(predict(f, type = "response"))
   }
-  submodel_app <- list(PDL1 = app_submodel("PD_L1"), PS = app_submodel("PS"),
-                       PDL1PS = app_submodel(c("PD_L1", "PS")))
+  submodel_app <- list(PDL1 = app_submodel("PD_L1"))
   # Benchmark (PD-L1 = 1st clinical var) ALONE — APPARENT complete-case univariate
   # logistic. PD-L1 is a single, externally pre-fixed biomarker (no selection, 1 param)
   # → apparent ≈ honest AUC; LOO of this near-null predictor is numerically pathological
@@ -1667,8 +1659,7 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
       # Self-consistency on the ROW SET, which is what can silently drift. Do NOT assert
       # equality of the two HRs: `survival$OS$immune_hr` is ADJUSTED for the clinical model
       # while the dissociation's power bound is the UNADJUSTED composite effect (the
-      # dissociation is a marginal, rank-scale argument). They are different estimands and
-      # the earlier diag_40-vs-pipeline discrepancy (1.040 vs 1.027) was exactly this.
+      # dissociation is a marginal, rank-scale argument). They are different estimands.
       if (!is.null(survival$OS) && is.null(survival$dissociation$skipped)) {
         if (!identical(as.integer(survival$dissociation$n), as.integer(survival$OS$n)) ||
             !identical(as.integer(survival$dissociation$events), as.integer(survival$OS$events)))
@@ -1715,7 +1706,7 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
 
   # ── C1: leakage-free LOO IDI ────────────────────────────────────────────────
   # idi_app is in-sample (apparent, Pencina 2008 setup) and optimistic; the honest
-  # reclassification metric is the IDI on the cross-validated LOO probs (matches diag_23).
+  # reclassification metric is the IDI on the cross-validated LOO probs.
   idi_loo <- idi_y(pl_clin, pl_comb, yb)
   idi_loo_bs <- numeric(n_boot)
   for (b in seq_len(n_boot)) { ix <- sample(n, n, replace = TRUE)
@@ -1726,7 +1717,7 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
   # The unpenalized combined model over-fits at EPV~9 (calib slope ~0.66, predictions too
   # extreme). A ridge (L2, inner-CV lambda, leakage-free LOO) recalibrates (slope -> ~0.9)
   # WITHOUT losing discrimination — disarms "the IDI is inflated by mis-calibration". The
-  # unpenalized model stays PRIMARY (it carries the LRT); this is a sensitivity. See diag_23.
+  # unpenalized model stays PRIMARY (it carries the LRT); this is a sensitivity.
   combined_ridge <- NULL
   if (isTRUE(ridge) && requireNamespace("glmnet", quietly = TRUE)) {
     pr <- rep(NA_real_, n)
@@ -1759,9 +1750,9 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
   }
 
   # ── 1c: increment vs progressively enriched clinical baselines (immune held fixed) ──
-  # Pre-empts "your SoC baseline is weak / a proper clinical model would absorb the immune
+  # Preempts "your SoC baseline is weak / a proper clinical model would absorb the immune
   # signal". Each enriched baseline re-tests the SAME composite (LRT df=1, leakage-free LOO
-  # AUCs, apparent IDI). See diag_24 (trap: improving DeLong/dAUC = baseline degradation).
+  # AUCs, apparent IDI). An improving DeLong/dAUC here can reflect a degraded baseline.
   baseline_sensitivity <- NULL
   if (length(baseline_sensitivity_cols)) {
     inc_for <- function(Cm2) {
@@ -1807,7 +1798,7 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
   # ── 1d: specificity null — gate vs random k-marker immune composites over the FIXED SoC ──
   # "With 39 markers, isn't a composite that beats a weak baseline easy to find by chance?"
   # Random triplets scored for the SAME apparent increment; specificity p = how extreme the
-  # gate is vs the null. Claim rests on PROVENANCE (LMM + published biology), not rarity (diag_25).
+  # gate is vs the null. Claim rests on PROVENANCE (LMM + published biology), not rarity.
   specificity_null <- NULL
   if (n_random_null > 0L) {
     zk <- as.matrix(z[keep, , drop = FALSE])
@@ -1842,11 +1833,11 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
         frac_sig_lrt = mean(rl[fin] < 0.05),
         null_dauc_q  = as.list(round(quantile(rd[fin], c(.5, .9, .95, .99), na.rm = TRUE), 4)),
         note = paste("Apparent LRT/IDI/dAUC vs random k-marker composites; specificity rests on",
-                     "provenance (Step-04 LMM + published Ki67 biology), not numerical rarity (diag_25)."))
+                     "provenance (Step-04 LMM + published Ki67 biology), not numerical rarity."))
     }
   }
 
-  # ── Dynamics <-> baseline coupling (Blocco G; gate rationale / Limitations) ──
+  # ── Dynamics <-> baseline coupling (gate rationale / Limitations) ──
   # WHY the dynamically-selected gate predicts at baseline: across the marker panel,
   # is LMM Timepoint x Group interaction strength correlated with each marker's
   # standalone baseline (T0) discrimination? A positive correlation = convergent
@@ -1900,7 +1891,7 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
                      "dynamically-selected gate also predicts at baseline (regression-to-the-mean)",
                      "and bounds the residual selection optimism. The gate is NOT the top-T0 set,",
                      "so selection is dynamics-driven, not a baseline scan. Mechanism /",
-                     "Limitations only; NOT proof of gate optimality (Blocco G)."))
+                     "Limitations only; NOT proof of gate optimality."))
     }
   }
 
@@ -1923,7 +1914,7 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
   # clinical side stores per-variable medians (raw scale).
   #
   # Constants MUST come from the same rows Step 01's scale() saw, because it discards
-  # `scaled:center`/`scaled:scale` (modules_coda.R:276-277) and recomputing from raw is the
+  # `scaled:center`/`scaled:scale` (perform_data_transformation, R/modules_transform.R) and recomputing from raw is the
   # only recovery route. On a T1/delta timepoint `DATA_T0` was REPLACED above by
   # build_timepoint_composite_data() (no `hybrid_data_raw`) and the z's came from the
   # POOLED T0+T1 longitudinal matrix — so read the constants from the full, unrestricted
@@ -2057,12 +2048,9 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
   # WHY THIS EXISTS. The LOO AUCs above are artifact-prone for TIED/DISCRETE predictors. Leaving
   # patient i out shifts the fit in a direction that depends on y_i, which breaks ties among the
   # many patients sharing a value ANTI-correlated with y_i, dragging AUC below 0.5. It is not
-  # anti-prediction — it is a CV pathology, and it scales with the tie fraction (diag_41):
-  #     immune  0% tied pairs -> LOO 0.771 vs 10-fold 0.778   (no deficit)
-  #     PS     44% tied pairs -> LOO 0.424 vs 10-fold 0.551   (-0.13)
-  #     PD-L1  14% tied pairs -> LOO 0.237 vs 10-fold 0.393   (-0.16)
-  # Reporting a clinical baseline "AUC 0.309" invites the fair objection that the CV is broken,
-  # and makes the increment over it uninterpretable. Repeated stratified k-fold has many patients
+  # anti-prediction — it is a CV pathology that grows with the fraction of tied values.
+  # A sub-chance LOO AUC of the clinical baseline would make the increment over it
+  # uninterpretable. Repeated stratified k-fold has many patients
   # per held-out fold, so no single y_i can steer the tie-break.
   # NOTE: this changes NO test. The primary test for the increment is the LRT, which uses no
   # cross-validation at all. These are discrimination DESCRIPTORS. Folds are shared between the
@@ -2138,7 +2126,7 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
     # clinical baseline is near-chance: in-sample the clinical coefficients help, out-of-sample
     # they cost, which is the ordinary overfitting price of near-null parameters at low EPV.
     # Reporting the paired interval turns "immune alone beats the combined model" from an
-    # unanswered exposure into a quantified statement (cf. diag_43, where +0.0016 was noise).
+    # unanswered exposure into a quantified statement.
     dlt_i <- R[, "combined"] - R[, "immune"]
     out_cv <- list(method = sprintf("repeated stratified %d-fold CV, %d reps (paired folds)", k, reps),
          k = k, reps = reps,
@@ -2153,8 +2141,8 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
          curves = list(roc = add_single(data.frame(fpr = fpr_grid, roc_sum / reps), roc_sum_s / reps),
                        net_benefit = add_single(as.data.frame(nb_sum / reps), nb_sum_s / reps)),
          note = paste("Reportable discrimination. LOO values in `auc` are retained for",
-                      "continuity but are artifact-prone for tied/discrete clinical predictors",
-                      "(see diag_41); a sub-chance LOO AUC is a CV pathology, not anti-prediction.",
+                      "continuity but are artifact-prone for tied/discrete clinical predictors;",
+                      "a sub-chance LOO AUC is a CV pathology, not anti-prediction.",
                       "The increment's primary test is the LRT, which uses no CV."))
     # each clinical var alone (same folds); key absent when the clinical model has one var
     if (length(sv)) out_cv$auc_single <- as.list(colMeans(Rs))
@@ -2173,8 +2161,8 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
 
   # Panel B of the nomogram IS the formal model, so it must be labelled with the
   # REPORTABLE discrimination (repeated stratified k-fold), not the LOO AUC: the latter
-  # is tie-artifact-prone for the discrete clinical vars this model contains (diag_41),
-  # and is the number the project retired. `combined_loo_auc` is retained for continuity
+  # is tie-artifact-prone for the discrete clinical vars this model contains.
+  # `combined_loo_auc` is retained for continuity
   # (older persisted publication_data rds carry only that field); the figure prefers
   # `combined_cv_auc` and falls back to LOO only when it is absent. Display-only.
   if (!is.null(nomo) && !is.null(cv_kfold)) {
@@ -2190,9 +2178,6 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
   # complete_case_vars option is the exception: those patients ARE dropped, and their
   # stage (`clinical_complete_case`) was recorded above.
   if (!is.null(cohort_ledger)) ledger_validate(cohort_ledger, context = "added-value layer")
-  # PS sub-model columns are all-NA when PS is not a clinical var — leave them out of the export.
-  drop_ps_cols <- function(d) if ("PS" %in% cl_names) d else
-    d[setdiff(names(d), c("Prob_PS_APP", "Prob_PDL1PS_APP"))]
 
   out <- list(
     clinical_vars   = as.list(clinical_vars),
@@ -2214,11 +2199,8 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
       delta_auc_loo = unname(auc$combined[["loo"]] - auc$clinical[["loo"]]),
       delong_p_loo  = delong_p,
       lrt_p = lrt_p, lrt_perm_p = lrt_perm_p, lrt_firth_p = lrt_firth_p,
-      # `jsonlite::write_json(digits = 4)` rounds to 4 DECIMAL PLACES, so any p < 0.00005
-      # serialises as literally `0` — which is what the JSON has been reporting for the
-      # headline LRT (true value 3.787e-05). "p = 0" is not a reportable number. These
-      # companions survive the rounding and are exactly invertible: p = 10^-lrt_neglog10_p.
-      # Additive; the raw `lrt_p` fields above are untouched.
+      # write_json(digits = 4) rounds to 4 decimal places, so p < 0.00005 serialises as 0.
+      # These companions survive the rounding and are exactly invertible: p = 10^-lrt_neglog10_p.
       lrt_neglog10_p       = if (is.finite(lrt_p)      && lrt_p      > 0) -log10(lrt_p)      else NA_real_,
       lrt_firth_neglog10_p = if (is.finite(lrt_firth_p) && lrt_firth_p > 0) -log10(lrt_firth_p) else NA_real_,
       lrt_p_sci            = if (is.finite(lrt_p)) format(lrt_p, digits = 4, scientific = TRUE) else NA_character_,
@@ -2236,23 +2218,21 @@ run_clinical_immune_added_value <- function(DATA_T0, gate_markers, resp_label,
     decision_curve = list(prevalence = prev, curve = dc, curve_cv = dc_cv),
     roc_cv = roc_cv,
     survival = survival,
-    per_patient = drop_ps_cols(data.frame(
+    per_patient = data.frame(
       Patient_ID = pid, True_Group = as.character(grp),
       Composite = round(comp, 4),
       Prob_Clinical = round(pl_clin, 4), Prob_Combined = round(pl_comb, 4),
       # Immune composite ALONE (1-df, no clinical vars). Surfaced so Fig 2 can show the
       # arm rather than leaving it in the tables only: out-of-sample it can EXCEED the
       # combined model when the clinical baseline is near-chance (see cv_kfold's
-      # delta_auc_vs_immune), and a figure that omits it invites a concealment reading.
+      # delta_auc_vs_immune), so every arm in the tables is also plotted.
       Prob_Immune = round(pl_imm, 4),
       Prob_ClinicalComp = if (!is.null(pl_comp)) round(pl_comp, 4) else NA_real_,
       Prob_PDL1 = round(pl_bench, 4), PD_L1 = round(as.numeric(Cmat[, 1]), 4),
       Prob_PDL1_APP = round(submodel_app$PDL1, 4),
-      Prob_PS_APP = round(submodel_app$PS, 4),
-      Prob_PDL1PS_APP = round(submodel_app$PDL1PS, 4),
       Prob_Combined_APP = round(pa_comb, 4),
       Prob_Immune_APP = round(pa_imm, 4),
-      stringsAsFactors = FALSE))
+      stringsAsFactors = FALSE)
   )
   # Present only when the complete-case option is on (option off: object unchanged).
   if (!is.null(cc_info)) out$complete_case <- cc_info
@@ -2353,7 +2333,7 @@ write_clinical_immune_summary <- function(av) {
       sprintf("%.3f / %.3f / %.3f", sn$spec_p_lrt, sn$spec_p_idi, sn$spec_p_dauc),
       sprintf("%.3f", sn$frac_sig_lrt))
   }
-  # ── Dynamics<->baseline coupling (Blocco G) ─────────────────────────────────
+  # ── Dynamics<->baseline coupling ────────────────────────────────────────────
   cpl <- av$dynamics_baseline_coupling
   if (!is.null(cpl)) {
     base_metric <- c(base_metric,
@@ -2378,9 +2358,9 @@ write_clinical_immune_summary <- function(av) {
 #' Re-runs the LMM Time×Group gate selection INSIDE each outer LOO fold and
 #' recomputes the clinical vs clinical+immune out-of-fold predictions, so the
 #' gate-choice variability is priced in (the pre-specified-gate added-value layer
-#' is honest only CONDITIONAL on the fixed gate). Answers the #1 reviewer attack
-#' ("gate selected + evaluated in one cohort") with a direct test. Promoted from
-#' diagnostics/diag_30. Selection = FDR<0.05 on the interaction, NO collinearity
+#' is valid only CONDITIONAL on the fixed gate). Tests directly the concern that
+#' the gate is selected and evaluated in the same cohort.
+#' Selection = FDR<0.05 on the interaction, NO collinearity
 #' filter (matches the composite, which averages the FDR+LOO markers; VIF≈1).
 #' Additive / RNG-free → never alters primary numbers. Returns NULL on failure.
 #' @return list(selection_rule, n_folds, n_markers, auc=list(prespec,nested),

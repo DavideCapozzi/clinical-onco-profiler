@@ -1,10 +1,9 @@
 #!/usr/bin/env Rscript
 # tools/compare_runs.R
 # ==============================================================================
-# Side-by-side table of the numbers each manuscript claim rests on, for several runs
-# (step-04 xlsx, step-06 JSON, the step-06 patient-bootstrap and selection-aware rds;
-# for runs that predate their integration, the old diagnostics/ rds). Read-only.
-# Missing pieces print "—". The gate is read from each run's step-06 JSON.
+# Side-by-side table of the headline numbers of several runs (step-04 xlsx, step-06
+# JSON, patient-bootstrap and selection-aware rds). Read-only; missing pieces print "—".
+# The gate is read from each run's step-06 JSON.
 # Usage: Rscript tools/compare_runs.R label=run_dir [label=run_dir ...] [--exp EXP] [--out file.md]
 # ==============================================================================
 suppressMessages({ library(readxl); library(jsonlite) })
@@ -63,15 +62,12 @@ collect <- function(rd) {
   m$classif   <- if (is.null(J)) "—" else sprintf("EN %s / SVM %s / nested %s", f3(J$elastic_net$metrics$auc), f3(J$svm_rbf$metrics$auc), f3(J$nested_loocv_validation$auc))
 
   first <- function(p) { p <- p[file.exists(p)]; if (length(p)) p[1] else NA_character_ }
-  pb <- first(c(Sys.glob(file.path(rd, EXP, "06_*", sprintf("PatientBootstrap_AUC_%s.rds", EXP))),
-                file.path(rd, "diagnostics", "diag_45_bootstrap_delta_auc.rds"),
-                file.path(rd, "diagnostics", "top2", "diag_45_bootstrap_delta_auc.rds")))
+  pb <- first(Sys.glob(file.path(rd, EXP, "06_*", sprintf("PatientBootstrap_AUC_%s.rds", EXP))))
   g <- if (!is.na(pb)) { r <- readRDS(pb)$results; if (!is.null(r$gate)) r$gate else r$gate_2marker } else NULL
   m$ci_arms   <- if (is.null(g)) "—" else sprintf("%s / %s / %s", ci(g$bootA$auc$clinical), ci(g$bootA$auc$immune), ci(g$bootA$auc$combined))
   m$dauc_ci   <- if (is.null(g)) "—" else ci(g$bootA$delta_auc)
   m$dauc_imm  <- if (is.null(g)) "—" else sprintf("%s %s", f3(g$point$delta_auc_vs_immune), ci(g$bootA$delta_auc_vs_immune))
-  sa <- first(c(Sys.glob(file.path(rd, EXP, "06_*", sprintf("SelectionAware_LRT_%s.rds", EXP))),
-                file.path(rd, "diagnostics", "top2", "diag_44_selection_aware_lrt.rds")))
+  sa <- first(Sys.glob(file.path(rd, EXP, "06_*", sprintf("SelectionAware_LRT_%s.rds", EXP))))
   s <- if (!is.na(sa)) readRDS(sa) else NULL
   nul <- if (is.null(s)) NULL else if (!is.null(s$lr_null_topk)) s$lr_null_topk else s$lr_null3
   m$sel_p     <- if (is.null(s)) "—" else { k <- sum(nul >= s$lr_obs)

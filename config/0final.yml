@@ -1,26 +1,25 @@
 # ==============================================================================
-# BASE CONFIGURATION: clinical-onco-profiler (Global Parameters)
+# clinical-onco-profiler: final analysis (run name 0final)
+#   RUN_NAME=0final CONFIG_PATH=config/0final.yml Rscript main.R
+# Inputs: data/inputs/cohort/ (built by src/00_build_inputs.R from the curated
+# database). Frames of this run: LMM 84 patients / 134 obs; Δ added-value frame 50.
 # ==============================================================================
 
-# --- System Setup ---
-output_root: "results/0final"   # canonical runs; RUN_NAME sets the run dir (this config: 0final, 2026-11-04):
-                                 # = config/november_final_gate84_t1nlr50.yml (same inputs; LMM 84 / 134) + therapy files v3.2
-                                 # (NSCLC_23 = pembrolizumab + CHT, PI via user 2026-11-04) + survival KM as one 4-panel Figure S3.
+# --- System setup ---
+output_root: "results/0final"   # the run directory is <output_root>/<RUN_NAME>
 project_name: "base_run"
 run_machine_learning: true
 run_nested_loocv_validation: true
-run_clinical_utility: true       # Step 06: calibration + decision curve + bootstrap optimism on the pre-specified composite (TRIPOD/REMARK layer)
-run_nested_validation: true      # Step 06: re-select the LMM gate inside each outer LOO fold (anti-circularity / selection-optimism test); NSCLC only (needs clinical_model + longitudinal); ~1 min, additive
-run_publication_figures: true    # Step 06: Frontiers-styled manuscript figure set (publication/ subdir; cairo_pdf, no titles, Okabe-Ito) — additive, driven by live objects
-# NLR switch (clinical model of step 06): false = PD-L1 TPS alone (primary run);
-# true = PD-L1 + NLR (nlr_v2_cc50 peer run, config/nlr_v2_cc50.yml). Env INCLUDE_NLR
-# overrides it per run. No ECOG PS anywhere (PI decision, 2026-10-20). Increments are
-# not comparable across clinical baselines (a weaker baseline gives a bigger increment).
-# Results and frames: results/0final/README.md.
+run_clinical_utility: true       # Step 06: calibration + decision curve + bootstrap optimism on the pre-specified composite
+run_nested_validation: true      # Step 06: re-select the LMM gate inside each outer LOO fold (selection-optimism test)
+run_publication_figures: true    # Step 06: publication figure set (publication/ subdir)
+# Clinical model of step 06: false = PD-L1 TPS alone; true = PD-L1 TPS + NLR. The
+# INCLUDE_NLR environment variable overrides it. Increments are not comparable across
+# clinical baselines (a weaker baseline gives a bigger increment).
 include_nlr: true   # clinical model PD-L1 + NLR
-input_file: "data/0final/november_final_gate84_t1nlr50/Dati_NSCLC_november_final_gate84_t1nlr50_T0.xlsx"
-input_file_t0: "data/0final/november_final_gate84_t1nlr50/Dati_NSCLC_november_final_gate84_t1nlr50_T0.xlsx"
-input_file_t1: "data/0final/november_final_gate84_t1nlr50/Dati_NSCLC_november_final_gate84_t1nlr50_T1.xlsx"
+input_file: "data/inputs/cohort/NSCLC_T0.xlsx"
+input_file_t0: "data/inputs/cohort/NSCLC_T0.xlsx"
+input_file_t1: "data/inputs/cohort/NSCLC_T1.xlsx"
 
 # --- Longitudinal frame (step 01, longitudinal pass) ---
 # t1_restrict_to_delta_frame (default off): LMM frame = every T0 sample + the T1 sample only of the
@@ -34,20 +33,10 @@ longitudinal:
 experiments:
   BestResponse_2v3_4:
     is_longitudinal: true
-    input_file:    "data/0final/november_final_gate84_t1nlr50/Dati_NSCLC_november_final_gate84_t1nlr50_T0.xlsx"
-    input_file_t0: "data/0final/november_final_gate84_t1nlr50/Dati_NSCLC_november_final_gate84_t1nlr50_T0.xlsx"
-    input_file_t1: "data/0final/november_final_gate84_t1nlr50/Dati_NSCLC_november_final_gate84_t1nlr50_T1.xlsx"
-    # Temporal discovery/validation split (Pass 0): disabled since 2026-06-11.
-    # The study develops on the full cohort with bootstrap-optimism internal
-    # validation (too few events for an internal holdout); confirmation needs an
-    # external cohort. Keys kept so the split can be re-enabled.
-    validation_split:
-      enabled:      false
-      n_discovery:  73
-      order_by:     "Data_inizio_terapia"
-      order_format: "%d/%m/%Y"
-    # v2 panel: 39 FACS markers, no soluble (Treg + soluble unavailable in the
-    # validation cohort due to protocol evolution — dropped for panel coherence).
+    input_file:    "data/inputs/cohort/NSCLC_T0.xlsx"
+    input_file_t0: "data/inputs/cohort/NSCLC_T0.xlsx"
+    input_file_t1: "data/inputs/cohort/NSCLC_T1.xlsx"
+    # Panel: the 39 FACS markers (no Treg subsets, no soluble markers).
     features:
       facs:
         - "CD3tot"
@@ -111,7 +100,7 @@ experiments:
       # does the immune gate composite add predictive value beyond a pre-specified
       # clinical model? The baseline is fixed a priori, not data-selected: PD-L1 TPS
       # (the companion biomarker) stays even though it is at chance in this cohort.
-      # In-fold median imputation (complete-case is the sensitivity analysis).
+      # Missing clinical values are median-imputed in-fold (except complete_case_vars).
       #
       # Endpoint = response (primary). OS/PFS Cox = secondary, underpowered: a
       # specificity argument ("response-specific"), never a survival claim; PFS is a
@@ -124,7 +113,7 @@ experiments:
           PD_L1: "PD_L1"
           NLR:   "neutrophils/lymphocytes"
         impute: "median"
-        complete_case_vars: [NLR]   # Δ frame: paired patients with NLR only (60 -> 50); PD-L1 NAs stay imputed in-fold
+        complete_case_vars: [NLR]   # Δ frame: paired patients with NLR only; PD-L1 NAs stay imputed in-fold
         # ── Predictor timepoint for the immune composite (gate markers read at) ──
         #   T0    = baseline
         #   T1    = on-treatment (~3wk)
@@ -161,9 +150,8 @@ experiments:
         #      a dissociation).
         dissociation:
           enabled: true
-          # Contrast variable: a key of clinical_model.vars, pre-specified; NEVER re-point
-          # it at whichever variable gives the best contrast. null: the pre-specified
-          # comparator was ECOG PS, removed from every analysis, so none is left.
+          # Contrast variable: a key of clinical_model.vars, pre-specified; never re-point
+          # it at whichever variable gives the best contrast. null = no comparator.
           comparator: null
           # Orientation = the sign making HIGHER = BETTER outcome. MANDATORY and
           # pre-specified from biology: a variable with no entry here is skipped, because
@@ -181,10 +169,8 @@ experiments:
         #   Two point-based nomograms are rendered in the publication set:
         #     (A) the LMM gate markers as individual predictors — per-marker display read;
         #     (B) the 1-df immune composite + clinical vars = the combined model of the LRT.
-        #   null => B follows THIS run's own clinical vars, i.e. `include_nlr` drives it
-        #   (primary → PD-L1; NLR run → PD-L1 + NLR). Do NOT hard-code a subset here: B
-        #   must stay identical to the model the run actually tests, otherwise the
-        #   nomogram draws a model the paper never tested.
+        #   null => B follows this run's own clinical vars (`include_nlr` drives it). Do not
+        #   hard-code a subset here: B must stay identical to the model the run tests.
         #   Set a list only to deliberately draw a sub-model (display-only).
         nomogram:
           clinical_vars: null
@@ -278,8 +264,8 @@ multivariate:
   validation_folds: 5
   n_repeat_cv: 50
   top_n_loadings: 15
-  # Empirical null distribution of the BER under shuffled outcome. Defends
-  # against the "is the BER actually above chance?" reviewer question.
+  # Empirical null distribution of the BER under shuffled outcome (is the BER
+  # above chance?).
   # 200 perms with n_repeat=1 is ~3-5 min on this panel size.
   permutation:
     enabled: true
@@ -295,12 +281,12 @@ post_hoc:
     subcodes: {PR: 2, SD: 3, PD: 4}   # best-response codes of clinical.target_column
   duplicate_rows:              # identical T1 rows (two persons): drop each, then both
     enabled: true
-    drop_t1: [NSCLC_10, NSCLC_12]
-  therapy:                     # ICI monotherapy vs chemo-immunotherapy (v3.2 = parser v3.1 + NSCLC_23)
+    drop_t1_file: "data/curated/subsets/duplicate_t1_rows.txt"   # patients with identical T1 rows
+  therapy:                     # ICI monotherapy vs chemo-immunotherapy (therapy tables of src/00_build_inputs.R)
     enabled: true
-    file_t0: "data/therapy_fix/v3.2/Dati_NSCLC_therapyfix_v3.2_T0.xlsx"
-    file_t1: "data/therapy_fix/v3.2/Dati_NSCLC_therapyfix_v3.2_T1.xlsx"
-    tag: "v3.2"                # therapy data version (v3.1 2026-10-27 + NSCLC_23 code 2, 2026-11-04)
+    file_t0: "data/inputs/cohort/NSCLC_therapy_T0.xlsx"
+    file_t1: "data/inputs/cohort/NSCLC_therapy_T1.xlsx"
+    tag: "v3.2"                # therapy coding version
     B: 10000                   # within-regimen permutations
     seed: 56
   km:                          # Kaplan-Meier OS / PFS by median split of the Δ composite (additional figure)
@@ -337,14 +323,14 @@ publication:
        producer: "pub_fig_nomogram_hybrid", frame: "Δ frame, n = {delta} (apparent fit, not validated)"}
   supplementary:
     # Figure S1: the LMM forest of the nlr_v2_cc50 sensitivity run (gate on its own 50 / 100), drawn by step 07
-    # from the frozen snapshot of post_hoc.sensitivity_lmm (PI, 2026-10-30); frame text is that run's, not this one's.
+    # from the frozen snapshot of post_hoc.sensitivity_lmm; the frame text is that run's, not this one's.
     - {stem: FigureSens_LMMForest, name: LMMForest_50pts, from: 07_post_hoc/sensitivity_lmm, label: "Figure S1",
        producer: "pub_fig_lmm_forest via pub_draw_sensitivity_lmm (src/07_post_hoc.R; snapshot data/snapshots/fig_s1_nlr_v2_cc50 of nlr_v2_cc50 step 04)",
        frame: "sensitivity: LMM frame of nlr_v2_cc50, 50 patients / 100 obs (see sensitivity_lmm/source.txt)"}
     - {stem: FigureT_TherapyChange, from: 07_post_hoc/therapy, label: "Figure S2",
        producer: "pub_fig_therapy_change(adjusted = TRUE) (src/07_post_hoc.R)",
        frame: "paired LMM patients with a known regimen (of {lmm_paired} paired); n per group in therapy/console.txt"}
-    # S3: all survival KM in one figure (user, 2026-11-04), citation order: A-B by BOR, C-D score split at 0.
+    # S3: all survival KM in one figure: A-B by BOR, C-D score split at 0.
     - {stem: FigureKM_BOR_Score_OS_PFS, name: KM_BOR_Score_OS_PFS, from: 07_post_hoc/bor_survival, label: "Figure S3",
        producer: "pub_fig_survival_4 = pub_fig_bor_km + pub_fig_km_panels (bor_survival_run, R/modules_survival_bor.R)",
        frame: "Δ frame, n = {delta}; A-B by best response from the start of therapy, C-D Δ composite <= 0 vs > 0 from the T1 landmark; post hoc, descriptive"}
@@ -354,7 +340,7 @@ publication:
     - {stem: ML_Classification_Report, from: 06_machine_learning, type: xlsx, label: "Table S2",
        producer: "src/06_machine_learning.R", frame: "T0 n = {t0_standard}; Δ n = {delta}"}
   additional:
-    # CONSORT (internal only, STATE D-37) and calibration / IDI: out of the paper set (user, 2026-11-03)
+    # Produced and collected for reference; not part of the paper set.
     - {stem: FigureS1_CONSORT, name: CONSORT, from: 06_machine_learning/publication, producer: "pub_fig_consort", frame: "T0 n = {t0_standard}; LMM {lmm_patients} patients / {lmm_obs} obs; Δ n = {delta}"}
     - {stem: FigureS7_Calibration_IDI, name: Calibration_IDI, from: 06_machine_learning/publication, producer: "pub_fig_calibration_idi", frame: "Δ frame, n = {delta}"}
     - {stem: Figure2_AddedValue, name: AddedValue_LOOcurves, from: 06_machine_learning/publication, producer: "pub_fig_added_value(curves = \"loo\")", frame: "Δ frame, n = {delta}"}
@@ -377,23 +363,11 @@ publication:
     - {stem: PatientBootstrap_AUC, from: 06_machine_learning, type: csv, producer: "run_patient_bootstrap_auc", frame: "Δ frame, n = {delta}"}
     - {stem: LRT_LeaveOneOut, from: 06_machine_learning, type: csv, producer: "run_lrt_leave_one_out", frame: "Δ frame, n = {delta}"}
 
-# --- Visualization & Colors ---
-# EXPANDED: Contains all possible labels injected by the mini-configs
+# --- Visualization ---
 colors:
-  groups:
-    # Best Response labels
-    RP: "#2E8B57"            # Green
-    SD_PD: "#B2182B"         # Red
-    # Legacy fallbacks
-    Responder: "#2E8B57"
-    Non_Responder: "#B2182B"
-  plsda:
-    positive: "#B2182B"
-    negative: "#2E8B57"
-  heatmap:
-    low: "#2166AC"
-    mid: "#F7F7F7"
-    high: "#B2182B"
+  groups:                    # response groups (clinical.responder_label / non_responder_label)
+    RP: "#2E8B57"            # green
+    SD_PD: "#B2182B"         # red
 
 # --- Machine Learning Classification (Step 06) ---
 # Global switch applied to all experiments. Step 06 auto-detects whether each
@@ -437,5 +411,3 @@ machine_learning:
     gamma_grid: [0.01, 0.1, 1, 10]
     inner_folds: 5
 
-  output:
-    top_n_features: 10

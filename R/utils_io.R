@@ -9,27 +9,6 @@ library(readxl)
 library(dplyr)
 library(openxlsx)
 
-#' @title Load Global Configuration
-#' @description Loads the YAML config and validates critical paths.
-#' @param config_path Path to the YAML file.
-#' @return A list containing configuration parameters.
-load_config <- function(config_path = "config/global_params.yml") {
-  if (!file.exists(config_path)) {
-    stop(sprintf("Configuration file not found at: %s", config_path))
-  }
-  
-  config <- yaml::read_yaml(config_path)
-  
-  # If project_name is defined, nest it inside output_root
-  if (!is.null(config$project_name) && config$project_name != "") {
-    config$output_root <- file.path(config$output_root, config$project_name)
-  }
-  
-  message(sprintf("[System] Configuration loaded from %s", config_path))
-
-  return(config)
-}
-
 # ==============================================================================
 # RUN MANAGEMENT
 # A single main.R invocation = one run directory under `output_root`. With
@@ -113,8 +92,9 @@ collect_frame_ns <- function(exp_root, exp_name) {
 }
 
 #' @title Write the Run Provenance Manifest
-#' @description Serializes a self-describing record (git state, R version, config
-#'   path and md5, input md5s, seeds, experiments + passes executed, N per frame)
+#' @description Serializes a self-describing record (git state, R and package
+#'   versions, config path and md5, input and auxiliary data md5s, seeds,
+#'   experiments + passes executed, N per frame)
 #'   to the run root, making each results folder traceable to the exact code,
 #'   parameters and inputs that produced it.
 #' @param path Output path for the YAML manifest.
@@ -174,7 +154,19 @@ write_run_manifest <- function(path, run_id, config, experiments_meta,
     seed        = if (!is.null(config$stats$seed)) as.integer(config$stats$seed) else NULL,
     run_label   = if (!is.null(config$run_label)) config$run_label else NULL,
     failed_passes = as.list(failed_passes),
-    experiments = exps
+    experiments = exps,
+    data_files  = lapply(Filter(function(f) !is.null(f) && nzchar(f), c(
+      therapy_t0 = pc$therapy$file_t0, therapy_t1 = pc$therapy$file_t1,
+      duplicate_t1_rows = pc$duplicate_rows$drop_t1_file,
+      setNames(if (!is.null(pc$sensitivity_lmm$snapshot))
+                 list.files(pc$sensitivity_lmm$snapshot, full.names = TRUE) else character(0),
+               if (!is.null(pc$sensitivity_lmm$snapshot))
+                 paste0("snapshot_", basename(list.files(pc$sensitivity_lmm$snapshot))) else character(0)))),
+      function(f) list(path = f, md5 = md5(f))),
+    packages    = {
+      ns <- sort(setdiff(loadedNamespaces(), c("base", rownames(installed.packages(priority = "base")))))
+      as.list(setNames(vapply(ns, function(x) as.character(utils::packageVersion(x)), ""), ns))
+    }
   )
 
   yaml::write_yaml(manifest, path)
@@ -341,12 +333,10 @@ save_qc_report <- function(qc_list, out_path, config = NULL, ledger = NULL) {
     v_fin <- if(sg %in% names(final_counts)) final_counts[[sg]] else 0
     v_qc  <- if(sg %in% names(drop_qc_counts)) drop_qc_counts[[sg]] else 0
     v_pre <- if(sg %in% names(drop_pre_counts)) drop_pre_counts[[sg]] else 0
-    # `Initial` is RECONSTRUCTED as final + dropped. That is only correct if `breakdown_final`
-    # is the true end state — it is not: run_qc_pipeline() captures it after the missingness
-    # filter, while the PCA outliers are appended to dropped_rows_detail afterwards in
-    # src/01. The result double-counts and this sheet reported Initial 96 / Final 87 for a
-    # 94-row file whose analytic cohort is 82. The ledger (see `ledger_*`) is the authority
-    # when present; the reconstruction survives only as a fallback for callers without one.
+    # `Initial` is reconstructed as final + dropped. run_qc_pipeline() captures the final
+    # counts after the missingness filter, while PCA outliers are appended to the dropped
+    # rows later in src/01, so the reconstruction can double-count. The patient-flow ledger
+    # (`ledger_*`) is the authority when present; this is the fallback without one.
     v_init <- v_fin + v_qc + v_pre
 
     subgroup_stats[[sg]] <- list(Initial = v_init, DropPre = v_pre, DropQC = v_qc, Final = v_fin)
@@ -662,16 +652,6 @@ save_qc_report <- function(qc_list, out_path, config = NULL, ledger = NULL) {
   message(sprintf("[IO] QC Report saved to: %s", out_path))
 }
 
-#' @title Safe Excel Sheet Name
-#' @description Truncates a string to comply with Excel's 31-character limit for sheet names.
-#' @param name String to truncate.
-#' @param max_len Integer. Maximum character length (default 31).
-#' @return Truncated string safe for openxlsx.
-safe_sheet_name <- function(name, max_len = 31) {
-  return(substr(name, 1, max_len))
-}
-
-
 #' @title Validate Pipeline Configuration
 #' @description
 #' Pre-flight check that the loaded YAML config has the required structural keys
@@ -869,4 +849,12 @@ prepare_pass_config <- function(base_config, exp_cfg, exp_name, pass_mode, run_r
   if (!dir.exists(config$output_root)) dir.create(config$output_root, recursive = TRUE)
 
   config
+}
+
+#' Experiment subdirectories of a run root (those holding at least one 0X_* step folder).
+list_run_experiments <- function(run_root) {
+  if (!dir.exists(run_root)) stop(sprintf("[io] run root not found: %s", run_root))
+  subs <- list.dirs(run_root, recursive = FALSE, full.names = FALSE)
+  subs[vapply(subs, function(s)
+    any(dir.exists(file.path(run_root, s, .STEP_DIRS))), logical(1))]
 }

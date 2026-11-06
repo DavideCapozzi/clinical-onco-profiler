@@ -63,7 +63,8 @@ make_frame <- function(timepoint) {
 writexl::write_xlsx(make_frame("T0"), t0_path)
 writexl::write_xlsx(make_frame("T1"), t1_path)
 
-# Therapy sheets for the step-07 therapy block (same layout as data/therapy_fix/).
+# Therapy tables for the step-07 therapy block (same layout as the therapy tables of
+# src/00_build_inputs.R).
 th_paths <- file.path(work, sprintf("synth_therapy_%s.xlsx", c("T0", "T1")))
 for (p in th_paths) {
   ids <- sprintf("SYN_%03d", seq_len(2 * n_per_group))
@@ -76,7 +77,9 @@ for (p in th_paths) {
 
 # --- Build a minimal config from the real one (inherits qc/transform/stats/etc.),
 #     replacing experiments with one synthetic block and lowering all cost knobs.
-cfg <- yaml::read_yaml(here("config/global_params.yml"))
+cfg <- yaml::read_yaml(here("config/0final.yml"))
+cfg$longitudinal <- NULL                       # no T1 restriction (needs complete_case_vars)
+cfg$include_nlr  <- FALSE
 
 cfg$output_root           <- file.path(work, "out")
 cfg$input_file            <- t0_path
@@ -96,9 +99,11 @@ cfg$machine_learning$clinical_immune_added_value <- list(
   selection_aware_lrt = list(enabled = TRUE, B = 20, topk = "gate_size", cores = 2, seed = 2026),
   patient_bootstrap   = list(enabled = TRUE, B = 20, reps_in_boot = 2, cores = 2, seed = 2026),
   lrt_leave_one_out   = list(enabled = TRUE))
+dup_path <- file.path(work, "duplicate_t1_rows.txt")
+writeLines(c("SYN_001", "SYN_021"), dup_path)
 cfg$post_hoc <- list(
   grouping       = list(enabled = TRUE, subcodes = list(PR = 2, SD = 3, PD = 4)),
-  duplicate_rows = list(enabled = TRUE, drop_t1 = list("SYN_001", "SYN_021")),
+  duplicate_rows = list(enabled = TRUE, drop_t1_file = dup_path),
   therapy        = list(enabled = TRUE, file_t0 = th_paths[1], file_t1 = th_paths[2],
                         tag = "synthetic", B = 100, seed = 56),
   km             = list(enabled = TRUE, landmark_days = 21),
@@ -133,6 +138,10 @@ cfg$experiments <- list(
     )
   )
 )
+
+# Figure S1 of the real run is drawn from a frozen snapshot of another run: not part of the test.
+cfg$publication$supplementary <- Filter(function(e) e$from != "07_post_hoc/sensitivity_lmm",
+                                        cfg$publication$supplementary)
 
 cfg_path <- file.path(work, "smoke_config.yml")
 yaml::write_yaml(cfg, cfg_path)

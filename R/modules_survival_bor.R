@@ -15,10 +15,9 @@
 #                  km builders (km_median_split(cut = 0), pub_fig_km_median).
 #
 # Pipeline: src/07_post_hoc.R block 7f, on when the config has post_hoc.bor_survival
-# (enabled: true; landmark_months, score_quantiles optional). Standalone, on a finished
-# run (same pass config, same output): tools/survival_bor.R --run <run>.
+# (enabled: true; landmark_months, score_quantiles optional).
 # Output: <run>/<exp>/07_post_hoc/bor_survival/ (FigureKM_BOR_Score_OS_PFS = Figure S3, A-B by
-# BOR, C-D score split at 0 (user, 2026-11-04); the two halves also alone: FigureBOR_KM_OS_PFS,
+# BOR, C-D score split at 0; the two halves also alone: FigureBOR_KM_OS_PFS,
 # FigureKM_ScoreDecreased_OS_PFS; csv tables, console.txt, manifest.json).
 #
 # Asserts (FATAL otherwise): frame n / groups = step-06 JSON; OS / PFS n and events =
@@ -182,7 +181,7 @@ pub_fig_bor_km <- function(res_list, y_labs) {
     theme(legend.position = "bottom")
 }
 
-#' @title Figure S3: all survival KM in one figure (user, 2026-11-04)
+#' @title Figure S3: all survival KM in one figure
 #' @description Row 1 = by best overall response from the start of therapy (A OS, B PFS);
 #'   row 2 = Δ immune score <= 0 vs > 0 from the T1 landmark (C OS, D PFS). One legend per row.
 #' @param bor_list two bor_group_survival() results; @param km_list two km_median_split() results
@@ -199,7 +198,7 @@ pub_fig_survival_4 <- function(bor_list, km_list, y_labs, ...) {
 #' @param out_dir output directory (<run>/<exp>/07_post_hoc/bor_survival)
 #' @param by caller recorded in the manifest
 #' @return invisible list of results
-bor_survival_run <- function(config, out_dir, by = "tools/survival_bor.R") {
+bor_survival_run <- function(config, out_dir, by = "src/07_post_hoc.R (bor_survival)") {
   fatal <- function(...) stop(sprintf("[FATAL] bor_survival: %s", sprintf(...)), call. = FALSE)
   exp  <- config$project_name
   ph   <- if (!is.null(config$post_hoc)) config$post_hoc else list()
@@ -415,7 +414,7 @@ bor_survival_run <- function(config, out_dir, by = "tools/survival_bor.R") {
                   file.path(out_dir, "FigureKM_BOR_Score_OS_PFS"), PUB_W2, 190, config = config)
   sha <- tryCatch(system2("git", c("rev-parse", "HEAD"), stdout = TRUE, stderr = FALSE), error = function(e) NA_character_)
   dirty <- tryCatch(length(system2("git", c("status", "--porcelain", "R/modules_survival_bor.R", "R/modules_survival_km.R",
-                                                "tools/survival_bor.R", "src/07_post_hoc.R"),
+                                                "src/07_post_hoc.R"),
                                    stdout = TRUE, stderr = FALSE)) > 0, error = function(e) NA)
   jsonlite::write_json(list(
     step = by, module = "R/modules_survival_bor.R", date = format(Sys.time(), "%Y-%m-%d %H:%M:%S %Z"),

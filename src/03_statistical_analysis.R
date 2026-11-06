@@ -4,20 +4,16 @@
 # Description: Extracts hybrid drivers of clinical response via Sparse PLS-DA.
 # ==============================================================================
 
-source("R/utils_io.R")          
+source("R/utils_io.R")
 source("R/utils_figures.R")
 source("R/modules_multivariate.R")
-source("R/modules_viz.R") 
+source("R/modules_viz.R")
 
 message("\n=== PIPELINE STEP 3: STATISTICAL ANALYSIS & REPORTING ===")
 
 # 1. Initialization & Data Loading
 # ------------------------------------------------------------------------------
-if (!exists("config")) {
-  args <- commandArgs(trailingOnly = TRUE)
-  config_path <- if (length(args) > 0) args[1] else "config/global_params.yml"
-  config <- load_config(config_path)
-}
+if (!exists("config")) stop("[FATAL] Global configuration object not detected in environment (run through main.R).")
 
 input_file <- step_output_path(config, 1, sprintf("data_processed_%s_standard", config$project_name), "rds")
 if (!file.exists(input_file)) stop("[FATAL] Standard data processing output not found.")
@@ -27,7 +23,7 @@ results_dir <- step_dir(config, 3, create = TRUE)
 
 df_global <- DATA$hybrid_data_z
 safe_markers <- DATA$hybrid_markers
-meta_stats <- DATA$metadata 
+meta_stats <- DATA$metadata
 
 # Isolate strict matrix to prevent downstream ComplexHeatmap dimensional mismatches
 mat_z_global <- as.matrix(df_global[, safe_markers])
@@ -42,31 +38,31 @@ wb_master <- openxlsx::createWorkbook()
 # ------------------------------------------------------------------------------
 message(sprintf("\n--- RUNNING HYBRID sPLS-DA (%s vs %s) ---", config$clinical$responder_label, config$clinical$non_responder_label))
 
-set.seed(config$stats$seed) 
+set.seed(config$stats$seed)
 tryCatch({
   pls_res <- run_splsda_model(
-    data_z = mat_z_global, 
-    metadata = meta_stats, 
-    group_col = "Group", 
+    data_z = mat_z_global,
+    metadata = meta_stats,
+    group_col = "Group",
     n_comp = config$multivariate$n_comp,
-    folds = config$multivariate$validation_folds, 
+    folds = config$multivariate$validation_folds,
     n_repeat = config$multivariate$n_repeat_cv
-  ) 
-  
+  )
+
   top_drivers <- extract_plsda_loadings(pls_res)
-  
+
   if (nrow(top_drivers) > 0) {
     # Flag marker structural domain (FACS vs Soluble) for biological interpretability
     facs_feats <- unlist(config$features$facs)
     top_drivers <- top_drivers %>%
       dplyr::mutate(Domain = ifelse(Marker %in% facs_feats, "FACS", "Soluble")) %>%
       dplyr::select(Domain, Marker, Importance, dplyr::everything())
-    
+
     openxlsx::addWorksheet(wb_master, "sPLSDA_Drivers")
     openxlsx::writeData(wb_master, "sPLSDA_Drivers", top_drivers)
-    
+
     df_perf <- extract_plsda_performance(pls_res)
-    
+
     auc_list <- list()
     if (!is.null(pls_res$performance$auc)) {
       for (i in 1:pls_res$model$ncomp) {
@@ -78,12 +74,12 @@ tryCatch({
         }
       }
     }
-    
+
     if (length(auc_list) > 0) {
       df_auc <- do.call(rbind, auc_list)
       df_perf <- merge(df_perf, df_auc, by = "Component", all.x = TRUE)
     }
-    
+
     df_perf$keepX <- pls_res$model$keepX[1:pls_res$model$ncomp]
 
     openxlsx::addWorksheet(wb_master, "Model_Performance")
@@ -92,8 +88,7 @@ tryCatch({
     # --- Permutation test on BER (optional, config-driven) ---
     # Anchors the BER vs an empirical null under shuffled labels. With BER
     # values typically only modestly below 0.5 in n~70 cohorts, this is the
-    # standard reviewer-defensible check that the multivariate signal is not
-    # chance.
+    # standard check that the multivariate signal is not chance.
     perm_cfg <- config$multivariate$permutation
     perm_results <- NULL
     if (!is.null(perm_cfg) && isTRUE(perm_cfg$enabled)) {
@@ -147,7 +142,7 @@ tryCatch({
       } else NULL,
       top_drivers = top_drivers
     )
-    
+
     json_path <- file.path(results_dir, sprintf("Machine_Metrics_%s.json", config$project_name))
     if (requireNamespace("jsonlite", quietly = TRUE)) {
       jsonlite::write_json(machine_output, json_path, pretty = TRUE, auto_unbox = TRUE)
@@ -156,17 +151,17 @@ tryCatch({
       saveRDS(machine_output, sub(".json$", ".rds", json_path))
       warning("[Dependencies] jsonlite package missing. Falling back to RDS format.")
     }
-    
+
     safe_top_n <- if(!is.null(config$multivariate$top_n_loadings)) config$multivariate$top_n_loadings else 15
-    
+
     # Render Analytical Report
     viz_report_plsda(
-      pls_res = pls_res, 
-      drivers_df = top_drivers, 
-      metadata_viz = meta_stats, 
-      colors_viz = colors_viz, 
+      pls_res = pls_res,
+      drivers_df = top_drivers,
+      metadata_viz = meta_stats,
+      colors_viz = colors_viz,
       out_path = file.path(results_dir, sprintf("Hybrid_sPLSDA_Results_%s", config$project_name)),
-      group_col = "Group", 
+      group_col = "Group",
       n_top_boxplots = safe_top_n,
       fig_cfg = config
     )

@@ -1,10 +1,10 @@
 # R/modules_posthoc_duplicates.R
 # ==============================================================================
-# DUPLICATED-ROW SENSITIVITY (step 07, duplicate_rows/; formerly diagnostics/diag_55)
-# In the final inputs the T1 rows of NSCLC_10 (PR) and NSCLC_12 (SD) are identical on
-# every FACS column (two different persons), so at most one of them is that patient's
-# sample. The dataset is NOT changed; this drops the T1 sample of each listed ID alone
-# and of all of them together, and repeats
+# DUPLICATED-ROW SENSITIVITY (step 07, duplicate_rows/)
+# Two patients can carry T1 rows identical on every FACS column, so at most one of them
+# is that patient's sample (the IDs are listed in a data file, post_hoc.duplicate_rows).
+# The dataset is NOT changed; this drops the T1 sample of each listed ID alone and of
+# all of them together, and repeats
 #   [1] the step-04 gate (same model as fit_feature_lmm, BH over the panel)
 #   [2] the added-value layer with the gate held fixed (CV AUC, LRT), Z recomputed on the
 #       reduced longitudinal frame exactly as step 01 fast mode does (scale() of the raw logit).

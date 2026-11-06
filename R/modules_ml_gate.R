@@ -73,7 +73,7 @@ load_lmm_robust_features <- function(lmm_json_path,
   }
 
   # full_results = the whole per-marker interaction table (all panel markers), used by
-  # the added-value layer's dynamics<->baseline coupling analysis (Blocco G). Carried
+  # the added-value layer's dynamics<->baseline coupling analysis. Carried
   # alongside df_robust (the gate) so the JSON is parsed once.
   list(markers = df_robust$Marker, n_robust = nrow(df_robust), df_robust = df_robust,
        full_results = df)
@@ -156,52 +156,6 @@ select_gate_for_fold <- function(df_lng_train, markers, fdr_thr = 0.05, loo_thr 
   loo_pass
 }
 
-#' Select Univariate Feature Gate (within a single LOO fold)
-#'
-#' Applies Wilcoxon rank-sum test per marker on the training fold and returns
-#' markers surviving BH-FDR correction. Falls back to top-k by raw p-value if
-#' fewer than 2 markers pass. Used exclusively when gate_method = "univariate".
-#'
-#' The FDR threshold is intentionally relaxed (default 0.20) because selection
-#' operates on n-1 patients with limited power. The outer LOO permutation test
-#' is the primary inferential layer.
-#'
-#' @param X_train Numeric matrix. Training fold (n-1 rows x p cols).
-#' @param y_train Factor. Training fold binary outcome.
-#' @param positive_label String. Positive class label.
-#' @param fdr_threshold Numeric. BH-FDR threshold (default 0.20).
-#' @param fallback_k Integer. Top-k markers used if fewer than 2 pass FDR (default 3).
-#' @return Named list: markers (character vector), used_fallback (logical),
-#'   pvalues (named numeric vector of raw Wilcoxon p-values for all markers).
-select_univariate_gate <- function(X_train, y_train, positive_label,
-                                   fdr_threshold = 0.20,
-                                   fallback_k    = 3L) {
-  markers <- colnames(X_train)
-  y_bin   <- as.integer(y_train == positive_label)
-  stopifnot(length(markers) >= 1L, sum(y_bin) >= 2L, sum(1L - y_bin) >= 2L)
-
-  pvals <- vapply(markers, function(m) {
-    x <- as.numeric(X_train[, m])
-    v <- var(x, na.rm = TRUE)
-    if (!is.finite(v) || v == 0) return(1.0)
-    tryCatch(
-      wilcox.test(x[y_bin == 1L], x[y_bin == 0L], exact = FALSE)$p.value,
-      error = function(e) 1.0
-    )
-  }, numeric(1L))
-
-  fdr_vals      <- p.adjust(pvals, method = "BH")
-  gate          <- markers[!is.na(fdr_vals) & fdr_vals < fdr_threshold]
-  used_fallback <- length(gate) < 2L
-
-  if (used_fallback) {
-    k    <- min(as.integer(fallback_k), length(markers))
-    gate <- markers[order(pvals)[seq_len(k)]]
-  }
-
-  list(markers = gate, used_fallback = used_fallback, pvalues = pvals)
-}
-
 #' @title Gate Signal Decomposition (T0 / T1 / Delta)
 #' @description
 #' For LMM-gated longitudinal experiments, decomposes the discriminative signal
@@ -211,9 +165,9 @@ select_univariate_gate <- function(X_train, y_train, positive_label,
 #' gate markers in a pure T0 Wilcoxon scan over all markers to quantify the
 #' feature-selection contribution of the LMM gate.
 #'
-#' Addresses reviewer critique RC1 (LMM feature selection leakage),
-#' RC2 (baseline-prognostic vs dynamic-predictive signal), and
-#' RC3 (whether LMM guidance adds over a naive T0 scan).
+#' Checks three questions: whether the LMM feature selection leaks into the
+#' evaluation, whether the signal is a baseline or a change signal, and whether
+#' the LMM guidance adds over a naive T0 scan.
 #'
 #' @param DATA_T0      Named list. Step 01 standard processed data object (T0).
 #' @param DATA_LONG    Named list. Step 01 longitudinal processed data object.

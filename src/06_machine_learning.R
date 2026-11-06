@@ -24,13 +24,9 @@ if (!exists("config")) stop("[FATAL] Global configuration object not detected in
 
 ml_cfg <- if (!is.null(config$machine_learning)) config$machine_learning else list()
 
-# ── Gate method ───────────────────────────────────────────────────────────────
-# "lmm" (the only method): feature gate from the Step 04 LMM LOO-robustness test.
-gate_method <- if (!is.null(ml_cfg$gate_method)) ml_cfg$gate_method else "lmm"
+# Feature gate: the Step 04 LMM markers that pass FDR and the leave-one-out robustness test.
 fdr_thresh  <- if (!is.null(ml_cfg$fdr_threshold)) as.numeric(ml_cfg$fdr_threshold) else 0.05
 loo_thresh  <- if (!is.null(ml_cfg$loo_threshold)) as.numeric(ml_cfg$loo_threshold) else 0.05
-
-if (gate_method == "lmm") {
 
 # 2. Load LMM LOO-Robust Features (auto-detect, graceful degradation)
 # ------------------------------------------------------------------------------
@@ -456,8 +452,7 @@ if (lmm_robust$n_robust == 0) {
     # NLR toggle (top-level include_nlr / env INCLUDE_NLR): when off, drop NLR from the
     # clinical model ONCE so every downstream consumer is consistent — call_av reads cm$vars,
     # nested-gate validation reads ml_cfg$clinical_model$vars. Immune gate / EN-SVM / PD-L1
-    # benchmark are untouched. The no-NLR run then yields a PD-L1+PS added-value layer + a
-    # PD-L1+PS+immune locked_model (the deployment scorer). See diag_24 caveat in docs.
+    # benchmark are untouched.
     if (!isTRUE(config$include_nlr) && !is.null(cm$vars[["NLR"]])) {
       cm$vars <- cm$vars[setdiff(names(cm$vars), "NLR")]
       ml_cfg$clinical_model$vars <- cm$vars
@@ -670,9 +665,10 @@ if (lmm_robust$n_robust == 0) {
     scaling_note = paste(
       "Z-scores computed globally in Step 01 (deterministic centering, not a learned parameter).",
       "For linear classifiers, global z-scoring is an affine transformation that cancels out;",
-      "for SVM-RBF, leakage potential was ruled out empirically (diag_11): refitting with strict",
-      "per-fold z-scoring from raw transformed input yields identical AUC (DeLong p=1.0).",
-      "Feature gate derived from longitudinal data (Step 04) — disjoint from classifier training data.",
+      "for SVM-RBF, refitting with strict per-fold z-scoring from raw transformed input",
+      "yields identical AUC (DeLong p=1.0).",
+      "Feature gate selected in Step 04 on the longitudinal frame, which shares patients with",
+      "the classifier data (the selection-aware LRT accounts for the selection).",
       if (!is.null(nested_validation))
         sprintf("Leakage further quantified: fully-nested LOO validation yielded AUC=%.3f [%.3f-%.3f] with %.0f%% gate stability for primary marker (see nested_loocv_validation).",
                 nested_validation$metrics$auc,
@@ -1020,7 +1016,7 @@ if (lmm_robust$n_robust == 0) {
   message(sprintf("   [Output] Classification report saved: %s", basename(excel_path)))
 
   # 11b. Publication figure set (additive; driven by the live result objects so
-  #      it always reflects the current analysis). Frontiers-styled, captions
+  #      it always reflects the current analysis). Publication style, captions
   #      external. These are the only figures step 06 writes.
   if (isTRUE(config$run_publication_figures)) {
     pub_dir <- file.path(out_dir, "publication")
@@ -1064,10 +1060,6 @@ if (lmm_robust$n_robust == 0) {
     metrics_glmnet$auc, metrics_svm$auc, perm_svm$p_value,
     bench_line
   ))
-}
-
-} else {
-  stop(sprintf("[FATAL] Unsupported machine_learning.gate_method '%s' (only \"lmm\" is implemented).", gate_method))
 }
 
 message("=== STEP 6 COMPLETE ===\n")

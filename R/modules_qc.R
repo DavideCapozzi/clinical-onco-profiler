@@ -68,7 +68,7 @@ detect_pca_outliers <- function(mat, groups, conf_level = 0.99) {
       
       scores <- pca_res$x[, 1:n_pc, drop = FALSE]
       
-      # Calculate Robust Mahalanobis Distance
+      # Mahalanobis distance (classical covariance of the PC scores)
       center_vec <- colMeans(scores)
       cov_mat <- cov(scores)
       

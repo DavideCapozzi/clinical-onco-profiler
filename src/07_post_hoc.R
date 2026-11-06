@@ -1,10 +1,10 @@
 # src/07_post_hoc.R
 # ==============================================================================
 # STEP 07: POST HOC ANALYSES (on the finished step-04 / step-06 results)
-# Description: Sensitivity and descriptive analyses that re-use the run's own
+# Description: Sensitivity and descriptive analyses that reuse the run's own
 #              frames and its fixed gate; no marker re-selection, no new model.
 #   grouping/        PR / SD / PD response grouping of the LMM frame
-#   duplicate_rows/  drop the T1 rows listed in post_hoc.duplicate_rows.drop_t1
+#   duplicate_rows/  drop the T1 rows listed in post_hoc.duplicate_rows.drop_t1_file
 #   therapy/         ICI monotherapy vs chemo-immunotherapy (gate change)
 #   km/              Kaplan-Meier OS / PFS by median split of the Δ composite
 #   bor_survival/    OS / PFS by best overall response; Δ composite cut-offs (0 split =
@@ -105,9 +105,13 @@ if (!all(file.exists(needed))) {
 
   # --- 7b. Duplicated T1 rows ---------------------------------------------------------
   dr_cfg <- ph_cfg$duplicate_rows
-  if (!isFALSE(dr_cfg$enabled) && length(unlist(dr_cfg$drop_t1))) {
+  dr_ids <- if (!is.null(dr_cfg$drop_t1_file)) {
+    if (!file.exists(dr_cfg$drop_t1_file)) stop(sprintf("[FATAL] duplicate rows: file not found: %s", dr_cfg$drop_t1_file))
+    x <- trimws(readLines(dr_cfg$drop_t1_file, warn = FALSE)); x[nzchar(x)]
+  } else character(0)
+  if (!isFALSE(dr_cfg$enabled) && length(dr_ids)) {
     d <- file.path(out_root, "duplicate_rows"); L <- open_log(d)
-    ids <- as.character(unlist(dr_cfg$drop_t1))
+    ids <- dr_ids
     L$say("duplicated-row sensitivity  %s | exp %s | drop T1 of: %s | gate fixed: %s",
           format(Sys.time(), "%Y-%m-%d %H:%M:%S"), exp, paste(ids, collapse = ", "), paste(gate, collapse = ", "))
     dup <- run_duplicate_row_sensitivity(DATA, DATA_LONG, gate, ids, config, clin_vars, seed = seed, say = L$say)
@@ -187,7 +191,7 @@ if (!all(file.exists(needed))) {
       step = "src/07_post_hoc.R (therapy)", date = format(Sys.time(), "%Y-%m-%d %H:%M:%S %Z"),
       experiment = exp, tag = tag, git_sha = if (length(run_sha)) run_sha[1] else NA_character_,
       therapy_files = as.list(th_files), therapy_md5 = as.list(setNames(unname(tools::md5sum(th_files)), names(th_files))),
-      parser = "data/therapy_fix/database_parser_nsclc_v3_therapy.R",
+      parser = "src/00_build_inputs.R (therapy columns of the curated database)",
       B = B_th, seed = res$seed, gate = gate_th,
       frame = c(list(n_pts = n_pts, n_obs = n_obs, n_paired = n_pair),
                 if (!is.null(delta_cc_ids)) list(delta_complete_case_vars = unlist(ml_av$complete_case$vars),
@@ -342,7 +346,7 @@ if (!all(file.exists(needed))) {
 
   # --- 7e. Survival by best overall response and by Δ composite cut-off ----------------
   # post_hoc.bor_survival (absent = off). After 7d: checks its median split against km/.
-  # Same driver as tools/survival_bor.R (R/modules_survival_bor.R).
+  # Driver: bor_survival_run() in R/modules_survival_bor.R.
   bs_cfg <- ph_cfg$bor_survival
   if (!is.null(bs_cfg) && !isFALSE(bs_cfg$enabled))
     bor_survival_run(config, file.path(out_root, "bor_survival"), by = "src/07_post_hoc.R (bor_survival)")

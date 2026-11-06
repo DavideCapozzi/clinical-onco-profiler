@@ -1,7 +1,6 @@
 # R/modules_ml_bootstrap_ci.R
 # ==============================================================================
-# PATIENT-BOOTSTRAP CIs for the per-arm CV AUCs and the ΔAUC increment
-# (formerly diagnostics/diag_45).
+# PATIENT-BOOTSTRAP CIs for the per-arm CV AUCs and the ΔAUC increment.
 #
 # cv_kfold$delta_auc_ci in the step-06 JSON is quantile() over the 50 REPETITION-level
 # deltas of repeated CV on one fixed set of patients: Monte-Carlo spread of the fold

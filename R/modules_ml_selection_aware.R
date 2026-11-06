@@ -1,7 +1,7 @@
 # R/modules_ml_selection_aware.R
 # ==============================================================================
 # SELECTION-AWARE LRT — permutation null for the immune increment that replays
-# the gate SELECTION, not only the coefficient (formerly diagnostics/diag_44).
+# the gate SELECTION, not only the coefficient.
 #
 # The step-06 gate-fixed permutation p (increment$lrt_perm_p) shuffles labels while
 # holding the pre-specified composite constant, so it prices the COEFFICIENT, not

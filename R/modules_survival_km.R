@@ -21,7 +21,7 @@
 # ==============================================================================
 
 KM_ARMS <- c(low = "Δ ≤ median", high = "Δ > median")
-KM_COLS <- setNames(c("#2166AC", "#B2182B"), unname(KM_ARMS))   # blue / red (user, 2026-10-27)
+KM_COLS <- setNames(c("#2166AC", "#B2182B"), unname(KM_ARMS))   # blue / red
 
 .km_logrank_p <- function(sd) pchisq(sd$chisq, df = length(sd$n) - 1L, lower.tail = FALSE)
 
@@ -97,7 +97,7 @@ km_median_split <- function(time, event, x, ids, group, landmark_months = 0,
 
 #' @title Figure panel: Kaplan-Meier curves by median split, log-rank p in the corner
 #' @description Step curves from the landmark with censor ticks, red/blue, no grid, primary
-#'   log-rank p top-right, colour legend at the bottom (user, 2026-10-27). Requires
+#'   log-rank p top-right, colour legend at the bottom. Requires
 #'   modules_pub_style.R (theme_publication).
 #' @param res output of km_median_split()
 #' @param y_lab y-axis title (endpoint name)

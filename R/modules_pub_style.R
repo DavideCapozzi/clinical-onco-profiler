@@ -2,7 +2,7 @@
 # ==============================================================================
 # PUBLICATION STYLE MODULE  (single source of truth for manuscript figures)
 # ------------------------------------------------------------------------------
-# Frontiers in Immunology compliance: cairo_pdf (fonts embedded), RGB, column
+# Figure conventions: cairo_pdf (fonts embedded), RGB, column
 # widths 85 mm / 180 mm, >=8 pt text at final size, NO embedded titles/subtitles
 # (stats live in the figure captions), bold A/B panel tags, Okabe-Ito colour-
 # blind-safe palette (no red/green collision).
@@ -14,7 +14,7 @@
 
 suppressMessages({ library(ggplot2); library(patchwork) })
 
-# Canvas widths (mm). Frontiers print maxima are 85 (single) / 180 (double); we
+# Canvas widths (mm). Typical print maxima are 85 (single) / 180 (double); we
 # render a touch larger for a comfortable, legible working draft — final
 # typesetting rescales to the column grid without loss (vector PDF).
 PUB_W1 <- 120   # ~1.4x single column
@@ -105,7 +105,7 @@ pub_relabel_marker <- function(x) {
   x[hit] <- PUB_MARKER_LABELS[x[hit]]
   x
 }
-# PD-L1 is shown as TPS and the immune composite as "Immune score" (PI, 2026-10-30).
+# PD-L1 is shown as TPS and the immune composite as "Immune score".
 PUB_VAR_LABELS <- c("PD_L1" = "TPS", "PD-L1" = "TPS", "Immune composite" = "Immune score")
 pub_relabel_var <- function(x) {
   x  <- as.character(x)

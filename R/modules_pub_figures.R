@@ -7,11 +7,11 @@
 # object styled via R/modules_pub_style.R. No frozen-file reads, no recompute:
 # when the analysis changes, re-running the pipeline regenerates these figures.
 #
-# Narrative (rebalanced 2026-06-24 toward immunology, 3 main): MAIN Fig1 biology
-# (gate-marker cell frequencies T0/T1×group, log-y + LMM forest) / Fig2 added-value
-# (LRT-led) / Fig3 PD-L1 context. SUPP (contiguous since 2026-09-11) S1 CONSORT /
-# S2 baseline-invariance / S3 specificity-null / S4 standalone / S5 coupling /
-# S6 robustness / S7 calibration / S8 gate-signal decomposition /
+# Builders (the Figure*/FigureS* stems; which ones enter the paper is set by the
+# `publication` block of the config): Fig1 biology (LMM forest + gate-marker cell
+# frequencies T0/T1 x group, log-y) / Fig2 added value (LRT-led) / Fig3 PD-L1 context /
+# S1 CONSORT / S2 baseline invariance / S3 specificity null / S4 standalone classifier /
+# S5 coupling / S6 robustness / S7 calibration / S8 gate-signal decomposition /
 # S9 nomogram (pub_fig_nomogram: the formal model only — immune composite + THIS run's
 # clinical vars, so include_nlr drives it. Immune axes are relabelled onto their exact
 # clinical scale: Δ = fold change in the Ki67+:Ki67− ratio, T0 = % of parent gate; a
@@ -109,7 +109,7 @@ pub_fig_biology <- function(gate_decomp, boot_df, obs_df = NULL, resp_label = NU
     labs(x = NULL, y = "Frequency (% of parent population)") +
     theme_publication() + theme(panel.grid = element_blank())
   if (is.null(forest)) return(pub_tag(pA))
-  # Forest first (panel A), cell frequencies second (panel B) — PI, 2026-10-30.
+  # Forest first (panel A), cell frequencies second (panel B).
   pub_tag((forest | pA) + patchwork::plot_layout(widths = c(1.1, 1.9)))
 }
 
@@ -121,8 +121,8 @@ pub_fig_added_value <- function(av, curves = c("loo", "cv")) {
   y   <- as.integer(pp$True_Group == pos)
   PDL1_RED <- "#B2182B"; COMP_COL <- "#CC79A7"      # PD-L1 dark red; comparator reddish-purple
   clab <- if (!is.null(av$comparator$label)) av$comparator$label else "Clinical + immune + NLR"
-  # Name each model by its constituents (e.g. "TPS + NLR", "TPS + NLR + immune score"; PI,
-  # 2026-10-30) so the reader sees what each curve contains.
+  # Name each model by its constituents (e.g. "TPS + NLR", "TPS + NLR + immune score")
+  # so the reader sees what each curve contains.
   clin_str <- if (!is.null(av$formal_vars) && length(av$formal_vars))
                 paste(pub_relabel_var(unlist(av$formal_vars)), collapse = " + ") else NULL
   clin_nm  <- if (!is.null(clin_str)) clin_str else "Clinical"
@@ -180,15 +180,14 @@ pub_fig_added_value <- function(av, curves = c("loo", "cv")) {
   }
   # Immune composite ALONE. Shown deliberately: out-of-sample it can sit slightly ABOVE the
   # combined model when the clinical baseline is near-chance (the clinical coefficients are
-  # near-null, so they cost more in variance than they buy in fit). Omitting the arm while
-  # its AUC sits in the tables is the kind of gap a reader is entitled to read as concealment;
-  # the honest move is to plot it and quantify the gap in the Figure 2 legend.
+  # near-null, so they cost more in variance than they buy in fit). Every arm reported in the
+  # tables is also plotted; the gap is quantified in the Figure 2 legend.
   if (imm_ok) {
     ri  <- if (cv_curves) cv_df("immune") else pub_roc_df(pp$Prob_Immune, y)
     roc_l <- c(roc_l, list(data.frame(ri$df, M = IMM_NM)))
     lev <- c(lev, IMM_NM); cols <- c(cols, pub_palette[["immune"]]); lts <- c(lts, 6)
   }
-  # Legend order: single predictors, immune score, then the combinations (PI, 2026-10-30).
+  # Legend order: single predictors, immune score, then the combinations.
   lev_ord <- c(setdiff(lev, c(lc, lk, IMM_NM)), intersect(IMM_NM, lev), lc, lk)
   roc <- do.call(rbind, roc_l); roc$M <- factor(roc$M, levels = lev_ord)
   # Reportable discrimination = repeated stratified k-fold; the curves above are LOO.
@@ -441,7 +440,7 @@ pub_fig_consort <- function(led, terminal = NULL, title = NULL, inflow = NULL,
   # be drawn in the vertical flow (nobody is dropped for an imputed clinical value).
   y_end <- ys[k] - 0.6
   if (length(terminal)) {
-    # Persisted terminal labels predate the TPS display name (PI, 2026-10-30).
+    # Terminal labels stored in the ledger use "PD-L1"; the figures call it TPS.
     names(terminal) <- gsub("PD-L1", "TPS", names(terminal), fixed = TRUE)
     tl <- paste(vapply(sprintf("%s: %s", names(terminal), unlist(terminal)),
                        strwrap_lab, "", w = 50), collapse = "\n")
@@ -647,7 +646,7 @@ pub_fig_standalone <- function(preds_df, positive_label, perm = NULL, auc = NULL
     theme_publication() + theme(legend.direction = "vertical")
 }
 
-# ── SUPP S5 — Dynamics<->baseline coupling (gate rationale; Blocco G) ─────────
+# ── SUPP S5 — Dynamics<->baseline coupling (gate rationale) ─────────────────
 #' Across the marker panel: LMM Timepoint×Group interaction strength (|t|) vs each
 #' marker's standalone baseline (T0) AUC. Positive correlation = convergent validity
 #' (why a dynamically-selected gate predicts at baseline). Gate markers highlighted;

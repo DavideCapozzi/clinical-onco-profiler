@@ -4,20 +4,15 @@
 # Description: Data ingestion, Hybrid Quality Control, and Transform logic.
 # ==============================================================================
 
-source("R/utils_io.R")     
-source("R/modules_coda.R") 
-source("R/modules_qc.R")   
+source("R/utils_io.R")
+source("R/modules_transform.R")
+source("R/modules_qc.R")
 
 message("\n=== PIPELINE STEP 1: INGESTION + HYBRID QC + TRANSFORM ===")
 
 # 1. Load Configuration & Data Initialization
 # ------------------------------------------------------------------------------
-if (!exists("config")) {
-  args <- commandArgs(trailingOnly = TRUE)
-  config_path <- if (length(args) > 0) args[1] else "config/global_params.yml"
-  config <- load_config(config_path)
-  if (is.null(config$run_mode)) config$run_mode <- "standard"
-}
+if (!exists("config")) stop("[FATAL] Global configuration object not detected in environment (run through main.R).")
 
 # Handle Longitudinal vs Cross-Sectional Data Ingestion
 if (isTRUE(config$is_longitudinal)) {
@@ -26,24 +21,24 @@ if (isTRUE(config$is_longitudinal)) {
   }
   if (!file.exists(config$input_file_t0)) stop(sprintf("T0 Input file not found: %s", config$input_file_t0))
   if (!file.exists(config$input_file_t1)) stop(sprintf("T1 Input file not found: %s", config$input_file_t1))
-  
+
   raw_t0 <- readxl::read_excel(config$input_file_t0) %>% dplyr::mutate(Timepoint = "T0")
   raw_t1 <- readxl::read_excel(config$input_file_t1) %>% dplyr::mutate(Timepoint = "T1")
-  
+
   colnames(raw_t0)[1] <- "Patient_ID"
   colnames(raw_t1)[1] <- "Patient_ID"
-  
+
   raw_data <- dplyr::bind_rows(raw_t0, raw_t1)
   raw_data$Sample_ID <- paste(as.character(raw_data$Patient_ID), raw_data$Timepoint, sep = "_")
-  
+
 } else {
   input_file <- config$input_file
   if (!file.exists(input_file)) stop(sprintf("Input file not found: %s", input_file))
-  
+
   raw_data <- readxl::read_excel(input_file)
   colnames(raw_data)[1] <- "Patient_ID"
   raw_data$Timepoint <- "Baseline"
-  
+
   if (any(duplicated(raw_data$Patient_ID))) {
     warning("[Data] Duplicated Patient_IDs detected. Applying make.unique() standardization.")
     raw_data$Patient_ID <- make.unique(as.character(raw_data$Patient_ID))
@@ -65,7 +60,7 @@ if (!clin_col %in% colnames(raw_data)) {
 if (!is.null(config$clinical$mapping)) {
   mapped_resp <- as.character(unlist(config$clinical$mapping[[resp_lbl]]))
   mapped_nresp <- as.character(unlist(config$clinical$mapping[[nresp_lbl]]))
-  
+
   raw_data <- raw_data %>%
     dplyr::mutate(!!clin_col := dplyr::case_when(
       as.character(.data[[clin_col]]) %in% mapped_resp ~ resp_lbl,
@@ -139,8 +134,8 @@ qc_config_basic$remove_outliers <- FALSE
 
 message("   [QC-A] Enforcing Missingness Tolerances (Dual Domain Thresholds)...")
 qc_result <- run_qc_pipeline(
-  mat_raw = mat_raw, 
-  metadata = metadata_raw, 
+  mat_raw = mat_raw,
+  metadata = metadata_raw,
   qc_config = qc_config_basic,
   facs_features = facs_feats,
   soluble_features = sol_feats,
@@ -163,29 +158,29 @@ cohort_ledger <- ledger_add(
 out_pids <- NULL   # reset per experiment: main.R loops experiments in one session
 if (isTRUE(config$qc$remove_outliers)) {
   message("   [QC-B] Generating hybrid PCA proxy for Multivariate Outlier Detection...")
-  
+
   proxy_results <- perform_data_transformation(mat_clean_basic, config, mode = "fast")
   mat_proxy <- proxy_results$hybrid_data_z
-  
+
   is_outlier <- detect_pca_outliers(
-    mat = mat_proxy, 
-    groups = meta_clean_basic$Group, 
+    mat = mat_proxy,
+    groups = meta_clean_basic$Group,
     conf_level = config$qc$outlier_conf_level
   )
-  
+
   if (any(is_outlier)) {
     out_pids <- rownames(mat_clean_basic)[is_outlier]
-    message(sprintf("   [QC-B] Removing %d multivariate outliers based on robust Mahalanobis distance.", length(out_pids)))
-    
+    message(sprintf("   [QC-B] Removing %d multivariate outliers based on PCA Mahalanobis distance.", length(out_pids)))
+
     group_info <- as.character(meta_clean_basic$Group[is_outlier])
     na_pcts <- rowMeans(is.na(mat_clean_basic[is_outlier, , drop=FALSE])) * 100
-    
+
     qc_result$report$dropped_rows_detail <- rbind(qc_result$report$dropped_rows_detail, data.frame(
       Patient_ID = out_pids, NA_Percent = round(na_pcts, 2),
       Reason = "Outlier", Original_Source = group_info, stringsAsFactors = FALSE
     ))
     qc_result$report$n_row_dropped <- nrow(qc_result$report$dropped_rows_detail)
-    
+
     mat_clean_basic  <- mat_clean_basic[!is_outlier, , drop = FALSE]
     meta_clean_basic <- meta_clean_basic[!is_outlier, , drop = FALSE]
     # run_qc_pipeline() captured breakdown_final BEFORE this step, so without refreshing it
@@ -204,7 +199,7 @@ cohort_ledger <- ledger_add(
   cohort_ledger, "pca_outlier",
   cohort_ledger$n_out[nrow(cohort_ledger)], nrow(mat_clean_basic),
   reason = if (isTRUE(config$qc$remove_outliers))
-    sprintf("robust-Mahalanobis PCA outlier (conf %s)", config$qc$outlier_conf_level)
+    sprintf("PCA Mahalanobis outlier (conf %s)", config$qc$outlier_conf_level)
   else "outlier removal disabled for this pass",
   by_group = table(meta_clean_basic$Group),
   dropped_ids = if (exists("out_pids", inherits = FALSE)) out_pids else NULL)

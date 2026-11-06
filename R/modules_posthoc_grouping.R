@@ -1,6 +1,6 @@
 # R/modules_posthoc_grouping.R
 # ==============================================================================
-# RESPONSE GROUPING SENSITIVITY (step 07, grouping/; formerly diagnostics/diag_50)
+# RESPONSE GROUPING SENSITIVITY (step 07, grouping/)
 # PR / SD / PD instead of PR vs SD/PD, on the step-04 LMM frame:
 #   0. assert the two-group fit reproduces the step-04 LMM p and beta (every marker)
 #   1. three-group LMM: omnibus Time x Group3 (F, 2 df, BH over markers) + pairwise
