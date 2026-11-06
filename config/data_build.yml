@@ -1,0 +1,206 @@
+# ==============================================================================
+# Data build configuration: curated database -> analysis input files
+# Used by src/00_build_inputs.R (functions in R/modules_data_build.R).
+# Rules only: no patient identifier or value appears here. Patient-level
+# corrections, supplements and exclusions live in the curated database
+# (see docs/DATA_PROCESSING.md).
+# ==============================================================================
+
+source: "data/curated/DB_NSCLC_curated.xlsx"
+output_dir: "data/inputs/cohort"
+output_prefix: "NSCLC"            # -> NSCLC_T0.xlsx, NSCLC_T1.xlsx, NSCLC_therapy_T0.xlsx, NSCLC_therapy_T1.xlsx
+sheets: ["T0", "T1"]              # the first sheet is the baseline sheet
+
+columns:
+  id: "Patient_ID"                              # pseudonymous patient identifier
+  person: ["Family Name", "First Name"]         # used only to detect duplicate records and to check
+                                                # that a patient's T0 and T1 rows are the same person;
+                                                # never written to the outputs
+  exclusion: "Excluded"                         # 1 = excluded from the analysis cohort
+  exclusion_reason: "Exclusion_reason"
+  rename:                                       # applied to the source headers before cleaning
+    "Risposta all'immunoterapia (3 mesi)": "Clinical_Response"
+  aliases:                                      # cleaned name -> canonical name (same marker, both sheets)
+    CD4: "CD4tot"
+    CD8: "CD8tot"
+    CD137: "CD137tot"
+  dates:                                        # Excel serial dates -> "dd/mm/yyyy" text
+    - "Date_of_tumor_diagnosis"
+    - "Date_of_metastatic_tumor"
+    - "Data_inizio_terapia"
+    - "Data_fine_terapia"
+    - "ultimo_follow_up"
+  text:                                         # kept as text; every other column is coerced to numeric
+    - "Clinical_Response"
+    - "Risposta_all'immunoterapia_6_mesi"
+    - "Best_response_rate_RC_1_RP_2_SD_3_PD_4"
+    - "^Sites_of_mets"                          # regular expression
+  pdl1: "PD_L1"                                 # free-text TPS parsed to a percentage (ranges, <X, >X)
+
+# Binary clinical variables derived from free-text columns. A supplied column with the same
+# name in the curated database fills the cells the free text leaves undetermined.
+derived:
+  - {name: "comorbidità_No_0_Si_1",         from: "^Comorbidity",          zero: ["0"]}
+  - {name: "tossicità_da_immuno_No_0_Si_1", from: "^tossicità_da_immuno_HB", zero: ["0", "no"]}
+mets_count: {name: "n_mets_sites", from: "^Sites_of_mets", min_code: 0, max_code: 10}
+
+# Attributes of the patient (not of the sample): a blank follow-up cell takes the baseline
+# value of the same patient, if both rows belong to the same person.
+patient_level: ["Best_response_rate_RC_1_RP_2_SD_3_PD_4"]
+
+qc:
+  max_na_row: 0.5                 # rows with a larger share of missing values are removed
+
+# Therapy tables (step 07): curated header -> output column.
+therapy:
+  T0:
+    "Therapy code (Pembro=1, Pembro+CHT=2, ipi/nivo+CHT=3, Atezo+CHT=4)": "Terapia_Pembro_1_Pembro_CHT_2_ipi/nivo_CHT_3;_Atezo_CHT_4"
+    "Therapy regimen (ICI monotherapy=1, chemo-immunotherapy=2)": "Terapia_regime_IOmono_1_chemoIO_2"
+    "Radiotherapy between T0 and T1 annotated (1=yes)": "Terapia_radio_tra_T0_T1_annotata"
+  T1:
+    "Therapy code (Pembro=1, Pembro+CHT=2, ipi/nivo+CHT=3, Atezo+CHT=4)": "Terapia_Pembro_1_Pembro_CHT_2_ipi/nivo_CHT_3"
+    "Therapy regimen (ICI monotherapy=1, chemo-immunotherapy=2)": "Terapia_regime_IOmono_1_chemoIO_2"
+    "Radiotherapy between T0 and T1 annotated (1=yes)": "Terapia_radio_tra_T0_T1_annotata"
+
+# Output schema (data dictionary): columns written to each analysis file, in this order.
+output_columns:
+  T0:
+    - "Patient_ID"
+    - "Age"
+    - "Date_of_birth_at_tumor_metastasi"
+    - "Date_of_tumor_diagnosis"
+    - "Date_of_metastatic_tumor"
+    - "Sex_M_1;_F_2"
+    - "Fumatori_0_no;_1_ex;2_si"
+    - "PD_L1"
+    - "Terapia_Pembro_1_Pembro_CHT_2_ipi/nivo_CHT_3;_Atezo_CHT_4"
+    - "Data_inizio_terapia"
+    - "Data_fine_terapia"
+    - "PS_prima_immuno"
+    - "Clinical_Response"
+    - "Risposta_all'immunoterapia_6_mesi"
+    - "PFS"
+    - "OS"
+    - "Alive_0/Dead_1"
+    - "ultimo_follow_up"
+    - "tossicità_da_immuno_HB_1;Neutrophils_2;_Platelets_3;Amilase/lipase_4;Fatigue_5;_oral_mucositis_6;Diarrea_7;_Nausea_8;_vomiting_9;_skin_10_thyroid_11;_polmonite_12"
+    - "Sites_of_mets_at_diagnosis_of_mts_disease_liver_0_nodes_1_lung_2_peritoneum_3_local_relapse_4_ovary_5_bone_6_adrenal_7_soft_tissues_8;_brain_9;_other_10;_if_other_specify"
+    - "Best_response_rate_RC_1_RP_2_SD_3_PD_4"
+    - "CD3tot"
+    - "CD4tot"
+    - "CD8tot"
+    - "CM"
+    - "EFF"
+    - "EM"
+    - "NAIVE"
+    - "CD28"
+    - "CD28CD4"
+    - "CD28CD8"
+    - "CD28KI67"
+    - "CD28CM"
+    - "CD28EFF"
+    - "CD28EMRA"
+    - "CD28NAIVE"
+    - "CD137tot"
+    - "CD137CD4"
+    - "CD137CD8"
+    - "CD137KI67"
+    - "CD137PD1"
+    - "CD137CM"
+    - "CD137EFF"
+    - "CD137EMRA"
+    - "CD137NAIVE"
+    - "KI67"
+    - "KI67CD4"
+    - "KI67CD8"
+    - "KI67CM"
+    - "KI67EFF"
+    - "KI657EMRA"
+    - "KI67NAIVE"
+    - "PD1"
+    - "PD1CD4"
+    - "PD1CD8"
+    - "PD1KI67"
+    - "PD1CM"
+    - "PD1EFF"
+    - "PD1EMRA"
+    - "PD1NAIVE"
+    - "Treg_tot"
+    - "Treg_active"
+    - "Treg_resting"
+    - "Treg_non_suppr"
+    - "comorbidità_No_0_Si_1"
+    - "tossicità_da_immuno_No_0_Si_1"
+    - "n_mets_sites"
+    - "total_WBC"
+    - "neutrophils"
+    - "lymphocytes"
+    - "neutrophils/lymphocytes"
+    - "NOX2_pg/mL"
+  T1:
+    - "Patient_ID"
+    - "Date_of_birth_at_tumor_metastasi"
+    - "Date_of_tumor_diagnosis"
+    - "Date_of_metastatic_tumor"
+    - "Sex_M_1;_F_2"
+    - "Fumatori_0_no;_1_ex;2_si"
+    - "PD_L1"
+    - "Terapia_Pembro_1_Pembro_CHT_2_ipi/nivo_CHT_3"
+    - "Data_inizio_terapia"
+    - "Data_fine_terapia"
+    - "PS_prima_immuno"
+    - "Clinical_Response"
+    - "Risposta_all'immunoterapia_6_mesi"
+    - "PFS"
+    - "OS"
+    - "Alive_0/Dead_1"
+    - "ultimo_follow_up"
+    - "tossicità_da_immuno_HB_1;Neutrophils_2;_Platelets_3;Amilase/lipase_4;Fatigue_5;_oral_mucositis_6;Diarrea_7;_Nausea_8;_vomiting_9;_skin_10_thyroid_11;_polmonite_12"
+    - "Sites_of_mets_at_diagnosis_of_mts_disease_liver_0_nodes_1_lung_2_peritoneum_3_local_relapse_4_ovary_5_bone_6_adrenal_7_soft_tissues_8;_brain_9;_other_10;_if_other_specify"
+    - "Best_response_rate_RC_1_RP_2_SD_3_PD_4"
+    - "CD3tot"
+    - "CD4tot"
+    - "CD8tot"
+    - "CM"
+    - "EFF"
+    - "EMRA"
+    - "NAIVE"
+    - "CD28"
+    - "CD28CD4"
+    - "CD28CD8"
+    - "CD28KI67"
+    - "CD28CM"
+    - "CD28EFF"
+    - "CD28EMRA"
+    - "CD28NAIVE"
+    - "CD137tot"
+    - "CD137CD4"
+    - "CD137CD8"
+    - "CD137KI67"
+    - "CD137PD1"
+    - "CD137CM"
+    - "CD137EFF"
+    - "CD137EMRA"
+    - "CD137NAIVE"
+    - "KI67"
+    - "KI67CD4"
+    - "KI67CD8"
+    - "KI67CM"
+    - "KI67EFF"
+    - "KI657EMRA"
+    - "KI67NAIVE"
+    - "PD1"
+    - "PD1CD4"
+    - "PD1CD8"
+    - "PD1KI67"
+    - "PD1CM"
+    - "PD1EFF"
+    - "PD1EMRA"
+    - "PD1NAIVE"
+    - "Treg_tot"
+    - "Treg_active"
+    - "Treg_resting"
+    - "Treg_non_suppr"
+    - "comorbidità_No_0_Si_1"
+    - "tossicità_da_immuno_No_0_Si_1"
+    - "n_mets_sites"
