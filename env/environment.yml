@@ -1,3 +1,9 @@
+# Direct dependencies of the pipeline, pinned to the versions of the environment that
+# produced the reported results. The exact environment (every package and build) is
+# env/environment.lock.yml (linux-64):
+#   micromamba create -n clinical-onco-profiler -f env/environment.lock.yml
+# r-logistf (Firth LRT) is optional and deliberately absent: the reported runs were
+# produced without it (lrt_firth_p = NA); installing it adds that field to the outputs.
 name: clinical-onco-profiler
 
 channels:
@@ -5,114 +11,37 @@ channels:
   - bioconda
   - nodefaults
 
-pin_subdir: linux-64
-
 dependencies:
-  # === BASE R ===
-  - r-base=4.3.*
-  
-  # === CONFIGURATION & IO ===
-  - r-yaml             
-  - r-readxl           
+  - r-base=4.3.3
 
-  # === EXPLICIT CRITICAL DEPENDENCIES ===
-  - r-cairo            
-  - r-lattice          
-  - r-rcolorbrewer     
-  - r-interp           
-  - r-latticeextra     
+  # data input / output
+  - r-readxl=1.4.5
+  - r-openxlsx=4.2.8
+  - r-writexl=1.5.4
+  - r-yaml=2.3.10
+  - r-jsonlite=2.0.0
+  - r-here=1.0.1
+  - r-xml2=1.4.0               # curated-database build (data package)
+  - r-zip=2.3.3
 
-  # === DATA MANIPULATION & VISUALIZATION (TIDYVERSE) ===
-  - r-tidyverse
-  - r-factoextra       
-  - r-factominer     
-  - r-ggpubr           
-  - r-cowplot          
-  - r-patchwork        
-  - r-viridis          
-  - r-corrplot         
-  - r-ggraph           
-  - r-janitor
-  - r-qgraph
-  - r-metrics
-  - r-psych
-  - r-fdrtool
-  - r-networkcomparisontest 
-  - r-ggvenndiagram
+  # data handling and figures
+  - r-tidyverse=2.0.0
+  - r-scales=1.4.0
+  - r-patchwork=1.3.2
+  - r-ggrepel=0.9.6
+  - r-ragg=1.5.0
+  - r-circlize=0.4.16
+  - r-factominer=2.12
+  - r-factoextra=1.0.7
+  - bioconductor-complexheatmap=2.18.0
 
-
-  # === CORE COMPOSITIONALITY PACKAGES ===
-  - bioconductor-aldex2       
-  - r-zcompositions           
-  - r-compositions>=2.0       
-  - r-hmisc                   
-  - r-robcompositions
-
-  # === PROPELLER (VIA SPECKLE) ===
-  - bioconductor-speckle      
-  - bioconductor-limma        
-
-  # === BATCH CORRECTION & IMPUTATION ===
-  - bioconductor-sva          
-  - r-mice                    
-
-  # === DIMENSIONALITY REDUCTION ===
-  - bioconductor-pcamethods
-  - bioconductor-mixomics>=6.24
-
-  # === NETWORK ANALYSIS & ROBUST STATISTICS ===
-  - r-igraph>=2.0
-  - r-tidygraph
-  - r-corpcor         
-  - r-huge            
-  - r-pulsar         
-
-  # === PARALLEL COMPUTING ===
-  - r-doparallel       
-  - r-foreach          
-
-  # === CLUSTERING & SURVIVAL ===
-  - bioconductor-consensusclusterplus 
-  - bioconductor-complexheatmap       
-  - r-survival                        
-  - r-survminer                       
-  - r-wgcna                           
-
-  # === UTILITY PACKAGES ===
-  - r-conflicted
-  - r-rmarkdown
-  - r-knitr
-  - r-reshape2
-  - r-data.table
-  - r-dt               
-  - r-biocmanager      
-  - r-openxlsx
-  - r-writexl
-
-  # === STATISTICS ===
-  - r-pwr
-  - bioconductor-multtest
-  - r-vegan
-  - r-lmertest>=3.1
-  - r-lme4>=1.1
-  - r-logistf          # Firth penalized logistic — separation-robust LRT (small-n, rare events)
-
-  # === MACHINE LEARNING CLASSIFICATION ===
-  - r-glmnet           # Elastic net logistic regression (Friedman et al.)
-  - r-e1071            # SVM via libsvm (Vapnik kernel methods)
-  - r-proc>=1.18       # ROC curves and AUC — conda-forge name for pROC (Robin et al.)
-
-  # === BIOCONDUCTOR CORE ===
-  - bioconductor-biobase
-  - bioconductor-biocgenerics
-  - bioconductor-s4vectors
-  - bioconductor-iranges
-  - bioconductor-genomicranges
-  
-  # === DEVELOPMENT TOOLS ===
-  - git
-  - make
-  - cmake
-  - pandoc             
-  - r-devtools         
-  - r-remotes
+  # statistics and models
+  - r-lme4=1.1_37
+  - r-lmertest=3.1_3
+  - r-emmeans=1.11.2_8
+  - r-survival=3.8_3
+  - r-proc=1.19.0.1
+  - r-glmnet=4.1_10
+  - r-e1071=1.7_16
+  - bioconductor-mixomics=6.26.0
+  - bioconductor-pcamethods=1.94.0

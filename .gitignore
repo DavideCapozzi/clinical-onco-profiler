@@ -1,34 +1,33 @@
-data/
-*results*
-results_results-hnscc/
-.Rproj.user
+# Patient data and pipeline outputs: never committed
+/data/
+/results/
+/private/
+
+# Local working material
+/manuscript/
+/docs/archive/
+/deck/
+/_refactor_plan/
+CLAUDE.md
+.claude/
+
+# R
+.Rproj.user/
 *.Rproj
 .Rhistory
-.claude
-CLAUDE.md
-next_steps.md
-claude-workflow-notes.md
-tmp_*.md
-*output*
-NSCLC_validation_split_findings.md
-summerschool_feasibility.md
-PUBLICATION_PLAN.md
-manuscript_prioritization.md
-manuscript_content_map.md
-manuscript/
-
-# Regenerable artifacts
-*.rds
-*.pdf
+.RData
 Rplots.pdf
 
-explore_added_value.md
+# Tooling
+node_modules/
+__pycache__/
+*:Zone.Identifier
 
-# Archived dated records (closed decisions) — local only
-docs/archive/
-
-# presentation workspace (pptx build, node_modules, figure PNGs)
-deck/
-
-# Identifiable exports (names) — local only, never committed
-private/
+# Safety nets: data, documents and generated files
+*.xlsx
+*.xls
+*.csv
+*.docx
+*.rds
+*.pdf
+*.log

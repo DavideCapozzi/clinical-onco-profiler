@@ -1,208 +1,168 @@
 # clinical-onco-profiler
 
-An R-based, config-driven pipeline for immunological profiling of oncology cohorts. Designed for hybrid immunophenotyping data (FACS flow cytometry + soluble biomarkers), it performs:
+Config-driven R pipeline for immune profiling of peripheral blood (PBMC flow cytometry) in a cohort of patients with
+non-small cell lung cancer (NSCLC) treated with immune checkpoint inhibitors (ICI). Blood is sampled before therapy
+(T0) and after the first cycle (T1). The pipeline asks whether early changes in circulating T-cell subsets track the
+best overall response (partial response, PR, vs stable or progressive disease, SD/PD) and whether they add to a
+pre-specified clinical model (PD-L1 TPS + pre-therapy neutrophil-to-lymphocyte ratio, NLR).
 
-- **Cross-sectional analysis** (Steps 01–03): QC → visualization → sPLS-DA multivariate modeling
-- **Longitudinal analysis** (Steps 01 + 04): joint T0/T1 processing → Linear Mixed Models (LMM) with Leave-One-Out sensitivity and covariate adjustment
-- **Machine learning and added value** (Step 06): nested-LOOCV Elastic Net + SVM-RBF gated on LMM LOO-robust features; clinical + immune added-value layer with the selection-aware LRT (label permutation with full gate re-selection), patient-bootstrap CIs for the cross-validated AUCs (including each clinical variable alone when the clinical model has more than one, drawn in Figure 2b from the same CV folds), and the fixed-gate LRT leave-one-out
-- **Post hoc sensitivity** (Step 07): response grouping (PR / SD / PD), duplicated-row sensitivity, therapy regimen, Kaplan-Meier median split; descriptive, gate fixed
+The analysis is exploratory, single-arm and has no external validation cohort.
 
-Applied to NSCLC patients treated with immune checkpoint inhibitors (ICI) to identify response biomarkers. Converging evidence across three analytical layers (sPLS-DA, LMM, ML) points to a **KI67 proliferation axis that moves with early radiological response**. The reported result is the *incremental* value of that axis over a clinical baseline (PD-L1 + NLR) — it is a single marker axis selected by the LMM, with family-level corroboration, **not a validated multi-marker signature and not a standalone classifier**.
+## What the pipeline does
 
----
+| Step | Script | Content |
+|---|---|---|
+| 00 | `src/00_build_inputs.R` | Curated database → analysis input files (rules in `config/data_build.yml`; see [docs/DATA_PROCESSING.md](docs/DATA_PROCESSING.md)) |
+| 01 | `src/01_data_processing.R` | QC (row / column missingness, PCA outliers), detection-limit clamp, logit (flow cytometry %) / log2 (soluble), BPCA imputation, z-scores |
+| 02 | `src/02_visualization.R` | Distributions and PCA (QC figures) |
+| 03 | `src/03_statistical_analysis.R` | Baseline (T0) sPLS-DA with repeated CV and a label-permutation null of the balanced error rate |
+| 04 | `src/04_longitudinal_lmm.R` | Linear mixed models per marker (`marker ~ Time × Group + (1 \| patient)`), FDR, leave-one-patient-out stability, patient-level cluster bootstrap, covariate and response-subgroup sensitivity |
+| 06 | `src/06_machine_learning.R` | Marker gate from step 04 (FDR and leave-one-out rule, collinearity filter); immune score = mean z of the gate markers' change; added value over the clinical model: repeated stratified k-fold CV AUC, patient-bootstrap CIs, likelihood-ratio test (LRT) with a **selection-aware permutation null** (the gate is re-selected in every permutation), LRT leave-one-out, calibration and decision curves; exploratory nested-LOOCV classifiers (elastic net, SVM) |
+| 07 | `src/07_post_hoc.R` | Post hoc, gate fixed: response grouping (PR / SD / PD), duplicated-row sensitivity, therapy regimen (ICI monotherapy vs chemo-immunotherapy), survival (Kaplan-Meier and Cox by best response and by immune-score change), LMM forest of the sensitivity run |
+
+Step numbering has a gap (05) on purpose: a network step was removed before release.
+
+`main.R` runs, for each experiment of the config: Pass 1 standard (`01 → 02 → 03`), Pass 2 longitudinal
+(`01 → 04`), Pass 3 (`06`), Pass 4 post hoc (`07`); then it collects the figures and tables into `publication/` and
+writes `run_manifest.yml`.
 
 ## Requirements
 
-- [conda](https://docs.conda.io) or [micromamba](https://mamba.readthedocs.io)
-- R 4.3.x (managed via the conda environment)
-
----
-
-## Installation
+- [micromamba](https://mamba.readthedocs.io) or conda.
+- R 4.3.3 and the packages pinned in `env/`. For an exact rebuild use the lock file (linux-64):
 
 ```bash
-conda env create -f env/environment.yml
-conda activate clinical-onco-profiler
-```
-
-Or with micromamba:
-
-```bash
-micromamba env create -f env/environment.yml
+micromamba create -n clinical-onco-profiler -f env/environment.lock.yml
 micromamba activate clinical-onco-profiler
 ```
 
-The environment pins R 4.x with Bioconductor packages (`mixOmics`, `pcaMethods`, `speckle`, `ALDEx2`) and key CRAN packages (`lmerTest`, `lme4`, `glmnet`, `e1071`, `pROC`, `igraph`). `env/environment.yml` is the human-editable spec; for an exactly reproducible build use the fully-resolved lock:
+`env/environment.yml` lists the direct dependencies with their versions (any platform). `logistf` is optional and
+not in the reference environment; without it the Firth LRT is reported as missing.
+
+- 15 CPU cores for the selection-aware LRT and the patient bootstrap (`cores:` in the config; the results do not
+  depend on the number of cores). Run one analysis at a time.
+- Run every command from the repository root.
+
+## Data availability
+
+The patient-level data are not public: they contain clinical information on identifiable patients. They are
+available from the corresponding author on reasonable request, subject to approval by the ethics committee.
+
+The data package has this layout (all under `data/`, which is never committed):
+
+```
+data/
+  curated/
+    DB_NSCLC_curated.xlsx        study database plus the curated supplements (input of step 00)
+    subsets/nlr_v2_cc50_ids.txt  patient list of the sensitivity run
+    subsets/duplicate_t1_rows.txt  patients with identical T1 rows (step 07 sensitivity)
+  snapshots/fig_s1_nlr_v2_cc50/  frozen inputs of Supplementary Figure S1 (optional: can be rebuilt, see below)
+  inputs/                        written by step 00
+```
+
+What the curated database adds to the study database, and every rule applied to it, is described in
+[docs/DATA_PROCESSING.md](docs/DATA_PROCESSING.md).
+
+## Reproducing the results
+
+Two runs are reported: the final analysis (`config/0final.yml`) and its sensitivity analysis on the 50 patients of
+the added-value frame (`config/nlr_v2_cc50.yml`). Supplementary Figure S1 of the final run is the LMM forest of the
+sensitivity run, so the sensitivity run comes first.
 
 ```bash
-micromamba create -f env/environment.lock.yml   # exact versions + build strings
+# 1. Analysis inputs from the curated database
+Rscript src/00_build_inputs.R                                   # -> data/inputs/cohort/
+Rscript src/00_build_inputs.R --subset data/curated/subsets/nlr_v2_cc50_ids.txt \
+                              --out data/inputs/nlr_v2_cc50     # -> data/inputs/nlr_v2_cc50/
+
+# 2. Sensitivity run (~90 min)
+RUN_NAME=nlr_v2_cc50 CONFIG_PATH=config/nlr_v2_cc50.yml Rscript main.R
+
+# 3. Freeze the inputs of Figure S1 (skip if data/snapshots/fig_s1_nlr_v2_cc50/ is in the data package;
+#    an existing snapshot is never overwritten)
+Rscript tools/render_sensitivity_forest.R --from results/0final/nlr_v2_cc50 \
+                                          --snapshot data/snapshots/fig_s1_nlr_v2_cc50
+
+# 4. Final run (~110 min)
+RUN_NAME=0final CONFIG_PATH=config/0final.yml Rscript main.R
 ```
 
----
+Every random draw has a fixed seed in the config (global `stats.seed`, and a seed and number of resamples per
+procedure), so the same inputs give the same numbers. A rebuilt snapshot holds the same values as the distributed one,
+but its file checksums differ (the copied Excel report carries its own write time).
 
-## Usage
+Expected frames of the final run (`run_manifest.yml`, `experiments: … n_frames`): T0 cross-sectional frame 78 patients; LMM 84
+patients / 134 observations; added-value frame 50 paired patients (23 PR / 27 SD/PD). Selection-aware LRT p = 0.024
+(236 of 10000 permutations).
+
+### Environment variables of `main.R`
+
+| Variable | Effect |
+|---|---|
+| `CONFIG_PATH` | Config file (default `config/0final.yml`) |
+| `RUN_NAME` | Run directory `<output_root>/<RUN_NAME>`; an existing directory is refused unless `FORCE=1` (then it is replaced) |
+| `RUN_LABEL` | Without `RUN_NAME`: suffix of the timestamped run directory |
+| `EXPERIMENTS` | Comma-separated experiment names: run only these |
+| `INCLUDE_NLR` | `true` / `false`: overrides `include_nlr` (clinical model with or without NLR) |
+
+`src/00_build_inputs.R` also refuses to write into a non-empty output directory unless `FORCE=1`.
+
+A failed pass logs `[FATAL ERROR]`; the other passes still run, then `main.R` exits with status 1 and
+`run_manifest.yml` lists the pass under `failed_passes`.
+
+### Tests and tools
 
 ```bash
-# Final run and its two sensitivity runs (~90-105 min each; one at a time, the selection-aware LRT uses 15 cores)
-RUN_NAME=final_gate84_nlr50     CONFIG_PATH=config/final_gate84_nlr50.yml Rscript main.R
-RUN_NAME=primary_PIregated_noPS CONFIG_PATH=config/global_params.yml      Rscript main.R
-RUN_NAME=nlr_v2_cc50            CONFIG_PATH=config/nlr_v2_cc50.yml        Rscript main.R
-
-# Any other config — no repo edits; restrict to named experiments
-RUN_NAME=my_run CONFIG_PATH=/path/to/alt_config.yml EXPERIMENTS=BestResponse_2v3_4 Rscript main.R
+Rscript tests/test_build_inputs.R          # step-00 rules on a synthetic curated workbook (~5 s)
+Rscript tests/integration_smoke.R          # end-to-end run on a synthetic cohort (~10 min)
+Rscript tools/render_pub_figures.R --run <run dir>         # re-draw the figures of a finished run (~10 s)
+Rscript tools/compare_runs.R a=<run dir> b=<run dir> [--out file.md]   # headline numbers side by side
+Rscript tools/render_sensitivity_forest.R --run <run dir> --snapshot <dir>   # draw Figure S1 into a finished run
 ```
 
-The run directory is `<output_root>/<RUN_NAME>` (without `RUN_NAME`, a timestamped name). `main.R` refuses to
-write into an existing run directory unless `FORCE=1`. Each experiment runs Pass 1 standard (`01→02→03`), Pass 2
-longitudinal (`01→04`), Pass 3 ML (`06`) and Pass 4 post hoc (`07`); then `publication/` is collected and
-`run_manifest.yml` (git sha, config and input md5, seeds, N per frame, failed passes) is written.
+Tools only read finished runs; `render_pub_figures.R` re-draws from the persisted figure data and never re-runs an
+analysis.
 
-A failed pass logs `[FATAL ERROR]` and the remaining passes still run; at the end `main.R` exits with
-status 1 and lists the failed passes. `grep -l "FATAL ERROR" <run>/*/log_*.txt` shows which log to read.
-
-The pipeline auto-detects whether the config is **nested multi-experiment** (has an `experiments:` key) or **flat single-cohort**. At startup `validate_config()` checks that each enabled experiment's outcome and clinical-model columns exist in its input Excel, so a misconfigured cohort fails fast. Set `enabled: false` on an experiment block to skip it without deleting it.
-
-### Tests
-
-```bash
-Rscript tests/integration_smoke.R              # end-to-end smoke test on a synthetic cohort (~10 min)
-```
-
-### Tools (all read an existing run, named explicitly)
-
-```bash
-Rscript tools/metrics_report.R --new <run>        # headline metrics + publishability verdict
-Rscript tools/render_pub_figures.R --run <run>    # re-render the figures from publication_data (~10 s), re-collect publication/
-Rscript tools/compare_runs.R a=<run> b=<run> [--out f.md]   # side-by-side comparison of runs
-Rscript tools/data_integrity_audit.R --run <run> --raw <raw DB>   # raw DB → inputs → step-01 audit (output in private/)
-```
-
-`tools/patient_inclusion_map.R` and `tools/patient_delta_export.R` (local only) write identifiable files to
-`private/<run name>/`, which is gitignored.
-
----
-
-## Project structure
+## Outputs
 
 ```
-config/                    Pipeline configuration (YAML)
-  final_gate84_nlr50.yml   Final run config (gate on all LMM data; added value on the paired patients with NLR)
-  global_params.yml        Base config; sensitivity run on all paired patients, PD-L1 alone
-  nlr_v2_cc50.yml          Sensitivity run: whole pipeline on the NLR patients (PD-L1 + NLR)
-
-data/                      Input Excel files (not tracked in git)
-  0final/                  Frozen inputs of the final and sensitivity runs, with MD5SUMS
-
-docs/
-  CHANGELOG.md             Analysis history, refactor record, old → new names
-
-env/
-  environment.yml          Conda environment specification (human-editable)
-  environment.lock.yml     Fully-resolved lock (exact versions + builds)
-
-R/                         Reusable module library (sourced by main.R at startup)
-  modules_qc.R             PCA outlier detection, QC pipeline
-  modules_coda.R           Logit/log2 transformation, BPCA imputation
-  modules_multivariate.R   sPLS-DA fitting and extraction
-  modules_longitudinal.R   LMM fitting, LOO sensitivity, R² (Nakagawa 2013)
-  modules_split.R          Discovery/validation cohort split
-  modules_ml.R             Aggregator — sources the four modules_ml_* files
-  modules_ml_gate.R        LMM feature gate, per-fold gate selection
-  modules_ml_cv.R          Nested-LOOCV classifiers, collinearity filter, metrics
-  modules_ml_utility.R     Clinical benchmark, added-value layer, utility, dissociation, LRT leave-one-out
-  modules_ml_selection_aware.R  Selection-aware LRT (label permutation with gate re-selection)
-  modules_ml_bootstrap_ci.R     Patient-bootstrap CIs for the CV AUCs
-  modules_posthoc_grouping.R    Step 07: response grouping sensitivity
-  modules_posthoc_duplicates.R  Step 07: duplicated-row sensitivity
-  modules_therapy_sensitivity.R Step 07: therapy regimen sensitivity
-  modules_survival_km.R         Step 07: Kaplan-Meier median split
-  modules_pub_figures.R    Manuscript figure set (pub_fig_*, pub_render_all)
-  modules_pub_style.R      Publication theme, palette, figure saving
-  modules_viz.R            ggplot rendering functions
-  utils_io.R               Config loading, run dirs, cohort ledger, manifests
-  utils_metrics.R          Headline metric extraction, publishability verdict, run compare
-  utils_figures.R          save_figure(): every figure export (formats / dpi from config)
-  utils_publication.R      collect_publication(): publication/ folder and INDEX.md
-
-tools/                     Stand-alone CLIs on an existing run (see Tools above)
-
-src/                       Pipeline step scripts (sourced in order by main.R)
-  01_data_processing.R
-  02_visualization.R
-  03_statistical_analysis.R
-  04_longitudinal_lmm.R
-  06_machine_learning.R
-  07_post_hoc.R
-
-tests/                     Test scripts
-  integration_smoke.R      End-to-end smoke test on a synthetic cohort
-
-results/                   All pipeline outputs (not tracked in git)
-  0final/                  The final and sensitivity runs, README.md and VERIFICATION.md
-  _archive/                Superseded runs kept for provenance (never quoted)
-  <run name>/
-    run_manifest.yml       git sha, config + input md5, seeds, N per frame, timestamp
-    publication/           Collected figures and tables (see below) + INDEX.md
-    <experiment_name>/
-      01_data_processing/  Processed .rds objects, cohort ledger
-      02_visualization/    Distribution and PCA PDFs
-      03_statistical_analysis/ sPLS-DA results, JSON drivers
-      04_longitudinal_analysis/ LMM tables (Excel + JSON), volcano/trajectory PDFs
-      06_machine_learning/ Classifier and added-value results (Excel, JSON, csv)
-        publication/       Manuscript figures + publication_data.rds
-      07_post_hoc/{grouping,duplicate_rows,therapy,km}/
-
-private/                   Identifiable exports (names), local only
+results/0final/<RUN_NAME>/
+  run_manifest.yml          git commit, config and input checksums, data-file checksums, seeds, package versions,
+                            N per frame, failed passes
+  publication/              figures and tables of the article, collected by label, with INDEX.md
+    main/                   Figures 1–3
+    supplementary/          Figures S1–S3; tables/ Tables S1–S2
+    additional/             other figures and csv summaries (not in the article)
+  BestResponse_2v3_4/       one directory per experiment
+    01_data_processing/     processed data (.rds), cohort ledger, QC report
+    02_visualization/       QC figures
+    03_statistical_analysis/  sPLS-DA
+    04_longitudinal_analysis/ LMM report (xlsx) and metrics (json)
+    06_machine_learning/    added-value and classifier results (json, csv, xlsx), publication figures
+    07_post_hoc/            grouping/ duplicate_rows/ therapy/ km/ bor_survival/ sensitivity_lmm/
+    log_*.txt               one log per pass
 ```
 
-### Publication layout
+`publication/INDEX.md` gives, for every file, its label, the step output it was copied from, the function that drew
+it and the analysis frame with its n. The headline numbers are in
+`06_machine_learning/Machine_Metrics_ML_<experiment>.json` (nodes `selection_aware_lrt`, `patient_bootstrap`,
+`lrt_leave_one_out`, `clinical_immune_added_value`).
 
-`collect_publication()` copies files (it never re-renders) into `<run>/publication/`, following the `publication:`
-block of the config: `main/`, `supplementary/`, `supplementary/tables/` (LMM and ML xlsx reports) and `additional/`
-(other figures and the selection-aware LRT, patient-bootstrap and LRT leave-one-out csv summaries). Copies are named
-by their paper label (`main/Fig_2_AddedValue_CVcurves.pdf`, `supplementary/Fig_S1_CONSORT.pdf`,
-`supplementary/tables/Table_S1_Longitudinal_LMM_Report.xlsx`; unlabelled files keep only the descriptive part); the
-step outputs keep their original names. `INDEX.md` has one row per file: role, paper label (provisional), file,
-source step file, producing function, frame and n. A missing main or supplementary file is a `[FATAL ERROR]`.
+## Repository layout
 
----
+```
+main.R                 pipeline driver
+config/                0final.yml (final run), nlr_v2_cc50.yml (sensitivity run), data_build.yml (step 00 rules)
+src/                   step scripts 00–07
+R/                     function modules (sourced by main.R)
+tools/                 command-line tools on finished runs
+tests/                 synthetic tests (step 00 rules; end-to-end run)
+env/                   conda environment and lock file
+docs/                  DATA_PROCESSING.md, CHANGELOG.md
+```
 
-## Configuration
-
-All pipeline parameters are controlled by `config/global_params.yml`. Key sections:
-
-| Section | Description |
-|---------|-------------|
-| `experiments` | Named experiment blocks (override clinical mapping, input files, flags) |
-| `features.facs` / `features.soluble` | Marker panel definitions |
-| `clinical.target_column` | Column encoding the response group |
-| `clinical.mapping` | Maps raw integer codes to responder/non-responder labels |
-| `qc` | Missingness thresholds, outlier detection settings |
-| `machine_learning` | FDR/LOO thresholds, collinearity filter, CV grids |
-| `machine_learning.clinical_immune_added_value.selection_aware_lrt` | B (10000), top-K rule, cores, seed |
-| `machine_learning.clinical_immune_added_value.patient_bootstrap` | B (2000), CV repetitions per resample, cores, seed |
-| `post_hoc` | Step 07 blocks: `grouping`, `duplicate_rows`, `therapy` (regimen files, B, seed), `km` (landmark) |
-| `figures` | Export formats (`pdf`, `png`, `tiff`, `svg`) and dpi |
-| `publication` | Mapping of figures and tables into `publication/` with labels and frames |
-| `stats.seed` | Global seed; B values and seeds behind reported numbers must not change |
-
-See `config/global_params.yml` for inline documentation of each parameter.
-
----
-
-## Input data format
-
-Input files are Excel workbooks (`.xlsx`) with one row per patient, one column per marker. Required columns: `Patient_ID` plus all marker columns listed under `features.facs` and `features.soluble` in the config. Longitudinal analyses expect separate T0 and T1 files with matching `Patient_ID` values.
-
-Input files are **not tracked in git** (the `data/` directory is gitignored) to protect patient data.
-
----
-
-## Citation
-
-If you use this pipeline, please cite
-
----
+The config files document every parameter inline. The values behind the reported numbers (number of resamples and
+seeds) must not be changed if the results are to be reproduced.
 
 ## License
 
