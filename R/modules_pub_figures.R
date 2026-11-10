@@ -30,15 +30,20 @@ suppressMessages({ library(ggplot2); library(patchwork) })
 
 # ── MAIN Fig 1 — LMM Ki67 forest (pre-specified gate) ─────────────────────────
 #' @param boot_df data.frame: Marker, Median_Beta_Boot, CI_Lower_2.5, CI_Upper_97.5, Pct_FDR_Significant
-#' @param obs_df  data.frame: Marker, Estimate_Interaction
-pub_fig_lmm_forest <- function(boot_df, obs_df = NULL, markers = NULL, ref_label = NULL) {
+#' @param obs_df  data.frame: Marker, Estimate_Interaction (+ FDR_Interaction for show_fdr)
+#' @param show_fdr print the observed FDR (BH q) above each estimate (Figure S1)
+pub_fig_lmm_forest <- function(boot_df, obs_df = NULL, markers = NULL, ref_label = NULL,
+                               show_fdr = FALSE) {
   if (is.null(boot_df) || !nrow(boot_df)) return(NULL)
   d <- boot_df
   if (!is.null(markers)) d <- d[d$Marker %in% markers, , drop = FALSE]
   if (!nrow(d)) return(NULL)
   if (!is.null(obs_df) && all(c("Marker", "Estimate_Interaction") %in% names(obs_df))) {
-    d <- merge(d, obs_df[, c("Marker", "Estimate_Interaction")], by = "Marker", all.x = TRUE)
+    d <- merge(d, obs_df[, intersect(c("Marker", "Estimate_Interaction", "FDR_Interaction"), names(obs_df))],
+               by = "Marker", all.x = TRUE)
   } else d$Estimate_Interaction <- d$Median_Beta_Boot
+  if (show_fdr && (is.null(d$FDR_Interaction) || anyNA(d$FDR_Interaction)))
+    stop("[pub_fig_lmm_forest] show_fdr = TRUE but FDR_Interaction is missing for a marker")
   d$Marker <- pub_relabel_marker(d$Marker)
   d$Marker <- factor(d$Marker, levels = d$Marker[order(d$Estimate_Interaction)])
   # The % label is a stability read-out, not a p-value: say so on the panel.
@@ -50,13 +55,17 @@ pub_fig_lmm_forest <- function(boot_df, obs_df = NULL, markers = NULL, ref_label
   # Single point estimate (observed β) + bootstrap 95% CI — standard forest layout.
   # The bootstrap median overlaps the observed β whenever bias ≈ 0 (the normal case),
   # so it is omitted; bootstrap robustness is conveyed by the % FDR label instead.
-  ggplot(d, aes(y = Marker)) +
+  p <- ggplot(d, aes(y = Marker)) +
     geom_vline(xintercept = 0, linetype = "dashed", colour = pub_palette[["ref"]]) +
     geom_errorbarh(aes(xmin = CI_Lower_2.5, xmax = CI_Upper_97.5),
                    height = 0.22, colour = "grey35") +
     geom_point(aes(x = Estimate_Interaction), shape = 19, size = 2.6, colour = pub_palette[["combined"]]) +
     geom_text(aes(x = CI_Upper_97.5, label = sprintf(" %.0f%%", Pct_FDR_Significant)),
-              hjust = 0, size = 2.5, colour = "grey30") +
+              hjust = 0, size = 2.5, colour = "grey30")
+  if (show_fdr)
+    p <- p + geom_text(aes(x = Estimate_Interaction, label = pub_lab_p(FDR_Interaction, "FDR")),
+                       nudge_y = 0.3, size = 2.5, colour = "grey20")
+  p +
     scale_x_continuous(expand = expansion(mult = c(0.05, 0.12))) +
     labs(x = x_lab, y = NULL, caption = pct_note) +
     coord_cartesian(clip = "off") +
@@ -217,7 +226,10 @@ pub_fig_added_value <- function(av, curves = c("loo", "cv")) {
   pA <- ggplot(roc, aes(FPR, TPR, colour = M, linetype = M)) +
     geom_abline(slope = 1, intercept = 0, linetype = "dotted", colour = pub_palette[["ref"]]) +
     geom_path(linewidth = 0.8)
-  if (!is.null(cv_lab))
+  # CV curves (paper Figure 2): curve and AUC are one estimate, and the design, AUCs and
+  # averaging are stated in the Methods / Results / legend, so no on-panel note (PI
+  # 2026-11-10). The LOO version keeps it: there it warns that the curves are not the AUCs.
+  if (!is.null(cv_lab) && !cv_curves)
     pA <- pA + annotate("label", x = 0.98, y = 0.03, hjust = 1, vjust = 0, size = 2.5,
                         lineheight = 0.95, label = cv_lab, fill = scales::alpha("white", 0.6),
                         label.size = 0, label.padding = unit(0.8, "mm"))
@@ -275,12 +287,11 @@ pub_fig_added_value <- function(av, curves = c("loo", "cv")) {
     coord_cartesian(ylim = c(min(-0.02, min(cur$treat_all)),
                              max(c(cur$clinical, cur$combined, cur$comparator,
                                    cur$immune)) + 0.02)) +
-    # Net benefit is computed on the same LOO probabilities as panel A, so the
-    # clinical reference arm carries the same tie artifact — disclosed on-panel
-    # rather than left for the caption, since the curve is read directly.
-    annotate("text", x = -Inf, y = -Inf, hjust = -0.04, vjust = -0.8, size = 2.3,
-             colour = "grey30", label = if (cv_curves) "Net benefit: mean over CV repetitions"
-                                       else "Net benefit from LOO probabilities") +
+    # LOO version: net benefit is computed on the same LOO probabilities as panel A, so the
+    # clinical reference arm carries the same tie artifact — disclosed on-panel. CV version
+    # (paper Figure 2): averaging over CV repetitions is stated in the Methods, no note.
+    (if (!cv_curves) annotate("text", x = -Inf, y = -Inf, hjust = -0.04, vjust = -0.8, size = 2.3,
+                              colour = "grey30", label = "Net benefit from LOO probabilities")) +
     labs(x = "Threshold probability", y = "Net benefit") +
     theme_publication() + theme(legend.direction = "vertical")
   pub_tag(pA | pB)
@@ -915,8 +926,8 @@ pub_nomo_panel <- function(s, header = NULL) {
 #' the formal model it read as a validated signature. It stays in the spec/JSON.
 #' The reading instructions, the axis-range rule and the reportable CV AUC belong in the
 #' figure legend, not in an in-figure footnote that duplicated (and drifted from) it.
-#' @param header_suffix,compact_header used only by `pub_fig_nomogram_hybrid()`: the longer
-#'   S9b header does not fit the 190 mm band with the full scale phrase. Defaults = S9.
+#' @param header_suffix,compact_header shorter header variants (the S9b nomogram used them
+#'   until 2026-11-10; it now draws no header). Defaults = S9.
 pub_fig_nomogram <- function(nomo, header_suffix = "", compact_header = FALSE) {
   if (is.null(nomo) || is.null(nomo$clinical_immune)) return(NULL)
   tp  <- if (!is.null(nomo$timepoint)) nomo$timepoint else "T0"
@@ -939,7 +950,9 @@ pub_fig_nomogram <- function(nomo, header_suffix = "", compact_header = FALSE) {
 pub_fig_nomogram_hybrid <- function(nomo) {
   if (is.null(nomo) || is.null(nomo$clinical_immune_hybrid)) return(NULL)
   n2 <- nomo; n2$clinical_immune <- nomo$clinical_immune_hybrid   # not modifyList: it merges data.frames
-  pub_fig_nomogram(n2, header_suffix = " — full range", compact_header = TRUE)
+  # Paper Figure 3: no in-figure header (PI 2026-11-10); the legend states the predictors and
+  # the immune-score axis scale (the header's "Ki67+:Ki67- ratio" was loose for KI67NAIVE).
+  pub_nomo_panel(n2$clinical_immune, header = NULL)
 }
 
 # ── SUPP — classification performance (confusion matrix + precision/recall) ────
@@ -1282,9 +1295,10 @@ pub_read_lmm_report <- function(f) {
     sheets <- readxl::excel_sheets(f)
     if (!"LMM_Bootstrap_CI" %in% sheets) return(NULL)
     boot <- as.data.frame(readxl::read_excel(f, sheet = "LMM_Bootstrap_CI"))
-    obs  <- if ("LMM_Interaction_Results" %in% sheets)
-      as.data.frame(readxl::read_excel(f, sheet = "LMM_Interaction_Results"))[, c("Marker", "Estimate_Interaction")]
-    else NULL
+    obs  <- if ("LMM_Interaction_Results" %in% sheets) {
+      o <- as.data.frame(readxl::read_excel(f, sheet = "LMM_Interaction_Results"))
+      o[, intersect(c("Marker", "Estimate_Interaction", "FDR_Interaction"), names(o))]
+    } else NULL
     list(boot = boot, obs = obs)
   }, error = function(e) NULL)
 }
@@ -1367,7 +1381,8 @@ pub_draw_sensitivity_lmm <- function(snap, exp, out_dir, fig_cfg = NULL, by = "p
   frm <- pub_read_lmm_frame_json(f[2])
   if (is.null(lmm) || is.null(frm)) stop(sprintf("[FATAL] sensitivity forest: unreadable report / JSON in %s", snap))
   markers <- as.character(unlist(meta$gate_markers))
-  p <- pub_fig_lmm_forest(lmm$boot, lmm$obs, markers = markers, ref_label = meta$reference_group)
+  p <- pub_fig_lmm_forest(lmm$boot, lmm$obs, markers = markers, ref_label = meta$reference_group,
+                          show_fdr = TRUE)
   if (is.null(p)) stop(sprintf("[FATAL] sensitivity forest: forest came back NULL (%s)", snap))
   dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
   save_pub_figure(p, file.path(out_dir, "FigureSens_LMMForest"), PUB_W1, 95, config = fig_cfg)

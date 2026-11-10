@@ -156,7 +156,7 @@ pub_fig_bor_km_panel <- function(res, y_lab) {
     curve$group <- factor(curve$group, levels = lv)
     cens <- km[km$n_censor > 0, ]; cens$group <- factor(cens$group, levels = lv)
     p3 <- res$tests$p[1]
-    lab <- if (p3 < 0.001) "Log-rank p < 0.001" else sprintf("Log-rank p = %.3f", p3)
+    lab <- pub_lab_p(p3, "Log-rank P")
     x_max <- max(res$risk$time)
     ggplot(curve, aes(time, surv, colour = group)) +
       geom_step(linewidth = 0.7) +

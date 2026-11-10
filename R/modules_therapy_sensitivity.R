@@ -208,8 +208,9 @@ run_therapy_sensitivity <- function(df_long, gate, regimen, B = 10000, seed = 56
 
 #' @title Figure: baseline-adjusted T0->T1 change by response within regimen
 #' @description Points = adjusted cell means with 95% CI (therapy_adjusted_change);
-#'   faint dots = per-patient baseline-adjusted changes. Facet per gate marker. No n or
-#'   p is printed on the panels: both go in the caption.
+#'   faint dots = per-patient baseline-adjusted changes. Facet per gate marker. The
+#'   adjusted figure prints the T0-adjusted response x regimen P on each panel (PI,
+#'   2026-11-09); no n and no per-regimen P (n go in the caption).
 #'   Requires modules_pub_style.R (theme_publication, pub_palette, pub_relabel_*).
 #' @param res output of run_therapy_sensitivity()
 #' @param adjusted FALSE draws raw (unadjusted) mean changes instead (supplementary)
@@ -241,7 +242,13 @@ pub_fig_therapy_change <- function(res, adjusted = TRUE) {
   }
   cols <- c("PR" = pub_palette[["combined"]], "SD/PD" = pub_palette[["unpen"]])
   dg <- position_dodge(width = 0.7)
-  ggplot(cells, aes(Rx, fit, colour = Group)) +
+  # Adjusted figure: the T0-adjusted response x regimen F test (the one test of the drawn
+  # model, quoted in the legend) printed at the top of each panel.
+  p_lab <- if (adjusted) data.frame(
+    marker = factor(lab_m[ms], levels = lab_m),
+    label  = sapply(ms, function(m) pub_lab_p(res$markers[[m]]$heterogeneity_delta_T0$`Pr(>F)`[2],
+                                              "Response×regimen P"))) else NULL
+  p <- ggplot(cells, aes(Rx, fit, colour = Group)) +
     geom_hline(yintercept = 0, linetype = "dashed", colour = "grey55") +
     geom_point(data = pts, aes(Rx, adj_delta, colour = Group), inherit.aes = FALSE, alpha = 0.3, size = 0.9,
                position = position_jitterdodge(jitter.width = 0.12, dodge.width = 0.7, seed = 1)) +
@@ -250,8 +257,12 @@ pub_fig_therapy_change <- function(res, adjusted = TRUE) {
     facet_wrap(~ marker, nrow = 1) +
     scale_colour_manual(values = cols) +
     scale_x_discrete(labels = c("Chemo-immunotherapy" = "Chemo-\nimmunotherapy", "ICI monotherapy" = "ICI\nmonotherapy")) +
-    scale_y_continuous(expand = expansion(mult = 0.05)) +
+    scale_y_continuous(expand = expansion(mult = c(0.05, if (adjusted) 0.14 else 0.05))) +
     labs(x = NULL, y = if (adjusted) "T0→T1 change, baseline-adjusted\n(logit)"
                        else "T0→T1 change, unadjusted\n(logit)") +
     theme_publication(9) + theme(panel.grid.major.x = element_blank())
+  if (adjusted)
+    p <- p + geom_text(data = p_lab, aes(x = 1.5, y = Inf, label = label), inherit.aes = FALSE,
+                       vjust = 1.4, size = 2.6, colour = "grey20")
+  p
 }

@@ -113,7 +113,7 @@ pub_fig_km_median <- function(res, y_lab = "Overall survival", x_max = max(res$r
   cens  <- km[km$n_censor > 0, ]
   for (v in c("curve", "cens")) { z <- get(v); z$arm <- factor(z$arm, levels = unname(arms)); assign(v, z) }
   p_lr <- res$tests$p[res$tests$analysis == "primary"]
-  lab  <- if (p_lr < 0.001) "Log-rank p < 0.001" else sprintf("Log-rank p = %.3f", p_lr)
+  lab  <- pub_lab_p(p_lr, "Log-rank P")
   ggplot(curve, aes(time, surv, colour = arm)) +
     geom_step(linewidth = 0.7) +
     # show.legend = TRUE: a censor key for every arm, also when one arm has no censoring

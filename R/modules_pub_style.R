@@ -60,6 +60,13 @@ theme_publication <- function(base = 11) {
 pub_tag <- function(p) p + patchwork::plot_annotation(tag_levels = "A") &
   theme(plot.tag = element_text(size = 11, face = "bold"))
 
+#' Panel label for a P / FDR value, as the text writes it: "<name> < 0.001" below 0.001,
+#' else "<name> = x" with 2 significant digits (0.0235 -> 0.023, 0.238 -> 0.24).
+pub_lab_p <- function(p, name = "P") {
+  ifelse(p < 0.001, sprintf("%s < 0.001", name),
+         sprintf("%s = %s", name, formatC(signif(p, 2), digits = 2, format = "fg", flag = "#")))
+}
+
 #' Save a publication figure at an exact mm size through save_figure() (formats and
 #' dpi from config$figures; default embedded-font cairo PDF only).
 #' Set options(pub_fig.preview_dir = DIR) to also write a PNG preview of every figure
