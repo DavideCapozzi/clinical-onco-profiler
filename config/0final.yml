@@ -301,9 +301,17 @@ post_hoc:
 # --- Figure export (save_figure(), R/utils_figures.R) ---
 # formats: any of pdf (cairo, default), png / tiff (ragg; tiff LZW), svg (cairo).
 # dpi applies to the raster formats. Multipage figures: one pdf, one raster/svg file per page.
+# export: copies of the COLLECTED publication pdfs (collect_publication(), pdftocairo from poppler),
+# written to publication/<role>/<format>/ (e.g. main/png/Fig_1_Biology.png). formats: any of png,
+# tiff (LZW), jpeg, svg, eps (svg / eps vector, dpi ignored); roles: main, supplementary, additional.
+# Re-export a finished run without re-drawing: tools/render_pub_figures.R --collect-only.
 figures:
   formats: [pdf]
   dpi: 300
+  export:
+    formats: [png]
+    dpi: 600
+    roles: [main, supplementary]
 
 # --- Publication set (collect_publication(), R/utils_publication.R) ---
 # Copied from the step dirs into <run>/publication/{main,supplementary,supplementary/tables,

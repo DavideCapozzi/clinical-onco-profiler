@@ -3,6 +3,10 @@
 # PUBLICATION COLLECTOR — copies the paper's figures and tables from the step
 # directories into <run>/publication/{main, supplementary, supplementary/tables,
 # additional}/ and writes publication/INDEX.md (one row per file).
+# Layout: the pdfs sit in the role folder; any other figure format sits in a
+# <role>/<format>/ subfolder: natively rendered formats (figures.formats) are copied
+# there, and figures.export converts the collected pdfs there (R/utils_figures.R,
+# export_pdf(); e.g. main/png/Fig_1_Biology.png at 600 dpi).
 # The mapping lives in config `publication:` (role -> list of entries); each entry:
 #   stem      file stem (the step output is <stem>_<EXP>.<ext> or <stem>.<ext>)
 #   from      directory under <run>/<EXP>/ (e.g. 06_machine_learning/publication)
@@ -73,6 +77,8 @@ collect_publication <- function(run_dir, config, experiments = NULL) {
   bad <- setdiff(names(map), names(PUBLICATION_ROLES))
   if (length(bad)) stop(sprintf("[FATAL] publication: unknown role(s) %s", paste(bad, collapse = ", ")))
   formats <- figure_settings(config)$formats
+  export  <- figure_export_settings(config)
+  check_figure_export(config)
   exps <- if (!is.null(experiments)) experiments else list_run_experiments(run_dir)
   if (!length(exps)) stop(sprintf("[FATAL] publication: no experiment directories under %s", run_dir))
 
@@ -103,16 +109,22 @@ collect_publication <- function(run_dir, config, experiments = NULL) {
           else { missing_req <- c(missing_req, msg); next }
         }
         out <- vapply(found, .pub_dest_name, character(1), e = e, exp = exp, USE.NAMES = FALSE)
-        clash <- file.exists(file.path(dest, out))
-        if (any(clash)) stop(sprintf("[FATAL] publication: two entries map to %s", paste(out[clash], collapse = ", ")))
-        ok <- file.copy(found, file.path(dest, out), copy.date = TRUE)
+        # pdfs (and xlsx / csv) in the role folder; other figure formats in <role>/<format>/
+        sub <- ifelse(type == "figure" & tolower(tools::file_ext(out)) != "pdf",
+                      tolower(tools::file_ext(out)), "")
+        rel <- ifelse(nzchar(sub), file.path(PUBLICATION_ROLES[[role]], sub, out),
+                      file.path(PUBLICATION_ROLES[[role]], out))
+        target <- file.path(base, rel)
+        clash <- file.exists(target)
+        if (any(clash)) stop(sprintf("[FATAL] publication: two entries map to %s", paste(rel[clash], collapse = ", ")))
+        for (d in unique(dirname(target))) dir.create(d, recursive = TRUE, showWarnings = FALSE)
+        ok <- file.copy(found, target, copy.date = TRUE)
         if (!all(ok)) stop(sprintf("[FATAL] publication: copy failed for %s", paste(found[!ok], collapse = ", ")))
         for (i in seq_along(found))
           rows[[length(rows) + 1]] <- data.frame(
             experiment = exp, role = PUBLICATION_ROLES[[role]],
             label = if (!is.null(e$label)) e$label else "—",
-            file = if (length(exps) > 1) file.path(exp, PUBLICATION_ROLES[[role]], out[i])
-                   else file.path(PUBLICATION_ROLES[[role]], out[i]),
+            file = if (length(exps) > 1) file.path(exp, rel[i]) else rel[i],
             source = file.path(exp, e$from, basename(found[i])),
             producer = if (!is.null(e$producer)) e$producer else "—",
             frame = .pub_fill_frame(e$frame, ns), stringsAsFactors = FALSE)
@@ -123,7 +135,25 @@ collect_publication <- function(run_dir, config, experiments = NULL) {
     stop(sprintf("[FATAL] publication: mapped main/supplementary file(s) missing: %s",
                  paste(missing_req, collapse = "; ")))
 
+  # Export: convert the collected pdfs of the export roles into <role>/<format>/.
+  if (!is.null(export) && length(rows)) {
+    pdf_rows <- Filter(function(r) r$role %in% PUBLICATION_ROLES[export$roles] &&
+                                   grepl("\\.pdf$", r$file, ignore.case = TRUE), rows)
+    for (r in pdf_rows) {
+      pdf <- file.path(pub_root, r$file)
+      for (fmt in export$formats) {
+        made <- export_pdf(pdf, file.path(dirname(pdf), fmt), fmt, export$dpi)
+        res  <- if (fmt %in% c("svg", "eps")) "vector" else sprintf("%g dpi", export$dpi)
+        for (f in made)
+          rows[[length(rows) + 1]] <- transform(r,
+            file = file.path(dirname(r$file), fmt, basename(f)),
+            source = sprintf("publication/%s", r$file),
+            producer = sprintf("export_pdf(): pdftocairo %s, %s", fmt, res))
+      }
+    }
+  }
   idx <- do.call(rbind, rows)
+  idx <- idx[order(match(idx$experiment, exps), match(idx$role, PUBLICATION_ROLES)), ]   # stable: exports after their pdfs
   esc <- function(x) gsub("|", "\\|", x, fixed = TRUE)
   lines <- c(
     sprintf("# Publication set — %s", basename(normalizePath(run_dir))),
@@ -131,7 +161,10 @@ collect_publication <- function(run_dir, config, experiments = NULL) {
     sprintf("Collected %s by `collect_publication()` (R/utils_publication.R) from the step directories (copies;",
             format(Sys.time(), "%Y-%m-%d %H:%M")),
     "the step outputs stay in place). Paper labels are provisional: numbering may still change.",
-    sprintf("Figure formats: %s. Frames are named with the n of this run.", paste(formats, collapse = ", ")),
+    sprintf("Figure formats: %s%s. Frames are named with the n of this run.", paste(formats, collapse = ", "),
+            if (is.null(export)) "" else
+              sprintf("; exported copies (pdftocairo) of %s: %s at %g dpi, in <role>/<format>/",
+                      paste(export$roles, collapse = ", "), paste(export$formats, collapse = ", "), export$dpi)),
     "",
     "| role | paper label | file | source (step output) | producing function | n / frame |",
     "|---|---|---|---|---|---|",

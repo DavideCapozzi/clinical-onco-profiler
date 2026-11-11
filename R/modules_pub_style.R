@@ -69,19 +69,12 @@ pub_lab_p <- function(p, name = "P") {
 
 #' Save a publication figure at an exact mm size through save_figure() (formats and
 #' dpi from config$figures; default embedded-font cairo PDF only).
-#' Set options(pub_fig.preview_dir = DIR) to also write a PNG preview of every figure
-#' (visual checks without a PDF viewer).
 #' @param path Output path; a format extension (e.g. ".pdf") is stripped to the stem.
 #' @param config Pass config or its \code{figures} block (NULL = defaults).
 #' @return Invisibly, the primary output file, or NULL when \code{plot} is NULL.
 save_pub_figure <- function(plot, path, width_mm, height_mm, config = NULL) {
   if (is.null(plot)) return(invisible(NULL))
   files <- save_figure(plot, path, width_mm, height_mm, units = "mm", config = config)
-  prev <- getOption("pub_fig.preview_dir")
-  if (!is.null(prev) && requireNamespace("ragg", quietly = TRUE)) {
-    save_figure(plot, file.path(prev, basename(path)), width_mm, height_mm, units = "mm",
-                config = list(formats = "png", dpi = 200))
-  }
   message(sprintf("   [PubFig] %s  (%.0f x %.0f mm)", basename(files[1]), width_mm, height_mm))
   invisible(files[1])
 }

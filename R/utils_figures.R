@@ -84,3 +84,91 @@ save_figure <- function(plot_or_drawfn, path_stem, width, height, units = "mm",
   }
   invisible(written)
 }
+
+# ==============================================================================
+# PUBLICATION EXPORT — raster / vector copies of the collected publication pdfs
+# config figures.export: {formats: [png], dpi: 600, roles: [main, supplementary]}.
+# collect_publication() converts every pdf of those roles into <role>/<format>/ with
+# poppler's pdftocairo (env/environment.yml), so each copy is the vetted pdf itself
+# (same layout and embedded fonts), not a second rendering. White background; tiff is
+# LZW-compressed; a multipage pdf gives one file per page (<stem>_p01.<ext>, ...).
+# ==============================================================================
+
+EXPORT_FORMATS <- c(png = "png", tiff = "tif", jpeg = "jpg", svg = "svg", eps = "eps")
+EXPORT_ROLES   <- c("main", "supplementary", "additional")
+
+#' @title Resolve the Publication Export Settings
+#' @param config Base config (uses \code{config$figures$export}).
+#' @return NULL when no export is configured, else list(formats, dpi, roles).
+figure_export_settings <- function(config) {
+  ex <- config$figures$export
+  if (is.null(ex) || !length(ex$formats)) return(NULL)
+  formats <- unique(tolower(as.character(unlist(ex$formats))))
+  bad <- setdiff(formats, names(EXPORT_FORMATS))
+  if (length(bad))
+    stop(sprintf("[FATAL] figures.export.formats: unsupported %s (allowed: %s)",
+                 paste(bad, collapse = ", "), paste(names(EXPORT_FORMATS), collapse = ", ")))
+  native <- intersect(formats, figure_settings(config)$formats)
+  if (length(native))
+    stop(sprintf("[FATAL] figures.export.formats: %s already rendered natively (figures.formats)",
+                 paste(native, collapse = ", ")))
+  dpi <- if (!is.null(ex$dpi)) as.numeric(ex$dpi) else 600
+  if (length(dpi) != 1 || is.na(dpi) || dpi <= 0) stop("[FATAL] figures.export.dpi must be a positive number")
+  roles <- if (!is.null(ex$roles)) as.character(unlist(ex$roles)) else c("main", "supplementary")
+  bad <- setdiff(roles, EXPORT_ROLES)
+  if (length(bad))
+    stop(sprintf("[FATAL] figures.export.roles: unknown %s (allowed: %s)",
+                 paste(bad, collapse = ", "), paste(EXPORT_ROLES, collapse = ", ")))
+  list(formats = formats, dpi = dpi, roles = roles)
+}
+
+#' @title Pre-flight: the export converter is available when an export is configured
+#' @return Invisibly TRUE; stops (FATAL) when pdftocairo / pdfinfo are missing.
+check_figure_export <- function(config) {
+  if (is.null(figure_export_settings(config))) return(invisible(TRUE))
+  miss <- c("pdftocairo", "pdfinfo")[!nzchar(Sys.which(c("pdftocairo", "pdfinfo")))]
+  if (length(miss))
+    stop(sprintf("[FATAL] figures.export needs poppler (%s not found): micromamba install -c conda-forge poppler",
+                 paste(miss, collapse = ", ")))
+  invisible(TRUE)
+}
+
+#' @title Number of pages of a pdf (poppler pdfinfo)
+pdf_page_count <- function(pdf) {
+  out <- suppressWarnings(system2("pdfinfo", shQuote(pdf), stdout = TRUE, stderr = TRUE))
+  n <- suppressWarnings(as.integer(sub("^Pages:\\s+", "", grep("^Pages:", out, value = TRUE))))
+  if (!length(n) || is.na(n)) stop(sprintf("[FATAL] pdfinfo could not read %s", pdf))
+  n
+}
+
+#' @title Convert one pdf into one export format
+#' @param pdf Source pdf.
+#' @param out_dir Output directory (created).
+#' @param format One of \code{names(EXPORT_FORMATS)}.
+#' @param dpi Resolution of the raster formats (svg / eps are vector: dpi ignored).
+#' @return Character vector of the files written (one per page).
+export_pdf <- function(pdf, out_dir, format, dpi = 600) {
+  format <- match.arg(format, names(EXPORT_FORMATS))
+  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+  stem   <- file.path(out_dir, sub("\\.pdf$", "", basename(pdf), ignore.case = TRUE))
+  n      <- pdf_page_count(pdf)
+  raster <- format %in% c("png", "tiff", "jpeg")
+  opts   <- switch(format,
+    png  = c("-png", "-r", dpi),
+    tiff = c("-tiff", "-tiffcompression", "lzw", "-r", dpi),
+    jpeg = c("-jpeg", "-jpegopt", "quality=95", "-r", dpi),
+    svg  = "-svg",
+    eps  = "-eps")
+  files <- character(0)
+  for (p in seq_len(n)) {
+    out <- if (n > 1) sprintf("%s_p%02d", stem, p) else stem
+    target <- if (raster) out else paste0(out, ".", EXPORT_FORMATS[[format]])
+    args <- c(opts, "-f", p, "-l", p, if (raster) "-singlefile", shQuote(pdf), shQuote(target))
+    msg <- suppressWarnings(system2("pdftocairo", args, stdout = TRUE, stderr = TRUE))
+    file <- paste0(out, ".", EXPORT_FORMATS[[format]])
+    if (!is.null(attr(msg, "status")) || !file.exists(file))
+      stop(sprintf("[FATAL] pdftocairo failed on %s (%s): %s", basename(pdf), format, paste(msg, collapse = " ")))
+    files <- c(files, file)
+  }
+  files
+}

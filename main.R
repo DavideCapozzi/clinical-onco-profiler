@@ -58,6 +58,7 @@ message("\n>>> LOADING MODULES <<<")
 list.files(here("R"), pattern = "\\.R$", full.names = TRUE) %>% purrr::walk(source)
 message("[System] Modules loaded successfully.")
 validate_config(base_config)
+check_figure_export(base_config)   # figures.export needs poppler: fail now, not after the run
 
 # NLR switch: whether the clinical model includes NLR (config `include_nlr`; the
 # INCLUDE_NLR environment variable overrides it). A timestamped run dir (no RUN_NAME)

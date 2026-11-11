@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Publication figures in other formats: `figures.export` (`formats`, `dpi`, `roles`) converts the collected pdfs of
+  `publication/main` and `publication/supplementary` with poppler's `pdftocairo` into `<role>/<format>/` (png, tiff,
+  jpeg, svg or eps; `config/0final.yml`: png at 600 dpi). The pdfs are unchanged; each copy is listed in `INDEX.md`.
+  Any non-pdf format rendered natively (`figures.formats`) is also collected into `<role>/<format>/`.
+- `tools/render_pub_figures.R --collect-only` rebuilds `publication/` of a finished run without re-drawing; the
+  `--preview` option is removed (superseded by the export).
+- `main.R` and the collector stop early when an export is configured and poppler is missing.
+- Environment: `poppler=26.02.0` added (installed with the other packages frozen; no other package changed).
+- Test: `tests/test_figure_export.R`; `tests/integration_smoke.R` checks the exported copies.
+
 ## 1.0.0 (2026-11-06)
 
 First public release: the code behind the results of the accompanying article (final run `config/0final.yml`,

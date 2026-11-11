@@ -6,7 +6,8 @@
 # the run's own by construction. Use it after a figure-code (presentation) change.
 #
 # Usage:
-#   Rscript tools/render_pub_figures.R --run <run> [--exp A,B] [--config FILE] [--out DIR] [--preview DIR]
+#   Rscript tools/render_pub_figures.R --run <run> [--exp A,B] [--config FILE] [--out DIR]
+#   Rscript tools/render_pub_figures.R --run <run> --config FILE --collect-only
 #
 #   --run      run root (REQUIRED); absolute or under results/
 #   --exp      comma-separated experiments (default: all in the run)
@@ -15,10 +16,12 @@
 #   --out      render into DIR only (with several experiments, <out>/<exp>) and do NOT touch
 #              the run. Default: re-render into <run>/<exp>/06_machine_learning/publication
 #              and refresh <run>/publication/ through collect_publication().
-#   --preview  also write PNG previews there (ragg)
+#   --collect-only  draw nothing: only rebuild <run>/publication/ from the step outputs,
+#              with the figures.export copies (e.g. main/png/ at 600 dpi). Step outputs untouched.
 #
-# Formats and dpi come from the config's figures block. Exits non-zero if any figure the
-# renderer attempted came back NULL (save_pub_figure() would otherwise no-op silently).
+# Formats and dpi come from the config's figures block (export copies: figures.export). Exits
+# non-zero if any figure the renderer attempted came back NULL (save_pub_figure() would
+# otherwise no-op silently).
 # ==============================================================================
 
 suppressPackageStartupMessages({ library(here); library(jsonlite) })
@@ -35,7 +38,7 @@ parse_args <- function(args) {
     if (startsWith(a, "--")) {
       key <- sub("^--", "", a)
       val <- if (i + 1 <= length(args) && !startsWith(args[[i + 1]], "--")) args[[i + 1]] else ""
-      out[[key]] <- val
+      out[[key]] <- if (nzchar(val)) val else TRUE   # bare flag (e.g. --collect-only)
       i <- i + (if (nzchar(val)) 2 else 1)
     } else i <- i + 1
   }
@@ -52,7 +55,8 @@ opt  <- parse_args(commandArgs(trailingOnly = TRUE))
 if (is.null(opt$run) || !nzchar(opt$run)) stop("[render_pub_figures] --run <run> is required (there is no latest-run default).")
 run  <- resolve_run_arg(opt$run)
 exps <- if (!is.null(opt$exp)) trimws(strsplit(opt$exp, ",")[[1]]) else list_run_experiments(run)
-if (!is.null(opt$preview)) options(pub_fig.preview_dir = opt$preview)
+collect_only <- isTRUE(opt[["collect-only"]])
+if (collect_only && !is.null(opt$out)) stop("[render_pub_figures] --collect-only rebuilds <run>/publication/: do not pass --out")
 
 # The run's config: formats/dpi for the figures and the publication mapping for the collector.
 cfg_path <- opt$config
@@ -67,6 +71,13 @@ if (is.null(cfg_path) || !nzchar(cfg_path)) {
     stop(sprintf("[render_pub_figures] %s changed since the run (md5 differs from the manifest): pass --config", cfg_path))
 }
 run_cfg <- yaml::read_yaml(cfg_path)
+check_figure_export(run_cfg)
+
+if (collect_only) {
+  collect_publication(run, run_cfg)
+  cat(sprintf("[OK] %s rebuilt through collect_publication() (nothing re-drawn).\n", file.path(run, "publication")))
+  quit(status = 0)
+}
 
 failed <- character(0)
 for (exp in exps) {

@@ -214,6 +214,7 @@ for (node in c("selection_aware_lrt", "patient_bootstrap", "lrt_leave_one_out"))
 # Publication set: every mapped main / supplementary / table entry was collected,
 # named by its paper label (e.g. main/Fig_1_Biology.pdf).
 source(here("R/utils_publication.R"))   # pub_dest_stem()
+source(here("R/utils_figures.R"))       # figure_export_settings()
 pub <- file.path(run_dir, "publication")
 for (role in c("main", "supplementary", "tables")) {
   sub <- c(main = "main", supplementary = "supplementary", tables = "supplementary/tables")[[role]]
@@ -222,6 +223,13 @@ for (role in c("main", "supplementary", "tables")) {
     if (!length(hit)) fail(sprintf("publication/%s: %s (%s) not collected", sub, pub_dest_stem(e), e$stem))
   }
 }
+# figures.export: every collected main / supplementary pdf has its converted copy in <role>/<format>/.
+ex <- figure_export_settings(cfg)
+if (!is.null(ex)) for (role in intersect(ex$roles, c("main", "supplementary"))) for (fmt in ex$formats)
+  for (pdf in list.files(file.path(pub, role), pattern = "\\.pdf$")) {
+    hit <- list.files(file.path(pub, role, fmt), pattern = sprintf("^%s(_p[0-9]+)?\\.", sub("\\.pdf$", "", pdf)))
+    if (!length(hit)) fail(sprintf("publication/%s/%s: no %s copy of %s", role, fmt, fmt, pdf))
+  }
 
 # Manifest: frame Ns and the config md5 are recorded.
 man <- yaml::read_yaml(expected[["manifest"]])

@@ -37,7 +37,8 @@ micromamba activate clinical-onco-profiler
 ```
 
 `env/environment.yml` lists the direct dependencies with their versions (any platform). `logistf` is optional and
-not in the reference environment; without it the Firth LRT is reported as missing.
+not in the reference environment; without it the Firth LRT is reported as missing. `poppler` (`pdftocairo`) converts
+the publication pdfs into the formats of `figures.export` (png at 600 dpi in `config/0final.yml`).
 
 - 15 CPU cores for the selection-aware LRT and the patient bootstrap (`cores:` in the config; the results do not
   depend on the number of cores). Run one analysis at a time.
@@ -114,8 +115,10 @@ A failed pass logs `[FATAL ERROR]`; the other passes still run, then `main.R` ex
 
 ```bash
 Rscript tests/test_build_inputs.R          # step-00 rules on a synthetic curated workbook (~5 s)
+Rscript tests/test_figure_export.R         # publication export (formats, dpi, folder layout) on synthetic pdfs (~5 s)
 Rscript tests/integration_smoke.R          # end-to-end run on a synthetic cohort (~10 min)
 Rscript tools/render_pub_figures.R --run <run dir>         # re-draw the figures of a finished run (~10 s)
+Rscript tools/render_pub_figures.R --run <run dir> --config <config> --collect-only   # rebuild publication/ only
 Rscript tools/compare_runs.R a=<run dir> b=<run dir> [--out file.md]   # headline numbers side by side
 Rscript tools/render_sensitivity_forest.R --run <run dir> --snapshot <dir>   # draw Figure S1 into a finished run
 ```
@@ -130,8 +133,8 @@ results/0final/<RUN_NAME>/
   run_manifest.yml          git commit, config and input checksums, data-file checksums, seeds, package versions,
                             N per frame, failed passes
   publication/              figures and tables of the article, collected by label, with INDEX.md
-    main/                   Figures 1–3
-    supplementary/          Figures S1–S3; tables/ Tables S1–S2
+    main/                   Figures 1–3 (pdf); png/ the same figures at 600 dpi (figures.export)
+    supplementary/          Figures S1–S3 (pdf); png/ at 600 dpi; tables/ Tables S1–S2
     additional/             other figures and csv summaries (not in the article)
   BestResponse_2v3_4/       one directory per experiment
     01_data_processing/     processed data (.rds), cohort ledger, QC report
@@ -156,7 +159,7 @@ config/                0final.yml (final run), nlr_v2_cc50.yml (sensitivity run)
 src/                   step scripts 00–07
 R/                     function modules (sourced by main.R)
 tools/                 command-line tools on finished runs
-tests/                 synthetic tests (step 00 rules; end-to-end run)
+tests/                 synthetic tests (step 00 rules; figure export; end-to-end run)
 env/                   conda environment and lock file
 docs/                  DATA_PROCESSING.md, CHANGELOG.md
 ```
