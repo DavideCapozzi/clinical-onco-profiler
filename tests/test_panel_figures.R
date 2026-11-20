@@ -1,12 +1,16 @@
 #!/usr/bin/env Rscript
-# tests/test_lmm_forest_all.R
+# tests/test_panel_figures.R
 # ==============================================================================
-# Unit test of the whole-panel LMM forest (R/modules_pub_figures.R pub_lmm_t_ci(),
-# pub_read_lmm_report(), pub_fig_lmm_forest_all(); R/modules_pub_style.R marker labels)
-# on SYNTHETIC values: Satterthwaite df recovered from (t, P), CI vs P agreement, the
-# report reader with and without the bootstrap sheet, and the figure itself.
+# Unit test of the whole-panel figures on SYNTHETIC values (R/modules_pub_figures.R;
+# R/modules_pub_style.R marker labels):
+#   S13 LMM forest: Satterthwaite df recovered from (t, P), CI vs P agreement, the report
+#       reader with and without the bootstrap sheet, the figure (pub_lmm_t_ci(),
+#       pub_read_lmm_report(), pub_fig_lmm_forest_all());
+#   S14 cell frequencies: the Step-01 reader (patients, back-transform, the Step-01 rds on
+#       disk), group order / colours shared with Figure 1B, the figure (pub_panel_values(),
+#       pub_read_panel_values(), pub_group_scale(), pub_fig_panel_frequencies()).
 #
-# Run:  Rscript tests/test_lmm_forest_all.R      (from the repository root, ~5 s)
+# Run:  Rscript tests/test_panel_figures.R      (from the repository root, ~5 s)
 # Exit: 0 on pass, 1 on failure.
 # ==============================================================================
 suppressPackageStartupMessages({
@@ -90,9 +94,49 @@ check(identical(pub_relabel_marker(c("KI657EMRA", "CD137tot", "UNKNOWN")), c("Ki
       "relabel: mapped codes + passthrough")
 check(identical(pub_fmt_p(c(0.0419, 0.9, 0.0004)), c("0.042", "0.90", "< 0.001")), "pub_fmt_p")
 
+# --- 5. S14 panel values: Step-01 reader -----------------------------------------------
+set.seed(1)
+ids  <- sprintf("P%02d", 1:8)
+meta <- data.frame(Patient_ID = c(ids, ids[1:6]), Timepoint = c(rep("T0", 8), rep("T1", 6)),
+                   Group = c(rep(c("RP", "SD_PD"), 4), rep(c("RP", "SD_PD"), 3)), stringsAsFactors = FALSE)
+pct  <- matrix(runif(nrow(meta) * 3, 0.5, 60), ncol = 3, dimnames = list(NULL, c("KI67NAIVE", "CD28KI67", "CM")))
+raw  <- cbind(meta, as.data.frame(qlogis(pct / 100)))          # Step-01 layout: metadata columns + logit markers
+DL   <- list(metadata = meta, hybrid_markers = colnames(pct), hybrid_data_raw = raw)
+pv   <- pub_panel_values(DL, ids[1:6])
+check(nrow(pv) == 6 * 2 * 3 && setequal(pv$Patient_ID, ids[1:6]), "panel values: only the requested patients, every marker")
+check(isTRUE(all.equal(pv$Value_pct[pv$Marker == "CM"], pct[meta$Patient_ID %in% ids[1:6], "CM"])),
+      "panel values: logit back to %")
+check(identical(levels(pv$Timepoint), c("T0", "T1")), "panel values: timepoint levels")
+check(is.null(pub_panel_values(DL, "nobody")), "panel values: no patient -> NULL")
+cfg1 <- list(output_root = file.path(work, "run", "Synthetic"), project_name = "Synthetic")
+rds1 <- step_output_path(cfg1, 1, "data_processed_Synthetic_longitudinal", "rds")
+dir.create(dirname(rds1), recursive = TRUE, showWarnings = FALSE); saveRDS(DL, rds1)
+check(identical(pub_read_panel_values(cfg1, ids[1:6]), pv), "panel values: read from the Step-01 rds")
+check(is.null(pub_read_panel_values(list(output_root = file.path(work, "none"), project_name = "X"), ids)),
+      "panel values: no rds -> NULL")
+
+# --- 6. S14 figure + group scale shared with Figure 1B -----------------------------------
+gsc <- pub_group_scale(c("SD/PD", "PR", "PR"), "PR")
+check(identical(gsc$levels, c("PR", "SD/PD")) && identical(unname(gsc$colours), unname(pub_palette[c("combined", "unpen")])),
+      "group scale: responder first, blue")
+check(is.null(pub_group_scale(c("A", "B"), "PR")$levels), "group scale: responder absent keeps the data order")
+pf <- pub_fig_panel_frequencies(pv, r_full$all[r_full$all$Marker %in% colnames(pct), ], resp_label = "RP")
+check(inherits(pf, "ggplot"), "S14 is a ggplot")
+invisible(ggplot2::ggplot_build(pf))
+m_exp <- c("KI67NAIVE", "CD28KI67", "CM")                     # ascending beta in the synthetic table
+lab_exp <- sprintf("%s\n%s", pub_relabel_marker(m_exp), pub_lab_p(d$FDR_Interaction[match(m_exp, d$Marker)], "FDR"))
+check(identical(levels(pf$data$Panel), lab_exp),
+      sprintf("S14 panels in beta order with FDR: %s", paste(levels(pf$data$Panel), collapse = " | ")))
+check(identical(levels(pf$data$x), c("PR\nT0", "PR\nT1", "SD/PD\nT0", "SD/PD\nT1")), "S14 x: responder pair first")
+pn <- pub_fig_panel_frequencies(pv)                               # no LMM table: by code, no FDR
+check(identical(levels(pn$data$Panel), pub_relabel_marker(sort(colnames(pct)))), "S14 without LMM table: by code")
+check(is.null(pub_fig_panel_frequencies(NULL)), "S14: NULL input -> NULL")
+f14 <- save_pub_figure(pf, file.path(work, "FigureS14_test"), PUB_W2, 60)
+check(!is.null(f14) && file.exists(f14) && file.size(f14) > 0, "S14 saved")
+
 unlink(work, recursive = TRUE)
 if (length(fails)) {
   cat(sprintf("[FAIL] %d check(s):\n", length(fails))); cat(sprintf("  - %s\n", fails), sep = "")
   quit(status = 1)
 }
-cat("[OK] whole-panel LMM forest: every check passed.\n")
+cat("[OK] whole-panel figures (S13, S14): every check passed.\n")

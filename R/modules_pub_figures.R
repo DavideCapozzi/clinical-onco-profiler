@@ -22,7 +22,9 @@
 # from raw cell %; descriptive, formal test stays the Step-04 LMM) /
 # S12 predictive-vs-prognostic dissociation /
 # S13 whole-panel LMM forest (pub_fig_lmm_forest_all: every marker's Time×Group β with a
-# model-based 95% CI and its FDR; gate markers highlighted).
+# model-based 95% CI and its FDR; gate markers highlighted) /
+# S14 whole-panel cell frequencies (pub_fig_panel_frequencies: Figure 1B for every marker,
+# same paired patients, in the S13 order).
 # Display names (markers, groups, clinical vars) come from modules_pub_style.R lookups;
 # statistics belong in the figure legends — only the reportable set is printed on a panel.
 # Re-render an existing run without re-running the analysis: tools/render_pub_figures.R.
@@ -168,12 +170,9 @@ pub_fig_biology <- function(gate_decomp, boot_df, obs_df = NULL, resp_label = NU
 
   ppv$Group  <- pub_relabel_group(ppv$Group)
   ppv$Marker <- pub_relabel_marker(ppv$Marker)
-  grps <- unique(as.character(ppv$Group))
-  if (!is.null(resp_disp) && resp_disp %in% grps) {
-    ord <- c(resp_disp, setdiff(grps, resp_disp))
-    ppv$Group <- factor(ppv$Group, levels = ord)
-  } else ord <- sort(grps)
-  grp_cols <- setNames(c(pub_palette[["combined"]], pub_palette[["unpen"]])[seq_along(ord)], ord)
+  gs <- pub_group_scale(ppv$Group, resp_disp)
+  if (!is.null(gs$levels)) ppv$Group <- factor(ppv$Group, levels = gs$levels)
+  grp_cols <- gs$colours
   # log10 y (per-facet free) — flow-cytometry-standard; decompresses the bulk so the
   # boxplots stay readable despite the heavy right-skew (rare high-proliferation
   # non-responders), without hiding any data.
@@ -190,6 +189,66 @@ pub_fig_biology <- function(gate_decomp, boot_df, obs_df = NULL, resp_label = NU
   if (is.null(forest)) return(pub_tag(pA))
   # Forest first (panel A), cell frequencies second (panel B).
   pub_tag((forest | pA) + patchwork::plot_layout(widths = c(1.1, 1.9)))
+}
+
+#' Response-group order and colours of the frequency figures (Figure 1B, S14): responder
+#' first in the primary blue, non-responder in vermillion. Groups are display labels.
+#' @return list: levels (NULL when the responder is not among the groups: keep the data's
+#'   order) and colours (named by group, in display order).
+pub_group_scale <- function(groups, resp_disp = NULL) {
+  grps <- unique(as.character(groups))
+  lev  <- if (!is.null(resp_disp) && resp_disp %in% grps) c(resp_disp, setdiff(grps, resp_disp)) else NULL
+  ord  <- if (!is.null(lev)) lev else sort(grps)
+  list(levels = lev,
+       colours = setNames(c(pub_palette[["combined"]], pub_palette[["unpen"]])[seq_along(ord)], ord))
+}
+
+# ── SUPP S14 — cell frequencies of the whole marker panel (Figure 1B for every marker) ─
+#' Per-patient frequencies at T0 and T1 of every panel marker, in the paired patients of
+#' Figure 1B, with the same encoding: boxes (median, IQR) per response group and timepoint,
+#' within-patient lines, log10 y free per panel. One panel per marker, in the order of the
+#' whole-panel forest (S13: ascending Time×Group β, so the gate markers come first) with the
+#' observed FDR under the name when the LMM table is given. Descriptive: the test is S13.
+#' @param pv data.frame from pub_read_panel_values(): Patient_ID, Marker, Timepoint, Group, Value_pct
+#' @param all_df optional pub_read_lmm_report()$all (panel order + FDR in the strips)
+#' @param resp_label responder group code (e.g. "RP"): first, in blue, as Figure 1B
+#' @param ncol panels per row
+pub_fig_panel_frequencies <- function(pv, all_df = NULL, resp_label = NULL, ncol = 5) {
+  if (is.null(pv) || !nrow(pv)) return(NULL)
+  d <- pv[is.finite(pv$Value_pct), , drop = FALSE]
+  if (!nrow(d)) return(NULL)
+  d$Group <- pub_relabel_group(d$Group)
+  resp_disp <- if (!is.null(resp_label)) pub_relabel_group(resp_label) else NULL
+  gs  <- pub_group_scale(d$Group, resp_disp)
+  ord <- names(gs$colours)
+  d$Group <- factor(d$Group, levels = ord)
+  # x = group × timepoint, responder pair first; each patient sits in one group, so the
+  # within-patient line joins its own T0 and T1 boxes.
+  x_lev <- as.vector(t(outer(ord, c("T0", "T1"), paste, sep = "\n")))
+  d$x   <- factor(paste(d$Group, d$Timepoint, sep = "\n"), levels = x_lev)
+  # Panel order and strip labels: by β with the FDR when the LMM table is there, else by code.
+  m_ord <- if (!is.null(all_df)) all_df$Marker[order(all_df$Estimate_Interaction)] else sort(unique(d$Marker))
+  m_ord <- c(intersect(m_ord, unique(d$Marker)), setdiff(sort(unique(d$Marker)), m_ord))
+  strip <- pub_relabel_marker(m_ord)
+  if (!is.null(all_df)) {
+    fdr <- all_df$FDR_Interaction[match(m_ord, all_df$Marker)]
+    strip <- ifelse(is.finite(fdr), sprintf("%s\n%s", strip, pub_lab_p(fdr, "FDR")), strip)
+  }
+  if (anyDuplicated(strip)) stop("[pub_fig_panel_frequencies] two markers share a display name")
+  d$Panel <- factor(strip[match(d$Marker, m_ord)], levels = strip)
+  ggplot(d, aes(x, Value_pct)) +
+    geom_line(aes(group = Patient_ID), colour = "grey75", linewidth = 0.25, alpha = 0.5) +
+    geom_boxplot(aes(colour = Group), fill = NA, width = 0.55, outlier.shape = NA, linewidth = 0.4) +
+    geom_point(aes(colour = Group), size = 0.4, alpha = 0.45) +
+    facet_wrap(~ Panel, ncol = ncol, scales = "free_y") +
+    # Plain numbers on every panel (the default switches to 1e+01 on some of them); the
+    # 10⁻⁴ % floor is the zero replacement of the preprocessing, shown as it was modelled.
+    scale_y_log10(labels = function(x) format(x, scientific = FALSE, drop0trailing = TRUE, trim = TRUE)) +
+    scale_x_discrete(labels = function(x) sub("^.*\n", "", x)) +
+    scale_colour_manual(values = gs$colours) +
+    labs(x = NULL, y = "Frequency (% of parent population)") +
+    theme_publication(base = 9) +                      # axis / strip text 8 pt: the style floor
+    theme(panel.grid = element_blank())
 }
 
 # ── MAIN Fig 2 — Added value (LRT-led): ROC + decision curve ──────────────────
@@ -1266,7 +1325,7 @@ pub_render_all <- function(objs, out_dir, project_name, fig_cfg = NULL) {
   # SUPP (S1–S13, contiguous) — S1 CONSORT, S2 baseline-inv, S3 specificity, S4 standalone,
   #        S5 coupling, S6 robustness, S7 calibration, S8 gate-signal decomposition,
   #        S9 nomogram, S10 classification, S11 fold-change, S12 dissociation,
-  #        S13 whole-panel LMM forest.
+  #        S13 whole-panel LMM forest, S14 whole-panel cell frequencies.
   #        S9b = S9 with full-range axes (display-only companion; not a new number, so
   #        S10–S12 keep theirs; skipped for runs whose rds predates it).
   if (!is.null(objs$lmm_boot$boot) || !is.null(objs$gate_decomp))
@@ -1278,6 +1337,14 @@ pub_render_all <- function(objs, out_dir, project_name, fig_cfg = NULL) {
                               gate = unique(objs$gate_decomp$per_patient_values$Marker),
                               ref_label = if (!is.null(av)) pub_relabel_group(av$negative_label)),
        "FigureS13_LMMForest_AllMarkers", PUB_W1, 34 + 4.2 * nrow(objs$lmm_boot$all))
+  # S14 Figure 1B for every panel marker (same patients); height grows with the rows of panels.
+  if (!is.null(objs$panel_values)) {
+    s14_ncol <- 5
+    sv(pub_fig_panel_frequencies(objs$panel_values, objs$lmm_boot$all, resp_label = objs$positive_label,
+                                 ncol = s14_ncol),
+       "FigureS14_PanelFrequencies", PUB_W2,
+       22 + 30 * ceiling(length(unique(objs$panel_values$Marker)) / s14_ncol))
+  }
   if (!is.null(av)) {
     sv(pub_fig_added_value(av),                                "Figure2_AddedValue",          PUB_W2, 120)
     if (!is.null(av$roc_cv))                                  # same panel, CV-averaged curves
@@ -1383,6 +1450,33 @@ pub_read_lmm_report <- function(f) {
          all  = keep(c("Marker", "Estimate_Interaction", "Std_Error", "T_Value_Interaction",
                        "P_Value_Interaction", "FDR_Interaction", "N_Observations")))
   }, error = function(e) NULL)
+}
+
+# ── helper: same-run Step-01 panel frequencies (S14) ──────────────────────────
+#' Every panel marker at T0/T1 for the given patients, as Figure 1B shows the gate markers:
+#' the Step-01 longitudinal hybrid_data_raw (logit of the clamped proportion, the LMM input)
+#' back to % with plogis() × 100, the transform of run_gate_signal_decomposition()'s Value_pct.
+#' @param ids Patient IDs (Figure 1B's paired patients: gate_decomp$per_patient_values).
+pub_read_panel_values <- function(config, ids) {
+  f <- tryCatch(step_output_path(config, 1, sprintf("data_processed_%s_longitudinal", config$project_name), "rds"),
+                error = function(e) NULL)
+  if (is.null(f) || !file.exists(f) || !length(ids)) return(NULL)
+  pub_panel_values(readRDS(f), ids)
+}
+#' @param DATA_LONG A Step-01 longitudinal processed object (metadata, hybrid_markers, hybrid_data_raw).
+pub_panel_values <- function(DATA_LONG, ids) {
+  raw  <- as.data.frame(DATA_LONG$hybrid_data_raw)
+  meta <- DATA_LONG$metadata
+  ms   <- intersect(DATA_LONG$hybrid_markers, colnames(raw))
+  keep <- meta$Patient_ID %in% ids
+  if (!any(keep) || !length(ms)) return(NULL)
+  out <- do.call(rbind, lapply(ms, function(m) data.frame(
+    Patient_ID = meta$Patient_ID[keep], Marker = m, Timepoint = meta$Timepoint[keep],
+    Group = meta$Group[keep], Value_pct = stats::plogis(raw[[m]][keep]) * 100,
+    stringsAsFactors = FALSE)))
+  out$Timepoint <- factor(out$Timepoint, levels = c("T0", "T1"))
+  rownames(out) <- NULL
+  out
 }
 
 # ── helper: same-run Step-04 LMM frame (CONSORT's marker-selection box) ───────

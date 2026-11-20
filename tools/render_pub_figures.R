@@ -93,6 +93,9 @@ for (exp in exps) {
   # Runs persisted before the whole LMM panel was plumbed in (Figure S13): read it from the
   # same run's Step-04 report, as the pipeline now does.
   if (is.null(objs$lmm_boot$all)) objs$lmm_boot$all <- pub_read_lmm_bootstrap(cfg)$all
+  # ... and the panel frequencies of Figure S14 from its Step-01 longitudinal rds.
+  if (is.null(objs$panel_values) && !is.null(objs$gate_decomp))
+    objs$panel_values <- pub_read_panel_values(cfg, unique(objs$gate_decomp$per_patient_values$Patient_ID))
 
   out <- if (is.null(opt$out)) file.path(step_dir(cfg, 6), "publication")
          else if (length(exps) > 1) file.path(opt$out, exp) else opt$out

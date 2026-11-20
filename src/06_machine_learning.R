@@ -1033,6 +1033,9 @@ if (lmm_robust$n_robust == 0) {
         stratified_result = stratified_result,
         lmm_boot          = pub_read_lmm_bootstrap(config),
         lmm_frame         = pub_read_lmm_frame(config),   # CONSORT: the 90-patient selection frame
+        # S14: every panel marker in Figure 1B's paired patients (Step-01 longitudinal rds).
+        panel_values      = if (!is.null(gate_decomp))
+                              pub_read_panel_values(config, unique(gate_decomp$per_patient_values$Patient_ID)),
         # Patient flow: the ledger recorded AT each filtering point (Step 01 → this layer),
         # plus terminal annotations. Nothing is reconstructed after the fact any more.
         consort           = if (!is.null(clin_addval)) clin_addval$cohort_ledger else NULL,

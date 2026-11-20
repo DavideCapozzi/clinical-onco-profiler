@@ -116,7 +116,7 @@ A failed pass logs `[FATAL ERROR]`; the other passes still run, then `main.R` ex
 ```bash
 Rscript tests/test_build_inputs.R          # step-00 rules on a synthetic curated workbook (~5 s)
 Rscript tests/test_figure_export.R         # publication export (formats, dpi, folder layout) on synthetic pdfs (~5 s)
-Rscript tests/test_lmm_forest_all.R        # whole-panel LMM forest: CI from t and P, report reader, figure (~5 s)
+Rscript tests/test_panel_figures.R         # whole-panel figures (S13 forest, S14 frequencies) on synthetic data (~5 s)
 Rscript tests/integration_smoke.R          # end-to-end run on a synthetic cohort (~10 min)
 Rscript tools/render_pub_figures.R --run <run dir>         # re-draw the figures of a finished run (~10 s)
 Rscript tools/render_pub_figures.R --run <run dir> --config <config> --collect-only   # rebuild publication/ only

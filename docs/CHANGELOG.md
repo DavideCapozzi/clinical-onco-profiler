@@ -7,7 +7,13 @@
   exactly when P < 0.05) and its FDR; the gate markers highlighted. Collected as `additional` in both configs.
   Drawn from the Step-04 report: `tools/render_pub_figures.R` adds it to an existing run without re-running.
   `pub_read_lmm_report()` now also returns the panel table and reads a report without the bootstrap sheet.
-  `PUB_MARKER_LABELS` covers the whole FACS panel. Test: `tests/test_lmm_forest_all.R`.
+  `PUB_MARKER_LABELS` covers the whole FACS panel.
+- Whole-panel cell frequencies (`FigureS14_PanelFrequencies`, `pub_fig_panel_frequencies()`): Figure 1B for every
+  marker (same paired patients, T0 / T1 boxes per response group, within-patient lines, log scale), one panel per
+  marker in the S13 order with its FDR. Values from the Step-01 longitudinal rds (`pub_read_panel_values()`, the
+  Figure 1B back-transform), persisted by Step 06 and read by `tools/render_pub_figures.R` for existing runs.
+  Figure 1B and S14 share `pub_group_scale()`. Collected as `additional` in both configs.
+  Test: `tests/test_panel_figures.R` (S13 and S14).
 - Publication figures in other formats: `figures.export` (`formats`, `dpi`, `roles`) converts the collected pdfs of
   `publication/main` and `publication/supplementary` with poppler's `pdftocairo` into `<role>/<format>/` (png, tiff,
   jpeg, svg or eps; `config/0final.yml`: png at 600 dpi). The pdfs are unchanged; each copy is listed in `INDEX.md`.
