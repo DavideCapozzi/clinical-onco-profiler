@@ -20,7 +20,9 @@
 # the combined model's leakage-free LOO probs at the pre-specified prevalence threshold; NOT Youden) /
 # S11 raw fold-change of the gate markers (pub_fig_foldchange: clinician-facing, computed directly
 # from raw cell %; descriptive, formal test stays the Step-04 LMM) /
-# S12 predictive-vs-prognostic dissociation.
+# S12 predictive-vs-prognostic dissociation /
+# S13 whole-panel LMM forest (pub_fig_lmm_forest_all: every marker's Time×Group β with a
+# model-based 95% CI and its FDR; gate markers highlighted).
 # Display names (markers, groups, clinical vars) come from modules_pub_style.R lookups;
 # statistics belong in the figure legends — only the reportable set is printed on a panel.
 # Re-render an existing run without re-running the analysis: tools/render_pub_figures.R.
@@ -50,8 +52,7 @@ pub_fig_lmm_forest <- function(boot_df, obs_df = NULL, markers = NULL, ref_label
   n_boot <- if ("N_Valid_Iterations" %in% names(d)) max(d$N_Valid_Iterations, na.rm = TRUE) else NA
   pct_note <- sprintf("%% = share of %sbootstrap resamples\nwith FDR < 0.05 (stability)",
                       if (is.finite(n_boot)) sprintf("%d ", as.integer(n_boot)) else "")
-  x_lab <- sprintf("Time×Group β\n(logit scale%s)",
-                   if (!is.null(ref_label)) sprintf("; ref. %s", ref_label) else "")
+  x_lab <- pub_lmm_beta_lab(ref_label)
   # Single point estimate (observed β) + bootstrap 95% CI — standard forest layout.
   # The bootstrap median overlaps the observed β whenever bias ≈ 0 (the normal case),
   # so it is omitted; bootstrap robustness is conveyed by the % FDR label instead.
@@ -72,6 +73,75 @@ pub_fig_lmm_forest <- function(boot_df, obs_df = NULL, markers = NULL, ref_label
     theme_publication() +
     theme(plot.margin = margin(6, 14, 6, 6),
           plot.caption = element_text(size = 7, colour = "grey40", hjust = 0))
+}
+
+#' x-axis title of the LMM forests (Figure 1A, Figure S1, full panel).
+pub_lmm_beta_lab <- function(ref_label = NULL) {
+  sprintf("Time×Group β\n(logit scale%s)", if (!is.null(ref_label)) sprintf("; ref. %s", ref_label) else "")
+}
+
+#' Model-based CI of the Step-04 interaction: β ± t(df)·SE, with the Satterthwaite df of the
+#' test behind the reported P. The report stores β, SE, t and P but not df; P = 2·pt(−|t|, df)
+#' is strictly monotone in df, so df is recovered exactly from (t, P) and each CI excludes 0
+#' exactly when P < 1 − level (checked). A DF_Interaction column, when present, is used as is;
+#' t ≈ 0 leaves df unidentified (P ≈ 1 for every df) and takes the normal quantile.
+#' @param d data.frame: Estimate_Interaction, Std_Error, T_Value_Interaction, P_Value_Interaction
+#' @return data.frame: DF, CI_Lower, CI_Upper (rows of d)
+pub_lmm_t_ci <- function(d, level = 0.95) {
+  need <- c("Estimate_Interaction", "Std_Error", "T_Value_Interaction", "P_Value_Interaction")
+  miss <- setdiff(need, names(d))
+  if (length(miss)) stop(sprintf("[pub_lmm_t_ci] missing column(s): %s", paste(miss, collapse = ", ")))
+  p  <- d$P_Value_Interaction
+  df <- if ("DF_Interaction" %in% names(d)) d$DF_Interaction else
+    mapply(function(t, pv) {
+      f <- function(v) 2 * pt(-abs(t), v) - pv
+      if (!is.finite(t) || !is.finite(pv) || f(1) * f(1e6) >= 0) return(Inf)
+      uniroot(f, c(1, 1e6), tol = 1e-10)$root
+    }, d$T_Value_Interaction, p)
+  q  <- qt(1 - (1 - level) / 2, df)
+  lo <- d$Estimate_Interaction - q * d$Std_Error
+  hi <- d$Estimate_Interaction + q * d$Std_Error
+  far <- abs(p - (1 - level)) > 1e-6                      # away from the boundary
+  bad <- far & ((lo > 0 | hi < 0) != (p < 1 - level))
+  if (any(bad, na.rm = TRUE))
+    stop(sprintf("[pub_lmm_t_ci] CI disagrees with the reported P for row(s) %s",
+                 paste(which(bad), collapse = ", ")))
+  data.frame(DF = df, CI_Lower = lo, CI_Upper = hi)
+}
+
+# ── SUPP S13 — LMM forest of the whole marker panel ───────────────────────────
+#' Every Step-04 marker's Time×Group β with its model-based 95% CI (pub_lmm_t_ci(): the
+#' Satterthwaite t test that gives the reported P), sorted by β as Figure 1A, observed FDR
+#' (BH q over the panel) at the right. The gate markers are drawn in the primary blue,
+#' the others in grey (same encoding as S5). The cluster-bootstrap CIs of Figure 1A exist
+#' only for the gate markers, so they are not used here: one CI type for every row.
+#' @param all_df data.frame from pub_read_lmm_report()$all
+#' @param gate   gate marker codes (highlighted); NULL = none
+#' @param ref_label display name of the reference group (x-axis title)
+pub_fig_lmm_forest_all <- function(all_df, gate = NULL, ref_label = NULL) {
+  if (is.null(all_df) || !nrow(all_df)) return(NULL)
+  if (anyNA(all_df$FDR_Interaction)) stop("[pub_fig_lmm_forest_all] FDR_Interaction is missing for a marker")
+  d <- cbind(all_df, pub_lmm_t_ci(all_df))
+  sel <- "Selected for the immune score"; oth <- "Other markers"
+  d$grp <- factor(ifelse(d$Marker %in% gate, sel, oth), levels = c(sel, oth))
+  d$Marker <- pub_relabel_marker(d$Marker)
+  if (anyDuplicated(d$Marker)) stop("[pub_fig_lmm_forest_all] two markers share a display name")
+  d$Marker <- factor(d$Marker, levels = d$Marker[order(d$Estimate_Interaction)])
+  grp_cols <- setNames(c(pub_palette[["combined"]], "grey55"), c(sel, oth))
+  ggplot(d, aes(y = Marker, colour = grp)) +
+    geom_vline(xintercept = 0, linetype = "dashed", colour = pub_palette[["ref"]]) +
+    geom_errorbarh(aes(xmin = CI_Lower, xmax = CI_Upper), height = 0.35) +
+    geom_point(aes(x = Estimate_Interaction), shape = 19, size = 1.9) +
+    # Observed FDR as a column outside the panel (x = Inf + clip off), header above the top row.
+    geom_text(aes(x = Inf, label = pub_fmt_p(FDR_Interaction)),
+              hjust = -0.2, size = 2.5, colour = "grey20", show.legend = FALSE) +
+    annotate("text", x = Inf, y = nrow(d) + 1, label = "FDR", hjust = -0.35,
+             size = 2.6, fontface = "bold", colour = "grey20") +
+    scale_colour_manual(values = grp_cols, drop = FALSE) +
+    labs(x = pub_lmm_beta_lab(ref_label), y = NULL) +
+    coord_cartesian(clip = "off") +
+    theme_publication() +
+    theme(plot.margin = margin(14, 34, 6, 6), panel.grid.major.y = element_blank())
 }
 
 # ── MAIN Fig 1 (biology) — gate-marker cell frequencies (T0/T1 × group) + forest ─
@@ -1193,14 +1263,21 @@ pub_render_all <- function(objs, out_dir, project_name, fig_cfg = NULL) {
                                           saved = !is.null(save_pub_figure(plot, pf(name), w, h, config = fig_cfg)))
   av <- objs$clin_addval
   # MAIN (3) — Fig1 biology (cells + forest) / Fig2 added-value / Fig3 PD-L1 context.
-  # SUPP (S1–S12, contiguous) — S1 CONSORT, S2 baseline-inv, S3 specificity, S4 standalone,
+  # SUPP (S1–S13, contiguous) — S1 CONSORT, S2 baseline-inv, S3 specificity, S4 standalone,
   #        S5 coupling, S6 robustness, S7 calibration, S8 gate-signal decomposition,
-  #        S9 nomogram, S10 classification, S11 fold-change, S12 dissociation.
+  #        S9 nomogram, S10 classification, S11 fold-change, S12 dissociation,
+  #        S13 whole-panel LMM forest.
   #        S9b = S9 with full-range axes (display-only companion; not a new number, so
   #        S10–S12 keep theirs; skipped for runs whose rds predates it).
-  if (!is.null(objs$lmm_boot) || !is.null(objs$gate_decomp))
+  if (!is.null(objs$lmm_boot$boot) || !is.null(objs$gate_decomp))
     sv(pub_fig_biology(objs$gate_decomp, objs$lmm_boot$boot, objs$lmm_boot$obs,
                        resp_label = objs$positive_label),      "Figure1_Biology",             PUB_W2, 120)
+  # S13 whole-panel LMM forest (the markers not selected included); height grows with the panel.
+  if (!is.null(objs$lmm_boot$all))
+    sv(pub_fig_lmm_forest_all(objs$lmm_boot$all,
+                              gate = unique(objs$gate_decomp$per_patient_values$Marker),
+                              ref_label = if (!is.null(av)) pub_relabel_group(av$negative_label)),
+       "FigureS13_LMMForest_AllMarkers", PUB_W1, 34 + 4.2 * nrow(objs$lmm_boot$all))
   if (!is.null(av)) {
     sv(pub_fig_added_value(av),                                "Figure2_AddedValue",          PUB_W2, 120)
     if (!is.null(av$roc_cv))                                  # same panel, CV-averaged curves
@@ -1289,17 +1366,22 @@ pub_read_lmm_bootstrap <- function(config) {
   if (is.null(f)) NULL else pub_read_lmm_report(f)
 }
 #' @param f A Step-04 LMM report xlsx (a run's own, or a frozen snapshot copy).
+#' @return list: boot (bootstrap CIs, gate markers; NULL when the bootstrap was off), obs
+#'   (observed β + FDR) and all (every panel marker's interaction test, for the full-panel
+#'   forest); NULL when the report has neither sheet.
 pub_read_lmm_report <- function(f) {
   tryCatch({
     if (!file.exists(f)) return(NULL)
     sheets <- readxl::excel_sheets(f)
-    if (!"LMM_Bootstrap_CI" %in% sheets) return(NULL)
-    boot <- as.data.frame(readxl::read_excel(f, sheet = "LMM_Bootstrap_CI"))
-    obs  <- if ("LMM_Interaction_Results" %in% sheets) {
-      o <- as.data.frame(readxl::read_excel(f, sheet = "LMM_Interaction_Results"))
-      o[, intersect(c("Marker", "Estimate_Interaction", "FDR_Interaction"), names(o))]
-    } else NULL
-    list(boot = boot, obs = obs)
+    rd   <- function(s) if (s %in% sheets) as.data.frame(readxl::read_excel(f, sheet = s)) else NULL
+    boot <- rd("LMM_Bootstrap_CI")
+    o    <- rd("LMM_Interaction_Results")
+    if (is.null(boot) && is.null(o)) return(NULL)
+    keep <- function(cols) if (is.null(o)) NULL else o[, intersect(cols, names(o))]
+    list(boot = boot,
+         obs  = keep(c("Marker", "Estimate_Interaction", "FDR_Interaction")),
+         all  = keep(c("Marker", "Estimate_Interaction", "Std_Error", "T_Value_Interaction",
+                       "P_Value_Interaction", "FDR_Interaction", "N_Observations")))
   }, error = function(e) NULL)
 }
 
@@ -1379,7 +1461,8 @@ pub_draw_sensitivity_lmm <- function(snap, exp, out_dir, fig_cfg = NULL, by = "p
   f   <- file.path(snap, SENS_LMM_FILES(exp))
   lmm <- pub_read_lmm_report(f[1])
   frm <- pub_read_lmm_frame_json(f[2])
-  if (is.null(lmm) || is.null(frm)) stop(sprintf("[FATAL] sensitivity forest: unreadable report / JSON in %s", snap))
+  if (is.null(lmm$boot) || is.null(frm))
+    stop(sprintf("[FATAL] sensitivity forest: unreadable report (bootstrap CIs) / JSON in %s", snap))
   markers <- as.character(unlist(meta$gate_markers))
   p <- pub_fig_lmm_forest(lmm$boot, lmm$obs, markers = markers, ref_label = meta$reference_group,
                           show_fdr = TRUE)

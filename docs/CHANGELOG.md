@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Whole-panel LMM forest (`FigureS13_LMMForest_AllMarkers`, `pub_fig_lmm_forest_all()`): every marker's Time×Group
+  β with a model-based 95% CI (Satterthwaite t, recovered exactly from the stored t and P, so each CI excludes 0
+  exactly when P < 0.05) and its FDR; the gate markers highlighted. Collected as `additional` in both configs.
+  Drawn from the Step-04 report: `tools/render_pub_figures.R` adds it to an existing run without re-running.
+  `pub_read_lmm_report()` now also returns the panel table and reads a report without the bootstrap sheet.
+  `PUB_MARKER_LABELS` covers the whole FACS panel. Test: `tests/test_lmm_forest_all.R`.
 - Publication figures in other formats: `figures.export` (`formats`, `dpi`, `roles`) converts the collected pdfs of
   `publication/main` and `publication/supplementary` with poppler's `pdftocairo` into `<role>/<format>/` (png, tiff,
   jpeg, svg or eps; `config/0final.yml`: png at 600 dpi). The pdfs are unchanged; each copy is listed in `INDEX.md`.

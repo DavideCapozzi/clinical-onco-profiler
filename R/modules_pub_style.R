@@ -60,11 +60,14 @@ theme_publication <- function(base = 11) {
 pub_tag <- function(p) p + patchwork::plot_annotation(tag_levels = "A") &
   theme(plot.tag = element_text(size = 11, face = "bold"))
 
-#' Panel label for a P / FDR value, as the text writes it: "<name> < 0.001" below 0.001,
-#' else "<name> = x" with 2 significant digits (0.0235 -> 0.023, 0.238 -> 0.24).
+#' A P / FDR value as the text writes it: "< 0.001" below 0.001, else 2 significant
+#' digits (0.0235 -> 0.023, 0.238 -> 0.24, 0.9 -> 0.90).
+pub_fmt_p <- function(p) {
+  ifelse(p < 0.001, "< 0.001", formatC(signif(p, 2), digits = 2, format = "fg", flag = "#"))
+}
+#' Panel label for a P / FDR value: "<name> < 0.001" or "<name> = x" (pub_fmt_p()).
 pub_lab_p <- function(p, name = "P") {
-  ifelse(p < 0.001, sprintf("%s < 0.001", name),
-         sprintf("%s = %s", name, formatC(signif(p, 2), digits = 2, format = "fg", flag = "#")))
+  ifelse(p < 0.001, sprintf("%s < 0.001", name), sprintf("%s = %s", name, pub_fmt_p(p)))
 }
 
 #' Save a publication figure at an exact mm size through save_figure() (formats and
@@ -98,7 +101,22 @@ pub_relabel_group <- function(x) {
 # Display-only marker names, matching the manuscript text (config/data codes unchanged).
 # Same named-lookup-with-passthrough contract as pub_relabel_group(): unmapped markers
 # keep their code. Clinical variables only need the underscore code artefact removed.
-PUB_MARKER_LABELS <- c("KI67NAIVE" = "Ki67⁺NAÏVE", "CD28KI67" = "CD28⁺Ki67⁺")
+# The whole FACS panel is mapped (full-panel forest): each antigen of the code gets ⁺, the
+# memory-subset codes (NAÏVE, CM, EFF, EM, EMRA) stay as written, "tot" = the whole
+# population. KI657EMRA is the database's spelling of the Ki67⁺EMRA column.
+PUB_MARKER_LABELS <- c(
+  "KI67NAIVE" = "Ki67⁺NAÏVE", "CD28KI67" = "CD28⁺Ki67⁺",
+  "CD3tot" = "CD3⁺", "CD4tot" = "CD4⁺", "CD8tot" = "CD8⁺",
+  "NAIVE" = "NAÏVE", "CM" = "CM", "EFF" = "EFF", "EM" = "EM", "EMRA" = "EMRA",
+  "CD28" = "CD28⁺", "CD28CD4" = "CD28⁺CD4⁺", "CD28CD8" = "CD28⁺CD8⁺", "CD28NAIVE" = "CD28⁺NAÏVE",
+  "CD28CM" = "CD28⁺CM", "CD28EFF" = "CD28⁺EFF", "CD28EMRA" = "CD28⁺EMRA",
+  "CD137tot" = "CD137⁺", "CD137CD4" = "CD137⁺CD4⁺", "CD137CD8" = "CD137⁺CD8⁺",
+  "CD137KI67" = "CD137⁺Ki67⁺", "CD137PD1" = "CD137⁺PD1⁺", "CD137NAIVE" = "CD137⁺NAÏVE",
+  "CD137CM" = "CD137⁺CM", "CD137EFF" = "CD137⁺EFF", "CD137EMRA" = "CD137⁺EMRA",
+  "KI67" = "Ki67⁺", "KI67CD4" = "Ki67⁺CD4⁺", "KI67CD8" = "Ki67⁺CD8⁺",
+  "KI67CM" = "Ki67⁺CM", "KI67EFF" = "Ki67⁺EFF", "KI657EMRA" = "Ki67⁺EMRA",
+  "PD1" = "PD1⁺", "PD1CD4" = "PD1⁺CD4⁺", "PD1CD8" = "PD1⁺CD8⁺", "PD1KI67" = "PD1⁺Ki67⁺",
+  "PD1NAIVE" = "PD1⁺NAÏVE", "PD1CM" = "PD1⁺CM", "PD1EFF" = "PD1⁺EFF", "PD1EMRA" = "PD1⁺EMRA")
 pub_relabel_marker <- function(x) {
   x  <- as.character(x)
   hit <- x %in% names(PUB_MARKER_LABELS)
