@@ -7,8 +7,11 @@
 #       reader with and without the bootstrap sheet, the figure (pub_lmm_t_ci(),
 #       pub_read_lmm_report(), pub_fig_lmm_forest_all());
 #   S14 cell frequencies: the Step-01 reader (patients, back-transform, the Step-01 rds on
-#       disk), group order / colours shared with Figure 1B, the figure (pub_panel_values(),
-#       pub_read_panel_values(), pub_group_scale(), pub_fig_panel_frequencies()).
+#       disk), box statistics equal to stat_boxplot(), the 3 × IQR display window, marker
+#       families / pages, group order / colours shared with Figure 1B, the figure (hidden values
+#       and lines, boxes from all values, page size) (pub_panel_values(), pub_read_panel_values(),
+#       pub_log_box_stats(), pub_log_window(), pub_marker_family(), pub_group_scale(),
+#       pub_fig_panel_frequencies()).
 #
 # Run:  Rscript tests/test_panel_figures.R      (from the repository root, ~5 s)
 # Exit: 0 on pass, 1 on failure.
@@ -115,24 +118,63 @@ check(identical(pub_read_panel_values(cfg1, ids[1:6]), pv), "panel values: read 
 check(is.null(pub_read_panel_values(list(output_root = file.path(work, "none"), project_name = "X"), ids)),
       "panel values: no rds -> NULL")
 
-# --- 6. S14 figure + group scale shared with Figure 1B -----------------------------------
+# --- 6. S14 helpers: box statistics, display window, marker families, group scale ------
+v <- c(10^rnorm(40, 0, 0.4), 1e-4, 300)                         # bulk + a floor zero + a high value
+bs <- pub_log_box_stats(v)
+gb <- ggplot2::layer_data(ggplot2::ggplot(data.frame(x = 1, y = v), ggplot2::aes(x, y)) +
+                          ggplot2::geom_boxplot() + ggplot2::scale_y_log10())
+check(isTRUE(all.equal(unname(log10(bs)), unname(unlist(gb[1, c("ymin", "lower", "middle", "upper", "ymax")])))),
+      "box stats = stat_boxplot under scale_y_log10")
+q  <- quantile(log10(v), c(0.25, 0.75), names = FALSE)
+w3 <- pub_log_window(v)
+check(isTRUE(all.equal(log10(w3), c(q[1] - 3 * diff(q), q[2] + 3 * diff(q)))), "window = quartiles -/+ 3 IQR (log)")
+check(w3[1] > 1e-4 && w3[2] < 300, "window excludes the far-out values")
+check(isTRUE(all.equal(pub_log_window(v, box_ends = c(1e-3, 1e3)), c(1e-3, 1e3))), "window widened to the box ends")
+fam <- pub_marker_family(c("KI67NAIVE", "KI657EMRA", "CD28KI67", "CD137KI67", "PD1KI67", "CD3tot", "CM", "EMRA"))
+check(identical(as.character(fam), c("Ki67", "Ki67", "CD28", "CD137", "PD1", rep("Lineage and memory", 3))) &&
+      identical(levels(fam), c("Ki67", "CD28", "CD137", "PD1", "Lineage and memory")), "marker families and page order")
 gsc <- pub_group_scale(c("SD/PD", "PR", "PR"), "PR")
 check(identical(gsc$levels, c("PR", "SD/PD")) && identical(unname(gsc$colours), unname(pub_palette[c("combined", "unpen")])),
       "group scale: responder first, blue")
 check(is.null(pub_group_scale(c("A", "B"), "PR")$levels), "group scale: responder absent keeps the data order")
-pf <- pub_fig_panel_frequencies(pv, r_full$all[r_full$all$Marker %in% colnames(pct), ], resp_label = "RP")
-check(inherits(pf, "ggplot"), "S14 is a ggplot")
-invisible(ggplot2::ggplot_build(pf))
-m_exp <- c("KI67NAIVE", "CD28KI67", "CM")                     # ascending beta in the synthetic table
-lab_exp <- sprintf("%s\n%s", pub_relabel_marker(m_exp), pub_lab_p(d$FDR_Interaction[match(m_exp, d$Marker)], "FDR"))
-check(identical(levels(pf$data$Panel), lab_exp),
-      sprintf("S14 panels in beta order with FDR: %s", paste(levels(pf$data$Panel), collapse = " | ")))
-check(identical(levels(pf$data$x), c("PR\nT0", "PR\nT1", "SD/PD\nT0", "SD/PD\nT1")), "S14 x: responder pair first")
-pn <- pub_fig_panel_frequencies(pv)                               # no LMM table: by code, no FDR
-check(identical(levels(pn$data$Panel), pub_relabel_marker(sort(colnames(pct)))), "S14 without LMM table: by code")
+
+# --- 7. S14 figure: pages, window, boxes from all values ---------------------------------
+# 40 paired patients (20 per group): a realistic cell size, so the far-out value is beyond
+# the whiskers of its own box as well as beyond the marker's window.
+ids2  <- sprintf("Q%02d", 1:40)
+meta2 <- data.frame(Patient_ID = rep(ids2, 2), Timepoint = rep(c("T0", "T1"), each = 40),
+                    Group = rep(rep(c("RP", "SD_PD"), 20), 2), stringsAsFactors = FALSE)
+pct2  <- sapply(c(KI67NAIVE = 1, CD28KI67 = 5, CM = 25), function(b) b * 10^rnorm(80, 0, 0.2))
+pv2   <- pub_panel_values(list(metadata = meta2, hybrid_markers = colnames(pct2),
+                               hybrid_data_raw = cbind(meta2, as.data.frame(qlogis(pct2 / 100)))), ids2)
+i_out <- which(pv2$Marker == "CM")[1]; pv2$Value_pct[i_out] <- 1e-4                # one far-out value
+lmm3 <- r_full$all[r_full$all$Marker %in% colnames(pct), ]
+pg <- suppressMessages(pub_fig_panel_frequencies(pv2, lmm3, resp_label = "RP", ncol = 1, nrow = 1))
+check(is.list(pg) && length(pg) == 3 && all(vapply(pg, inherits, TRUE, "ggplot")), "S14: one page per family")
+check(identical(vapply(pg, function(p) p$labels$tag, ""), c("A", "B", "C")), "S14: pages tagged A, B, C")
+lab_of <- function(m) sprintf("%s\n%s", pub_relabel_marker(m), pub_lab_p(d$FDR_Interaction[d$Marker == m], "FDR"))
+check(identical(vapply(pg, function(p) levels(p$data$Panel), ""), vapply(c("KI67NAIVE", "CD28KI67", "CM"), lab_of, "", USE.NAMES = FALSE)),
+      "S14: Ki67, CD28, lineage/memory pages with beta-ordered FDR strips")
+check(identical(levels(pg[[1]]$data$x), c("PR\nT0", "PR\nT1", "SD/PD\nT0", "SD/PD\nT1")), "S14 x: responder pair first")
+check(identical(unname(attr(pg, "hidden")), c(1L, nrow(pv2))), sprintf("S14 hidden count: %s", paste(attr(pg, "hidden"), collapse = "/")))
+cm <- pg[[3]]
+check(!any(cm$data$Value_pct <= 1e-4), "S14: the far-out value is not drawn")
+check(!(pv2$Patient_ID[i_out] %in% cm$layers[[1]]$data$Patient_ID[cm$layers[[1]]$data$Timepoint == pv2$Timepoint[i_out]]),
+      "S14: its patient line is not drawn")
+cell <- pv2[pv2$Marker == "CM" & pv2$Group == pv2$Group[i_out] & pv2$Timepoint == pv2$Timepoint[i_out], "Value_pct"]
+bx <- cm$layers[[2]]$data
+bx <- bx[as.character(bx$x) == sprintf("%s\n%s", pub_relabel_group(pv2$Group[i_out]), pv2$Timepoint[i_out]), ]
+check(isTRUE(all.equal(unname(unlist(bx[, c("ymin", "lower", "middle", "upper", "ymax")])), unname(pub_log_box_stats(cell)))),
+      "S14: the box of the hidden value's cell uses all its values")
+pn <- suppressMessages(pub_fig_panel_frequencies(pv, ncol = 1, nrow = 1))   # no LMM table: names, no FDR
+check(identical(vapply(pn, function(p) levels(p$data$Panel), ""), pub_relabel_marker(c("KI67NAIVE", "CD28KI67", "CM"))),
+      "S14 without LMM table: names only")
 check(is.null(pub_fig_panel_frequencies(NULL)), "S14: NULL input -> NULL")
-f14 <- save_pub_figure(pf, file.path(work, "FigureS14_test"), PUB_W2, 60)
-check(!is.null(f14) && file.exists(f14) && file.size(f14) > 0, "S14 saved")
+pd3 <- suppressMessages(pub_fig_panel_frequencies(pv, lmm3, resp_label = "RP"))  # default 3 x 3: short pages padded
+check(all(vapply(pd3, inherits, TRUE, "patchwork")), "S14: short pages keep the 3-row panel height (spacer)")
+f14 <- save_pub_figure(pd3, file.path(work, "FigureS14_test"), PUB_W2, 190)
+np  <- suppressWarnings(system2("pdfinfo", f14, stdout = TRUE))
+check(!is.null(f14) && any(grepl("^Pages:\\s+3$", np)), sprintf("S14 saved as a 3-page pdf: %s", paste(grep("Pages", np, value = TRUE), collapse = "")))
 
 unlink(work, recursive = TRUE)
 if (length(fails)) {

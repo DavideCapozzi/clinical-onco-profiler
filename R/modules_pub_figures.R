@@ -204,18 +204,45 @@ pub_group_scale <- function(groups, resp_disp = NULL) {
 }
 
 # ── SUPP S14 — cell frequencies of the whole marker panel (Figure 1B for every marker) ─
+#' Box statistics of one set of values on the log10 scale, as stat_boxplot() computes them
+#' under scale_y_log10(): quartiles (type 7) and whiskers at the most extreme value within
+#' coef × IQR of the box, returned in the data's units (%), ready for geom_boxplot(stat = "identity").
+pub_log_box_stats <- function(v, coef = 1.5) {
+  l <- log10(v[is.finite(v) & v > 0])
+  q <- stats::quantile(l, c(0.25, 0.5, 0.75), names = FALSE)
+  w <- l[l >= q[1] - coef * diff(q[c(1, 3)]) & l <= q[3] + coef * diff(q[c(1, 3)])]
+  10^c(ymin = min(w), lower = q[1], middle = q[2], upper = q[3], ymax = max(w))
+}
+
+#' Display window of one marker on the log10 scale: Tukey's "far out" fences (quartiles ∓
+#' k × IQR of all the marker's values), widened if needed so that no box or whisker is cut.
+#' @return c(lo, hi) in the data's units (%)
+pub_log_window <- function(v, box_ends = NULL, k = 3) {
+  l <- log10(v[is.finite(v) & v > 0])
+  q <- stats::quantile(l, c(0.25, 0.75), names = FALSE)
+  w <- 10^c(q[1] - k * diff(q), q[2] + k * diff(q))
+  if (length(box_ends)) w <- c(min(w[1], box_ends), max(w[2], box_ends))
+  w
+}
+
 #' Per-patient frequencies at T0 and T1 of every panel marker, in the paired patients of
-#' Figure 1B, with the same encoding: boxes (median, IQR) per response group and timepoint,
-#' within-patient lines, log10 y free per panel. One panel per marker, in the order of the
-#' whole-panel forest (S13: ascending Time×Group β, so the gate markers come first) with the
-#' observed FDR under the name when the LMM table is given. Descriptive: the test is S13.
+#' Figure 1B, with its encoding: boxes (median, IQR, 1.5 × IQR whiskers) per response group
+#' and timepoint, within-patient lines, log10 y free per panel. One page per marker family
+#' (pub_marker_family(): A Ki67⁺, B CD28⁺, C CD137⁺, D PD1⁺, E lineage and memory), panels in
+#' the S13 order (ascending Time×Group β) with the observed FDR under the name when the LMM
+#' table is given. Display window per marker (pub_log_window(), k = 3): the few values beyond
+#' it — mostly the 10⁻⁴ % zero replacement of the preprocessing — are not drawn (nor their
+#' lines), while every box and whisker is computed from all the values, so none moves.
+#' Descriptive: the test is S13.
 #' @param pv data.frame from pub_read_panel_values(): Patient_ID, Marker, Timepoint, Group, Value_pct
 #' @param all_df optional pub_read_lmm_report()$all (panel order + FDR in the strips)
 #' @param resp_label responder group code (e.g. "RP"): first, in blue, as Figure 1B
-#' @param ncol panels per row
-pub_fig_panel_frequencies <- function(pv, all_df = NULL, resp_label = NULL, ncol = 5) {
+#' @param k display-window fence (× IQR on the log scale)
+#' @param ncol,nrow panel grid of every page (same panel size on every page)
+#' @return list of ggplots (one per page, tagged A, B, ...), attribute "hidden" = c(n, total)
+pub_fig_panel_frequencies <- function(pv, all_df = NULL, resp_label = NULL, k = 3, ncol = 3, nrow = 3) {
   if (is.null(pv) || !nrow(pv)) return(NULL)
-  d <- pv[is.finite(pv$Value_pct), , drop = FALSE]
+  d <- pv[is.finite(pv$Value_pct) & pv$Value_pct > 0, , drop = FALSE]
   if (!nrow(d)) return(NULL)
   d$Group <- pub_relabel_group(d$Group)
   resp_disp <- if (!is.null(resp_label)) pub_relabel_group(resp_label) else NULL
@@ -235,20 +262,49 @@ pub_fig_panel_frequencies <- function(pv, all_df = NULL, resp_label = NULL, ncol
     strip <- ifelse(is.finite(fdr), sprintf("%s\n%s", strip, pub_lab_p(fdr, "FDR")), strip)
   }
   if (anyDuplicated(strip)) stop("[pub_fig_panel_frequencies] two markers share a display name")
-  d$Panel <- factor(strip[match(d$Marker, m_ord)], levels = strip)
-  ggplot(d, aes(x, Value_pct)) +
-    geom_line(aes(group = Patient_ID), colour = "grey75", linewidth = 0.25, alpha = 0.5) +
-    geom_boxplot(aes(colour = Group), fill = NA, width = 0.55, outlier.shape = NA, linewidth = 0.4) +
-    geom_point(aes(colour = Group), size = 0.4, alpha = 0.45) +
-    facet_wrap(~ Panel, ncol = ncol, scales = "free_y") +
-    # Plain numbers on every panel (the default switches to 1e+01 on some of them); the
-    # 10⁻⁴ % floor is the zero replacement of the preprocessing, shown as it was modelled.
-    scale_y_log10(labels = function(x) format(x, scientific = FALSE, drop0trailing = TRUE, trim = TRUE)) +
-    scale_x_discrete(labels = function(x) sub("^.*\n", "", x)) +
-    scale_colour_manual(values = gs$colours) +
-    labs(x = NULL, y = "Frequency (% of parent population)") +
-    theme_publication(base = 9) +                      # axis / strip text 8 pt: the style floor
-    theme(panel.grid = element_blank())
+  names(strip) <- m_ord
+  # Boxes from all the values; then the window, and only the points inside it are drawn.
+  cells <- split(d, list(d$Marker, d$x), drop = TRUE)
+  box <- do.call(rbind, lapply(cells, function(s) data.frame(
+    Marker = s$Marker[1], x = s$x[1], Group = s$Group[1], t(pub_log_box_stats(s$Value_pct)))))
+  win <- lapply(setNames(m_ord, m_ord), function(m)
+    pub_log_window(d$Value_pct[d$Marker == m], unlist(box[box$Marker == m, c("ymin", "ymax")]), k))
+  lo <- vapply(win, `[`, 0, 1)[d$Marker]; hi <- vapply(win, `[`, 0, 2)[d$Marker]
+  shown  <- d$Value_pct >= lo & d$Value_pct <= hi
+  hidden <- c(n = sum(!shown), total = nrow(d))
+  message(sprintf("   [PubFig] S14: %d of %d values beyond %g × IQR not drawn (%.1f%%)",
+                  hidden[["n"]], hidden[["total"]], k, 100 * hidden[["n"]] / hidden[["total"]]))
+  d <- d[shown, , drop = FALSE]
+  # A patient's line only where both of its points are drawn.
+  both <- ave(seq_len(nrow(d)), d$Marker, d$Patient_ID, FUN = length) == 2
+  fam  <- pub_marker_family(m_ord)
+  fams <- levels(droplevels(fam))                          # pages in family order, A first
+  pages <- lapply(seq_along(fams), function(i) {
+    ms <- m_ord[fam == fams[i]]
+    pan <- function(z) { z <- z[z$Marker %in% ms, , drop = FALSE]
+                         z$Panel <- factor(strip[z$Marker], levels = strip[ms]); z }
+    pd <- pan(d); pl <- pan(d[both, , drop = FALSE]); pb <- pan(box)
+    p <- ggplot(pd, aes(x, Value_pct)) +
+      geom_line(data = pl, aes(group = Patient_ID), colour = "grey75", linewidth = 0.3, alpha = 0.5) +
+      geom_boxplot(data = pb, aes(x = x, ymin = ymin, lower = lower, middle = middle, upper = upper,
+                                  ymax = ymax, colour = Group), stat = "identity", inherit.aes = FALSE,
+                   fill = NA, width = 0.55, linewidth = 0.5) +
+      geom_point(aes(colour = Group), size = 0.8, alpha = 0.5) +
+      facet_wrap(~ Panel, ncol = ncol, scales = "free_y") +
+      # Plain numbers on every panel (the default switches to 1e+01 on some of them).
+      scale_y_log10(labels = function(x) format(x, scientific = FALSE, drop0trailing = TRUE, trim = TRUE)) +
+      scale_x_discrete(labels = function(x) sub("^.*\n", "", x), drop = FALSE) +
+      scale_colour_manual(values = gs$colours) +
+      labs(x = NULL, y = "Frequency (% of parent population)", tag = LETTERS[i]) +
+      theme_publication(base = 10) +
+      theme(panel.grid = element_blank(), plot.tag = element_text(size = 11, face = "bold"))
+    # Same panel height on every page: a short page keeps its rows at the top, the unused
+    # rows left as blank space (patchwork heights apply to the panel areas).
+    used <- ceiling(length(ms) / ncol)
+    if (used >= nrow) p else p / patchwork::plot_spacer() + patchwork::plot_layout(heights = c(used, nrow - used))
+  })
+  attr(pages, "hidden") <- hidden
+  pages
 }
 
 # ── MAIN Fig 2 — Added value (LRT-led): ROC + decision curve ──────────────────
@@ -1337,14 +1393,11 @@ pub_render_all <- function(objs, out_dir, project_name, fig_cfg = NULL) {
                               gate = unique(objs$gate_decomp$per_patient_values$Marker),
                               ref_label = if (!is.null(av)) pub_relabel_group(av$negative_label)),
        "FigureS13_LMMForest_AllMarkers", PUB_W1, 34 + 4.2 * nrow(objs$lmm_boot$all))
-  # S14 Figure 1B for every panel marker (same patients); height grows with the rows of panels.
-  if (!is.null(objs$panel_values)) {
-    s14_ncol <- 5
-    sv(pub_fig_panel_frequencies(objs$panel_values, objs$lmm_boot$all, resp_label = objs$positive_label,
-                                 ncol = s14_ncol),
-       "FigureS14_PanelFrequencies", PUB_W2,
-       22 + 30 * ceiling(length(unique(objs$panel_values$Marker)) / s14_ncol))
-  }
+  # S14 Figure 1B for every panel marker (same patients): one page per marker family, a 3 × 3
+  # grid of ~55 mm panels on every page (pages with fewer markers leave the last cells empty).
+  if (!is.null(objs$panel_values))
+    sv(pub_fig_panel_frequencies(objs$panel_values, objs$lmm_boot$all, resp_label = objs$positive_label),
+       "FigureS14_PanelFrequencies", PUB_W2, 190)
   if (!is.null(av)) {
     sv(pub_fig_added_value(av),                                "Figure2_AddedValue",          PUB_W2, 120)
     if (!is.null(av$roc_cv))                                  # same panel, CV-averaged curves

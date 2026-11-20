@@ -335,7 +335,7 @@ publication:
     - {stem: FigureS11_FoldChange, from: 06_machine_learning/publication, producer: "pub_fig_foldchange", frame: "paired patients, n = {delta}"}
     - {stem: FigureS12_Dissociation, from: 06_machine_learning/publication, producer: "pub_fig_dissociation", frame: "Δ frame, n = {delta}; descriptive"}
     - {stem: FigureS13_LMMForest_AllMarkers, name: LMMForest_AllMarkers, from: 06_machine_learning/publication, producer: "pub_fig_lmm_forest_all", frame: "LMM frame, {lmm_patients} patients / {lmm_obs} obs; every panel marker, model-based 95% CI"}
-    - {stem: FigureS14_PanelFrequencies, name: PanelFrequencies_AllMarkers, from: 06_machine_learning/publication, producer: "pub_fig_panel_frequencies", frame: "Δ frame, n = {delta}; every panel marker, as Figure 1B"}
+    - {stem: FigureS14_PanelFrequencies, name: PanelFrequencies_AllMarkers, from: 06_machine_learning/publication, producer: "pub_fig_panel_frequencies", frame: "Δ frame, n = {delta}; every panel marker, as Figure 1B; one page per marker family; values beyond 3 × IQR (log) not drawn"}
     - {stem: FigureT_TherapyChange_unadjusted, from: 07_post_hoc/therapy, producer: "pub_fig_therapy_change(adjusted = FALSE)", frame: "paired LMM patients with a known regimen; raw means (not a valid ranking)"}
     - {stem: SelectionAware_LRT, from: 06_machine_learning, type: csv, producer: "run_selection_aware_lrt", frame: "LMM {lmm_patients} patients (selection); Δ n = {delta} (LRT)"}
     - {stem: PatientBootstrap_AUC, from: 06_machine_learning, type: csv, producer: "run_patient_bootstrap_auc", frame: "Δ frame, n = {delta}"}
