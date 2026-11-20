@@ -290,7 +290,8 @@ pub_fig_panel_frequencies <- function(pv, all_df = NULL, resp_label = NULL, k = 
                                   ymax = ymax, colour = Group), stat = "identity", inherit.aes = FALSE,
                    fill = NA, width = 0.55, linewidth = 0.5) +
       geom_point(aes(colour = Group), size = 0.8, alpha = 0.5) +
-      facet_wrap(~ Panel, ncol = ncol, scales = "free_y") +
+      # T0 / T1 labels under every panel, not only the bottom row: each panel has four boxes.
+      facet_wrap(~ Panel, ncol = ncol, scales = "free_y", axes = "all_x") +
       # Plain numbers on every panel (the default switches to 1e+01 on some of them).
       scale_y_log10(labels = function(x) format(x, scientific = FALSE, drop0trailing = TRUE, trim = TRUE)) +
       scale_x_discrete(labels = function(x) sub("^.*\n", "", x), drop = FALSE) +

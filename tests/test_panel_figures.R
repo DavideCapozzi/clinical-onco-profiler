@@ -156,6 +156,8 @@ lab_of <- function(m) sprintf("%s\n%s", pub_relabel_marker(m), pub_lab_p(d$FDR_I
 check(identical(vapply(pg, function(p) levels(p$data$Panel), ""), vapply(c("KI67NAIVE", "CD28KI67", "CM"), lab_of, "", USE.NAMES = FALSE)),
       "S14: Ki67, CD28, lineage/memory pages with beta-ordered FDR strips")
 check(identical(levels(pg[[1]]$data$x), c("PR\nT0", "PR\nT1", "SD/PD\nT0", "SD/PD\nT1")), "S14 x: responder pair first")
+check(all(vapply(pg, function(p) isTRUE(p$facet$params$draw_axes$x), TRUE)),
+      "S14: T0 / T1 labels under every panel (axes = all_x)")
 check(identical(unname(attr(pg, "hidden")), c(1L, nrow(pv2))), sprintf("S14 hidden count: %s", paste(attr(pg, "hidden"), collapse = "/")))
 cm <- pg[[3]]
 check(!any(cm$data$Value_pct <= 1e-4), "S14: the far-out value is not drawn")

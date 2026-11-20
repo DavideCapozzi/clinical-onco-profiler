@@ -11,7 +11,7 @@
 - Whole-panel cell frequencies (`FigureS14_PanelFrequencies`, `pub_fig_panel_frequencies()`): Figure 1B for every
   marker (same paired patients, T0 / T1 boxes per response group, within-patient lines, log scale), one page per
   marker family (A Ki67⁺, B CD28⁺, C CD137⁺, D PD1⁺, E lineage and memory; `pub_marker_family()`), 3 × 3 panels of
-  ~55 mm, in the S13 order with their FDR. Values beyond Tukey's far-out fences (quartiles ∓ 3 × IQR, log scale,
+  ~55 mm with T0 / T1 under every panel, in the S13 order with their FDR. Values beyond Tukey's far-out fences (quartiles ∓ 3 × IQR, log scale,
   per marker) are not drawn, nor their lines (final run: 44 of 3,785, 1.2%, mostly the 10⁻⁴ % zero replacement);
   boxes and whiskers are computed from all values (`pub_log_box_stats()` = `stat_boxplot()`), and the window never
   cuts a box or whisker. Values from the Step-01 longitudinal rds (`pub_read_panel_values()`, the Figure 1B
