@@ -116,7 +116,8 @@ A failed pass logs `[FATAL ERROR]`; the other passes still run, then `main.R` ex
 ```bash
 Rscript tests/test_build_inputs.R          # step-00 rules on a synthetic curated workbook (~5 s)
 Rscript tests/test_figure_export.R         # publication export (formats, dpi, folder layout) on synthetic pdfs (~5 s)
-Rscript tests/test_panel_figures.R         # whole-panel figures (S13 forest, S14 frequencies) on synthetic data (~5 s)
+Rscript tests/test_panel_figures.R         # whole-panel LMM forest (S13) and table (Table S1) on synthetic data (~5 s)
+Rscript tests/test_added_value_pairs.R     # each clinical variable + immune score (Figure S3) on a synthetic frame (~45 s)
 Rscript tests/integration_smoke.R          # end-to-end run on a synthetic cohort (~10 min)
 Rscript tools/render_pub_figures.R --run <run dir>         # re-draw the figures of a finished run (~10 s)
 Rscript tools/render_pub_figures.R --run <run dir> --config <config> --collect-only   # rebuild publication/ only
@@ -134,8 +135,8 @@ results/0final/<RUN_NAME>/
   run_manifest.yml          git commit, config and input checksums, data-file checksums, seeds, package versions,
                             N per frame, failed passes
   publication/              figures and tables of the article, collected by label, with INDEX.md
-    main/                   Figures 1–3 (pdf); png/ the same figures at 600 dpi (figures.export)
-    supplementary/          Figures S1–S3 (pdf); png/ at 600 dpi; tables/ Tables S1–S2
+    main/                   Figures 1–2 (pdf); png/ the same figures at 600 dpi (figures.export)
+    supplementary/          Figures S1–S4 (pdf); png/ at 600 dpi; tables/ Tables S1–S3
     additional/             other figures and csv summaries (not in the article)
   BestResponse_2v3_4/       one directory per experiment
     01_data_processing/     processed data (.rds), cohort ledger, QC report

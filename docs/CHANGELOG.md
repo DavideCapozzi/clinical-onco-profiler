@@ -8,16 +8,21 @@
   Drawn from the Step-04 report: `tools/render_pub_figures.R` adds it to an existing run without re-running.
   `pub_read_lmm_report()` now also returns the panel table and reads a report without the bootstrap sheet.
   `PUB_MARKER_LABELS` covers the whole FACS panel.
-- Whole-panel cell frequencies (`FigureS14_PanelFrequencies`, `pub_fig_panel_frequencies()`): Figure 1B for every
-  marker (same paired patients, T0 / T1 boxes per response group, within-patient lines, log scale), one page per
-  marker family (A Ki67⁺, B CD28⁺, C CD137⁺, D PD1⁺, E lineage and memory; `pub_marker_family()`), 3 × 3 panels of
-  ~55 mm with T0 / T1 under every panel, in the S13 order with their FDR. Values beyond Tukey's far-out fences (quartiles ∓ 3 × IQR, log scale,
-  per marker) are not drawn, nor their lines (final run: 44 of 3,785, 1.2%, mostly the 10⁻⁴ % zero replacement);
-  boxes and whiskers are computed from all values (`pub_log_box_stats()` = `stat_boxplot()`), and the window never
-  cuts a box or whisker. Values from the Step-01 longitudinal rds (`pub_read_panel_values()`, the Figure 1B
-  back-transform), persisted by Step 06 and read by `tools/render_pub_figures.R` for existing runs. Figure 1B and S14
-  share `pub_group_scale()`. Collected as `additional` in both configs.
-  Test: `tests/test_panel_figures.R` (S13 and S14).
+- Each clinical variable + immune score: the repeated stratified CV of Step 06 also scores each clinical
+  variable of the formal model together with the immune composite (TPS + immune score, NLR + immune score) on the
+  same folds, with no extra random draw, so every existing AUC, curve and CI is unchanged (`av_cv_kfold(pairs,
+  curves)`; `av_attach_pair_curves()` adds the arms only after reproducing every published arm exactly, FATAL
+  otherwise). JSON `cv_kfold$auc_pair`; patient-bootstrap CIs (`AUC <var> + immune`, `dAUC <var> + immune - <var>
+  alone`) in `PatientBootstrap_AUC.csv`. `tools/render_pub_figures.R` rebuilds the arms for a run that predates them.
+  Test: `tests/test_added_value_pairs.R`.
+- Paper set (`config/0final.yml`): Figure 2 = CV ROC (A) + decision curve (B) + nomogram of the combined model (C)
+  in one figure (`Figure2c_AddedValue_Nomogram`, `pub_fig_added_value_nomogram()`; the former Figure 3 is panel C);
+  Figure S3 = ROC of TPS and NLR, each alone vs + immune score (`FigurePairROC_ClinicalPlusImmune`,
+  `pub_fig_pair_roc()`); the survival figure becomes S4; Table S1 = every panel marker's LMM Time×Group β, P and FDR
+  (`Table_LMM_AllMarkers`, `pub_table_lmm_all()`), the two reports become Tables S2–S3. The separate CV-curve and
+  nomogram figures are kept as `additional`.
+- The whole-panel cell-frequency figure (S14) is removed with its helpers (too large for the supplement; the table
+  above replaces it). Test: `tests/test_panel_figures.R` (S13 and the table).
 - Publication figures in other formats: `figures.export` (`formats`, `dpi`, `roles`) converts the collected pdfs of
   `publication/main` and `publication/supplementary` with poppler's `pdftocairo` into `<role>/<format>/` (png, tiff,
   jpeg, svg or eps; `config/0final.yml`: png at 600 dpi). The pdfs are unchanged; each copy is listed in `INDEX.md`.

@@ -593,6 +593,9 @@ if (lmm_robust$n_robust == 0) {
                        config$input_file_t0, av_cv_vars)
     A_av <- av_assemble(R_av, clin_addval$composite_markers, clin_addval$composite_timepoint)
     av_verify_frame(A_av, clin_addval, seed = av_seed)
+    # Each clinical var + immune score on the same CV folds (Figure S3 and the JSON
+    # cv_kfold$auc_pair); FATAL unless every published arm comes out identical.
+    clin_addval <- av_attach_pair_curves(clin_addval, A_av, seed = av_seed)
 
     if (isTRUE(sa_cfg$enabled)) {
       if (!identical(clin_addval$composite_timepoint, "delta"))
@@ -1033,9 +1036,6 @@ if (lmm_robust$n_robust == 0) {
         stratified_result = stratified_result,
         lmm_boot          = pub_read_lmm_bootstrap(config),
         lmm_frame         = pub_read_lmm_frame(config),   # CONSORT: the 90-patient selection frame
-        # S14: every panel marker in Figure 1B's paired patients (Step-01 longitudinal rds).
-        panel_values      = if (!is.null(gate_decomp))
-                              pub_read_panel_values(config, unique(gate_decomp$per_patient_values$Patient_ID)),
         # Patient flow: the ledger recorded AT each filtering point (Step 01 → this layer),
         # plus terminal annotations. Nothing is reconstructed after the fact any more.
         consort           = if (!is.null(clin_addval)) clin_addval$cohort_ledger else NULL,

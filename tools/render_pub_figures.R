@@ -30,6 +30,7 @@ source(here("R/utils_figures.R"))
 source(here("R/modules_pub_style.R"))
 source(here("R/modules_pub_figures.R"))
 source(here("R/utils_publication.R"))     # collect_publication()
+source(here("R/modules_ml_utility.R"))    # added-value frame helpers (pair-arm backfill)
 
 parse_args <- function(args) {
   out <- list(); i <- 1
@@ -79,6 +80,25 @@ if (collect_only) {
   quit(status = 0)
 }
 
+# Pair arms (each clinical var + immune score) for a run whose step 06 predates them.
+backfill_pair_curves <- function(av, cfg, exp, run_cfg) {
+  rd   <- function(f) { if (!file.exists(f)) stop(sprintf("[FATAL] pair arms: %s not found", f)); f }
+  ml   <- jsonlite::fromJSON(rd(step_output_path(cfg, 6, sprintf("Machine_Metrics_ML_%s", exp), "json")),
+                             simplifyVector = FALSE)$clinical_immune_added_value
+  DATA <- readRDS(rd(step_output_path(cfg, 1, sprintf("data_processed_%s_standard", exp), "rds")))
+  DL   <- readRDS(rd(step_output_path(cfg, 1, sprintf("data_processed_%s_longitudinal", exp), "rds")))
+  if (!is.null(ml$complete_case))      # the Δ frame of step 06, as step 07 reads it
+    DL$complete_case <- list(vars = as.character(unlist(ml$complete_case$vars)),
+                             ids  = as.character(unlist(ml$complete_case$ids)))
+  inp  <- run_cfg$experiments[[exp]]$input_file_t0
+  if (is.null(inp)) inp <- run_cfg$input_file_t0
+  seed <- if (!is.null(run_cfg$stats$seed)) as.integer(run_cfg$stats$seed) else 2026L
+  R <- av_context(DATA, DL, av$positive_label, inp, unlist(ml$clinical_vars))
+  A <- av_assemble(R, as.character(unlist(ml$composite_markers)), av$composite_timepoint)
+  av_verify_frame(A, av, seed = seed)
+  av_attach_pair_curves(av, A, seed = seed)
+}
+
 failed <- character(0)
 for (exp in exps) {
   exp_root <- file.path(run, exp)
@@ -93,9 +113,11 @@ for (exp in exps) {
   # Runs persisted before the whole LMM panel was plumbed in (Figure S13): read it from the
   # same run's Step-04 report, as the pipeline now does.
   if (is.null(objs$lmm_boot$all)) objs$lmm_boot$all <- pub_read_lmm_bootstrap(cfg)$all
-  # ... and the panel frequencies of Figure S14 from its Step-01 longitudinal rds.
-  if (is.null(objs$panel_values) && !is.null(objs$gate_decomp))
-    objs$panel_values <- pub_read_panel_values(cfg, unique(objs$gate_decomp$per_patient_values$Patient_ID))
+  # Runs persisted before the "clinical var + immune score" arms: rebuild them on the run's own
+  # added-value frame (Step-01 rds + Step-06 JSON), as Step 06 now does; FATAL unless the
+  # rebuilt frame and every published arm reproduce the run exactly.
+  if (!is.null(objs$clin_addval$roc_cv) && !any(startsWith(names(objs$clin_addval$roc_cv), "pair_")))
+    objs$clin_addval <- backfill_pair_curves(objs$clin_addval, cfg, exp, run_cfg)
 
   out <- if (is.null(opt$out)) file.path(step_dir(cfg, 6), "publication")
          else if (length(exps) > 1) file.path(opt$out, exp) else opt$out

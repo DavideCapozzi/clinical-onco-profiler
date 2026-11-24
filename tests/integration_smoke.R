@@ -210,6 +210,12 @@ if (is.null(ml$clinical_immune_added_value))
   fail("ML JSON missing clinical_immune_added_value node (added-value layer did not run)")
 for (node in c("selection_aware_lrt", "patient_bootstrap", "lrt_leave_one_out"))
   if (is.null(ml[[node]])) fail(sprintf("ML JSON missing the %s node", node))
+# Each clinical var + immune score (Figure S3): CV AUCs in the JSON, bootstrap CIs in the csv.
+if (!setequal(names(ml$clinical_immune_added_value$cv_kfold$auc_pair), c("A", "B")))
+  fail("ML JSON: cv_kfold$auc_pair missing or not one entry per clinical var")
+bt <- utils::read.csv(expected[["boot_csv"]])
+if (!all(c("AUC A + immune", "AUC B + immune", "dAUC A + immune - A alone") %in% bt$quantity))
+  fail("PatientBootstrap csv: the clinical var + immune rows are missing")
 
 # Publication set: every mapped main / supplementary / table entry was collected,
 # named by its paper label (e.g. main/Fig_1_Biology.pdf).

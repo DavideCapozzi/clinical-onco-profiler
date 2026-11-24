@@ -51,14 +51,15 @@ av_oof_probs <- function(A, reps = 50L, seed = 2026L + 977L) {
 #' @param seed Base seed (CV point estimate seed + 977, resamples seed + 101,
 #'   resample b's CV seed + b).
 #' @param cores Worker processes (results do not depend on it).
-#' @param single Also bootstrap each clinical var alone (same folds inside each resample,
-#'   no extra RNG draws, so every other number is unchanged); only when > 1 clinical var.
+#' @param single Also bootstrap each clinical var alone and each clinical var + the immune
+#'   composite (same folds inside each resample, no extra RNG draws, so every other number is
+#'   unchanged); only when > 1 clinical var.
 av_bootstrap_marker_set <- function(R, markers, timepoint, B, reps_in_boot, seed, cores,
                                     single = FALSE) {
   A <- av_assemble(R, markers, timepoint)
-  cv_full <- av_cv_kfold(A, seed = seed + 977L, single = single)   # step-06-style point estimates
+  cv_full <- av_cv_kfold(A, seed = seed + 977L, single = single, pairs = single)   # step-06-style point estimates
   sv <- names(cv_full$auc_single)
-  nA <- 5L + length(sv)
+  nA <- 5L + 2L * length(sv)                  # 5 arms, each var alone, each var + immune
   P  <- av_oof_probs(A, seed = seed + 977L)
   ap <- function(p) av_auc_pos(p, A$y, A$neg_label, A$resp_label)
 
@@ -72,11 +73,14 @@ av_bootstrap_marker_set <- function(R, markers, timepoint, B, reps_in_boot, seed
     Ab <- list(comp = A$comp[idx], Cmat = A$Cmat[idx, , drop = FALSE],
                yb = A$yb[idx], y = A$y[idx],
                neg_label = A$neg_label, resp_label = A$resp_label)
-    cvb <- tryCatch(av_cv_kfold(Ab, reps = reps_in_boot, seed = seed + b, single = length(sv) > 0),
+    cvb <- tryCatch(av_cv_kfold(Ab, reps = reps_in_boot, seed = seed + b, single = length(sv) > 0,
+                                pairs = length(sv) > 0),
                     error = function(e) NULL)
     if (is.null(cvb)) return(rep(NA_real_, nA))
+    get1 <- function(l, v) { a <- l[[v]]; if (is.null(a)) NA_real_ else a }
     c(cvb$delta_auc, cvb$delta_auc_vs_immune, cvb$auc_clinical, cvb$auc_immune, cvb$auc_combined,
-      vapply(sv, function(v) { a <- cvb$auc_single[[v]]; if (is.null(a)) NA_real_ else a }, numeric(1)))
+      vapply(sv, function(v) get1(cvb$auc_single, v), numeric(1)),
+      vapply(sv, function(v) get1(cvb$auc_pair, v), numeric(1)))
   }, mc.cores = cores)
   if (any(vapply(bootA, function(x) !is.numeric(x) || length(x) != nA, logical(1))))
     stop("[FATAL] patient bootstrap: a worker failed (full-procedure resamples)")
@@ -131,9 +135,16 @@ av_bootstrap_marker_set <- function(R, markers, timepoint, B, reps_in_boot, seed
     lrt = list(stat = lr$stat, p = lr$p),
     auc_oof = c(clinical = ap(P[, "clinical"]), immune = ap(P[, "immune"]), combined = ap(P[, "combined"]))
   )
-  if (length(sv)) {                     # each clinical var alone (keys absent otherwise)
+  if (length(sv)) {                     # each clinical var alone / + immune (keys absent otherwise)
+    js <- 5L + seq_along(sv); jp <- 5L + length(sv) + seq_along(sv)
     out$point$auc_single <- cv_full$auc_single
-    out$bootA$auc_single <- setNames(lapply(seq_along(sv), function(j) qci(MA[, 5L + j])), sv)
+    out$bootA$auc_single <- setNames(lapply(js, function(j) qci(MA[, j])), sv)
+    out$point$auc_pair   <- cv_full$auc_pair
+    out$bootA$auc_pair   <- setNames(lapply(jp, function(j) qci(MA[, j])), sv)
+    out$point$delta_pair_vs_single <- setNames(
+      lapply(sv, function(v) mean(cv_full$Rp[, v] - cv_full$Rs[, v])), sv)
+    out$bootA$delta_pair_vs_single <- setNames(
+      lapply(seq_along(sv), function(i) qci(MA[, jp[i]] - MA[, js[i]])), sv)
   }
   out
 }
@@ -204,6 +215,16 @@ patient_bootstrap_table <- function(pb) {
       quantity = sprintf("AUC %s alone", sv), point = unlist(r$point$auc_single[sv]),
       ci_low = vapply(sv, function(v) a$auc_single[[v]][1], numeric(1)),
       ci_high = vapply(sv, function(v) a$auc_single[[v]][2], numeric(1)),
+      interval = full, boot_p_two_sided = NA, n_valid_resamples = a$n_valid,
+      stringsAsFactors = FALSE, row.names = NULL))
+    if (length(sv) && !is.null(r$point$auc_pair)) d <- rbind(d, data.frame(   # each var + immune
+      marker_set = nm, markers = paste(r$markers, collapse = "+"), n = r$n, n_pos = r$n_pos,
+      quantity = c(sprintf("AUC %s + immune", sv), sprintf("dAUC %s + immune - %s alone", sv, sv)),
+      point = c(unlist(r$point$auc_pair[sv]), unlist(r$point$delta_pair_vs_single[sv])),
+      ci_low = c(vapply(sv, function(v) a$auc_pair[[v]][1], numeric(1)),
+                 vapply(sv, function(v) a$delta_pair_vs_single[[v]][1], numeric(1))),
+      ci_high = c(vapply(sv, function(v) a$auc_pair[[v]][2], numeric(1)),
+                  vapply(sv, function(v) a$delta_pair_vs_single[[v]][2], numeric(1))),
       interval = full, boot_p_two_sided = NA, n_valid_resamples = a$n_valid,
       stringsAsFactors = FALSE, row.names = NULL))
     d

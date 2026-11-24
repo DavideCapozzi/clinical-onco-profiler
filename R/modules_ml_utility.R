@@ -2556,8 +2556,15 @@ av_auc_pos <- function(p, y, neg_label, resp_label) {
 #'   cv_kfold. Pins Mersenne-Twister and restores the caller's RNG kind and state.
 #' @param single Also score each clinical var alone (1-var logistic, same folds, no RNG;
 #'   only when Cmat has > 1 column), as the step-06 cv_kfold does.
-#' @return Mean AUCs per arm, the deltas and the per-repetition matrix R (+ auc_single, Rs).
-av_cv_kfold <- function(A, reps = 50L, seed = 2026L + 977L, single = FALSE) {
+#' @param pairs Also score each clinical var + the immune composite (2-var logistic, same
+#'   folds, no RNG; only when Cmat has > 1 column). No other number changes.
+#' @param curves Also return the CV ROC curves (vertical average over repetitions on a fixed
+#'   FPR grid) and the net benefit (averaged over repetitions) of every arm, computed as the
+#'   step-06 cv_kfold block computes roc_cv / curve_cv.
+#' @return Mean AUCs per arm, the deltas and the per-repetition matrix R (+ auc_single, Rs;
+#'   auc_pair, Rp; curves = list(roc, net_benefit)).
+av_cv_kfold <- function(A, reps = 50L, seed = 2026L + 977L, single = FALSE, pairs = FALSE,
+                        curves = FALSE) {
   yb <- A$yb; comp <- A$comp; Cmat <- A$Cmat; y <- A$y
   n  <- length(yb)
   if (length(unique(yb)) < 2) return(NULL)
@@ -2573,7 +2580,16 @@ av_cv_kfold <- function(A, reps = 50L, seed = 2026L + 977L, single = FALSE) {
   k <- min(10L, max(3L, floor(min(sum(yb), sum(1 - yb)) / 2)))
   R <- matrix(NA_real_, reps, 3, dimnames = list(NULL, c("clinical", "immune", "combined")))
   sv <- if (isTRUE(single) && ncol(Cmat) > 1) colnames(Cmat) else character(0)
+  pv <- if (isTRUE(pairs)  && ncol(Cmat) > 1) colnames(Cmat) else character(0)
   Rs <- matrix(NA_real_, reps, length(sv), dimnames = list(NULL, sv))
+  Rp <- matrix(NA_real_, reps, length(pv), dimnames = list(NULL, pv))
+  pfx  <- function(p, x) if (length(x)) paste0(p, x) else character(0)   # paste0(p, character(0)) is p
+  arms <- c(colnames(R), pfx("single_", sv), pfx("pair_", pv))
+  if (isTRUE(curves)) {
+    fpr_grid <- seq(0, 1, by = 0.002); pt_grid <- seq(0.01, 0.60, by = 0.01)
+    roc_sum <- matrix(0, length(fpr_grid), length(arms), dimnames = list(NULL, arms))
+    nb_sum  <- matrix(0, length(pt_grid),  length(arms), dimnames = list(NULL, arms))
+  }
   for (r in seq_len(reps)) {
     fold <- integer(n)
     for (cl in unique(yb)) {
@@ -2582,27 +2598,103 @@ av_cv_kfold <- function(A, reps = 50L, seed = 2026L + 977L, single = FALSE) {
     }
     pc <- pk <- pi_ <- numeric(n)
     ps <- matrix(0, n, length(sv), dimnames = list(NULL, sv))
+    pp <- matrix(0, n, length(pv), dimnames = list(NULL, pv))
     for (f in seq_len(k)) {
       te <- which(fold == f); tr <- which(fold != f)
-      if (length(unique(yb[tr])) < 2) { pc[te] <- pk[te] <- pi_[te] <- ps[te, ] <- mean(yb[tr]); next }
+      if (length(unique(yb[tr])) < 2) {
+        pc[te] <- pk[te] <- pi_[te] <- ps[te, ] <- pp[te, ] <- mean(yb[tr]); next
+      }
       pc[te] <- av_fit_predict(Cmat, comp, yb, tr, te, FALSE)
       pk[te] <- av_fit_predict(Cmat, comp, yb, tr, te, TRUE)
       di <- data.frame(yb = yb, comp = comp)
       fi <- suppressWarnings(glm(yb ~ comp, data = di[tr, , drop = FALSE], family = binomial()))
       pi_[te] <- as.numeric(predict(fi, newdata = di[te, , drop = FALSE], type = "response"))
       for (v in sv) ps[te, v] <- av_fit_predict(Cmat[, v, drop = FALSE], comp, yb, tr, te, FALSE)
+      for (v in pv) pp[te, v] <- av_fit_predict(Cmat[, v, drop = FALSE], comp, yb, tr, te, TRUE)
     }
     ap <- function(p) av_auc_pos(p, y, A$neg_label, A$resp_label)
     R[r, ] <- c(ap(pc), ap(pi_), ap(pk))
     for (v in sv) Rs[r, v] <- ap(ps[, v])
+    for (v in pv) Rp[r, v] <- ap(pp[, v])
+    if (isTRUE(curves)) {
+      P <- cbind(clinical = pc, immune = pi_, combined = pk,
+                 `colnames<-`(ps, pfx("single_", sv)), `colnames<-`(pp, pfx("pair_", pv)))
+      roc_sum <- roc_sum + vapply(arms, function(a) av_roc_on_grid(yb, P[, a], fpr_grid), numeric(length(fpr_grid)))
+      nb_sum  <- nb_sum  + vapply(arms, function(a) av_net_benefit(yb, P[, a], pt_grid), numeric(length(pt_grid)))
+    }
   }
-  list(k = k, reps = reps, R = R, Rs = Rs,
+  list(k = k, reps = reps, R = R, Rs = Rs, Rp = Rp,
        auc_single = if (length(sv)) as.list(colMeans(Rs)) else NULL,
+       auc_pair   = if (length(pv)) as.list(colMeans(Rp)) else NULL,
        auc_clinical = unname(mean(R[, "clinical"])),
        auc_immune   = unname(mean(R[, "immune"])),
        auc_combined = unname(mean(R[, "combined"])),
        delta_auc    = unname(mean(R[, "combined"] - R[, "clinical"])),
-       delta_auc_vs_immune = unname(mean(R[, "combined"] - R[, "immune"])))
+       delta_auc_vs_immune = unname(mean(R[, "combined"] - R[, "immune"])),
+       curves = if (isTRUE(curves))
+         list(roc = data.frame(fpr = fpr_grid, roc_sum / reps, check.names = FALSE),
+              net_benefit = data.frame(threshold = pt_grid, nb_sum / reps, check.names = FALSE)))
+}
+
+#' @title ROC curve of one CV repetition on a fixed FPR grid (as the step-06 cv_kfold block)
+#' @description Sensitivity at each grid FPR, interpolated from the top of each vertical step
+#'   to the bottom of the next; averaging these over repetitions gives a curve whose area is
+#'   the mean AUC (vertical averaging, Fawcett 2006).
+av_roc_on_grid <- function(yb, p, fpr_grid) {
+  r  <- pROC::roc(yb, p, levels = c(0, 1), direction = "<", quiet = TRUE)
+  f  <- 1 - r$specificities; t <- r$sensitivities
+  xs <- sort(unique(f))
+  lo <- as.numeric(tapply(t, f, min)[as.character(xs)])
+  hi <- as.numeric(tapply(t, f, max)[as.character(xs)])
+  i  <- findInterval(fpr_grid, xs); i1 <- pmin(i + 1L, length(xs))
+  w  <- ifelse(i1 > i, (fpr_grid - xs[i]) / (xs[i1] - xs[i]), 0)
+  hi[i] + w * (lo[i1] - hi[i])
+}
+
+#' @title Net benefit of predicted probabilities at each threshold (as the step-06 nb())
+av_net_benefit <- function(yb, p, pt_grid) {
+  n <- length(yb)
+  sapply(pt_grid, function(pt) {
+    pos <- p >= pt; w <- pt / (1 - pt)
+    sum(pos & yb == 1) / n - sum(pos & yb == 0) / n * w })
+}
+
+#' @title Add the "clinical var + immune score" arms to a step-06 added-value result
+#' @description Re-runs the step-06 repeated CV on the rebuilt frame with each clinical var
+#'   alone and each clinical var + the immune composite (same seed, so the same folds), checks
+#'   that every arm already in \code{av} comes out identical (AUCs, ROC and net-benefit
+#'   curves; FATAL otherwise) and adds the new arms: \code{roc_cv$pair_<var>},
+#'   \code{decision_curve$curve_cv$pair_<var>}, \code{cv_kfold$auc_pair}. Nothing else changes.
+#' @param av The step-06 \code{clin_addval} (with roc_cv); returned unchanged when it has no
+#'   CV curves or the clinical model has one variable.
+#' @param A Output of \code{av_assemble()} for the published gate (checked by av_verify_frame()).
+#' @param seed stats.seed (the cv_kfold block uses seed + 977).
+av_attach_pair_curves <- function(av, A, seed, tol = 1e-9) {
+  if (is.null(av) || is.null(av$roc_cv) || is.null(av$decision_curve$curve_cv) || ncol(A$Cmat) < 2) return(av)
+  cv <- av_cv_kfold(A, seed = seed + 977L, single = TRUE, pairs = TRUE, curves = TRUE)
+  old <- setdiff(names(av$roc_cv), "fpr")
+  old_nb <- intersect(old, names(av$decision_curve$curve_cv))
+  miss <- setdiff(old, names(cv$curves$roc))
+  if (length(miss)) stop(sprintf("[FATAL] pair arms: step-06 curve(s) %s not rebuilt", paste(miss, collapse = ", ")))
+  sv <- names(cv$auc_single)
+  chk <- c(auc_clinical = cv$auc_clinical - av$cv_kfold$auc_clinical,
+           auc_immune   = cv$auc_immune   - av$cv_kfold$auc_immune,
+           auc_combined = cv$auc_combined - av$cv_kfold$auc_combined,
+           setNames(vapply(sv, function(v) cv$auc_single[[v]] - av$cv_kfold$auc_single[[v]], numeric(1)),
+                    paste0("auc_single_", sv)),
+           roc = max(abs(as.matrix(cv$curves$roc[, c("fpr", old)]) - as.matrix(av$roc_cv[, c("fpr", old)]))),
+           net_benefit = max(abs(as.matrix(cv$curves$net_benefit[, c("threshold", old_nb)]) -
+                                 as.matrix(av$decision_curve$curve_cv[, c("threshold", old_nb)]))))
+  bad <- names(chk)[!is.finite(chk) | abs(chk) > tol]
+  if (length(bad))
+    stop(sprintf("[FATAL] pair arms: the rebuilt CV does not reproduce step 06 (%s)", paste(bad, collapse = ", ")))
+  pc <- paste0("pair_", names(cv$auc_pair))
+  av$roc_cv[pc] <- cv$curves$roc[pc]
+  av$decision_curve$curve_cv[pc] <- cv$curves$net_benefit[pc]
+  av$cv_kfold$auc_pair <- cv$auc_pair
+  message(sprintf("   [AV-pairs] each clinical var + immune score (same folds, step-06 arms reproduced): %s",
+                  paste(sprintf("%s %.3f", names(cv$auc_pair), unlist(cv$auc_pair)), collapse = ", ")))
+  av
 }
 
 #' @title Apparent nested LRT of the immune increment (clinical vs clinical + composite)

@@ -123,15 +123,6 @@ pub_relabel_marker <- function(x) {
   x[hit] <- PUB_MARKER_LABELS[x[hit]]
   x
 }
-# Marker family of a panel code, for the pages of the whole-panel frequency figure (S14): the
-# first antigen of the code (CD28KI67 is a CD28⁺ subset); totals and memory subsets go last.
-# Returned in page order, so unique() of a sorted vector gives the pages A, B, ...
-PUB_MARKER_FAMILIES <- c("^KI6" = "Ki67", "^CD28" = "CD28", "^CD137" = "CD137", "^PD1" = "PD1")
-pub_marker_family <- function(x) {
-  fam <- rep("Lineage and memory", length(x))
-  for (p in rev(names(PUB_MARKER_FAMILIES))) fam[grepl(p, x)] <- PUB_MARKER_FAMILIES[[p]]
-  factor(fam, levels = c(unname(PUB_MARKER_FAMILIES), "Lineage and memory"))
-}
 # PD-L1 is shown as TPS and the immune composite as "Immune score".
 PUB_VAR_LABELS <- c("PD_L1" = "TPS", "PD-L1" = "TPS", "Immune composite" = "Immune score")
 pub_relabel_var <- function(x) {

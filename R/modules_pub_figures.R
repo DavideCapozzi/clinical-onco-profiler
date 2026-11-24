@@ -23,8 +23,9 @@
 # S12 predictive-vs-prognostic dissociation /
 # S13 whole-panel LMM forest (pub_fig_lmm_forest_all: every marker's Time×Group β with a
 # model-based 95% CI and its FDR; gate markers highlighted) /
-# S14 whole-panel cell frequencies (pub_fig_panel_frequencies: Figure 1B for every marker,
-# same paired patients, in the S13 order).
+# Figure 2c = Fig2 CV curves (A ROC, B decision curve) + S9b nomogram (C) in one figure
+# (pub_fig_added_value_nomogram) / ROC of each clinical var alone vs + immune score
+# (pub_fig_pair_roc; same CV) / whole-panel LMM table (pub_table_lmm_all: Marker, Beta, P, FDR).
 # Display names (markers, groups, clinical vars) come from modules_pub_style.R lookups;
 # statistics belong in the figure legends — only the reportable set is printed on a panel.
 # Re-render an existing run without re-running the analysis: tools/render_pub_figures.R.
@@ -191,7 +192,7 @@ pub_fig_biology <- function(gate_decomp, boot_df, obs_df = NULL, resp_label = NU
   pub_tag((forest | pA) + patchwork::plot_layout(widths = c(1.1, 1.9)))
 }
 
-#' Response-group order and colours of the frequency figures (Figure 1B, S14): responder
+#' Response-group order and colours of the frequency figure (Figure 1B): responder
 #' first in the primary blue, non-responder in vermillion. Groups are display labels.
 #' @return list: levels (NULL when the responder is not among the groups: keep the data's
 #'   order) and colours (named by group, in display order).
@@ -203,113 +204,10 @@ pub_group_scale <- function(groups, resp_disp = NULL) {
        colours = setNames(c(pub_palette[["combined"]], pub_palette[["unpen"]])[seq_along(ord)], ord))
 }
 
-# ── SUPP S14 — cell frequencies of the whole marker panel (Figure 1B for every marker) ─
-#' Box statistics of one set of values on the log10 scale, as stat_boxplot() computes them
-#' under scale_y_log10(): quartiles (type 7) and whiskers at the most extreme value within
-#' coef × IQR of the box, returned in the data's units (%), ready for geom_boxplot(stat = "identity").
-pub_log_box_stats <- function(v, coef = 1.5) {
-  l <- log10(v[is.finite(v) & v > 0])
-  q <- stats::quantile(l, c(0.25, 0.5, 0.75), names = FALSE)
-  w <- l[l >= q[1] - coef * diff(q[c(1, 3)]) & l <= q[3] + coef * diff(q[c(1, 3)])]
-  10^c(ymin = min(w), lower = q[1], middle = q[2], upper = q[3], ymax = max(w))
-}
-
-#' Display window of one marker on the log10 scale: Tukey's "far out" fences (quartiles ∓
-#' k × IQR of all the marker's values), widened if needed so that no box or whisker is cut.
-#' @return c(lo, hi) in the data's units (%)
-pub_log_window <- function(v, box_ends = NULL, k = 3) {
-  l <- log10(v[is.finite(v) & v > 0])
-  q <- stats::quantile(l, c(0.25, 0.75), names = FALSE)
-  w <- 10^c(q[1] - k * diff(q), q[2] + k * diff(q))
-  if (length(box_ends)) w <- c(min(w[1], box_ends), max(w[2], box_ends))
-  w
-}
-
-#' Per-patient frequencies at T0 and T1 of every panel marker, in the paired patients of
-#' Figure 1B, with its encoding: boxes (median, IQR, 1.5 × IQR whiskers) per response group
-#' and timepoint, within-patient lines, log10 y free per panel. One page per marker family
-#' (pub_marker_family(): A Ki67⁺, B CD28⁺, C CD137⁺, D PD1⁺, E lineage and memory), panels in
-#' the S13 order (ascending Time×Group β) with the observed FDR under the name when the LMM
-#' table is given. Display window per marker (pub_log_window(), k = 3): the few values beyond
-#' it — mostly the 10⁻⁴ % zero replacement of the preprocessing — are not drawn (nor their
-#' lines), while every box and whisker is computed from all the values, so none moves.
-#' Descriptive: the test is S13.
-#' @param pv data.frame from pub_read_panel_values(): Patient_ID, Marker, Timepoint, Group, Value_pct
-#' @param all_df optional pub_read_lmm_report()$all (panel order + FDR in the strips)
-#' @param resp_label responder group code (e.g. "RP"): first, in blue, as Figure 1B
-#' @param k display-window fence (× IQR on the log scale)
-#' @param ncol,nrow panel grid of every page (same panel size on every page)
-#' @return list of ggplots (one per page, tagged A, B, ...), attribute "hidden" = c(n, total)
-pub_fig_panel_frequencies <- function(pv, all_df = NULL, resp_label = NULL, k = 3, ncol = 3, nrow = 3) {
-  if (is.null(pv) || !nrow(pv)) return(NULL)
-  d <- pv[is.finite(pv$Value_pct) & pv$Value_pct > 0, , drop = FALSE]
-  if (!nrow(d)) return(NULL)
-  d$Group <- pub_relabel_group(d$Group)
-  resp_disp <- if (!is.null(resp_label)) pub_relabel_group(resp_label) else NULL
-  gs  <- pub_group_scale(d$Group, resp_disp)
-  ord <- names(gs$colours)
-  d$Group <- factor(d$Group, levels = ord)
-  # x = group × timepoint, responder pair first; each patient sits in one group, so the
-  # within-patient line joins its own T0 and T1 boxes.
-  x_lev <- as.vector(t(outer(ord, c("T0", "T1"), paste, sep = "\n")))
-  d$x   <- factor(paste(d$Group, d$Timepoint, sep = "\n"), levels = x_lev)
-  # Panel order and strip labels: by β with the FDR when the LMM table is there, else by code.
-  m_ord <- if (!is.null(all_df)) all_df$Marker[order(all_df$Estimate_Interaction)] else sort(unique(d$Marker))
-  m_ord <- c(intersect(m_ord, unique(d$Marker)), setdiff(sort(unique(d$Marker)), m_ord))
-  strip <- pub_relabel_marker(m_ord)
-  if (!is.null(all_df)) {
-    fdr <- all_df$FDR_Interaction[match(m_ord, all_df$Marker)]
-    strip <- ifelse(is.finite(fdr), sprintf("%s\n%s", strip, pub_lab_p(fdr, "FDR")), strip)
-  }
-  if (anyDuplicated(strip)) stop("[pub_fig_panel_frequencies] two markers share a display name")
-  names(strip) <- m_ord
-  # Boxes from all the values; then the window, and only the points inside it are drawn.
-  cells <- split(d, list(d$Marker, d$x), drop = TRUE)
-  box <- do.call(rbind, lapply(cells, function(s) data.frame(
-    Marker = s$Marker[1], x = s$x[1], Group = s$Group[1], t(pub_log_box_stats(s$Value_pct)))))
-  win <- lapply(setNames(m_ord, m_ord), function(m)
-    pub_log_window(d$Value_pct[d$Marker == m], unlist(box[box$Marker == m, c("ymin", "ymax")]), k))
-  lo <- vapply(win, `[`, 0, 1)[d$Marker]; hi <- vapply(win, `[`, 0, 2)[d$Marker]
-  shown  <- d$Value_pct >= lo & d$Value_pct <= hi
-  hidden <- c(n = sum(!shown), total = nrow(d))
-  message(sprintf("   [PubFig] S14: %d of %d values beyond %g × IQR not drawn (%.1f%%)",
-                  hidden[["n"]], hidden[["total"]], k, 100 * hidden[["n"]] / hidden[["total"]]))
-  d <- d[shown, , drop = FALSE]
-  # A patient's line only where both of its points are drawn.
-  both <- ave(seq_len(nrow(d)), d$Marker, d$Patient_ID, FUN = length) == 2
-  fam  <- pub_marker_family(m_ord)
-  fams <- levels(droplevels(fam))                          # pages in family order, A first
-  pages <- lapply(seq_along(fams), function(i) {
-    ms <- m_ord[fam == fams[i]]
-    pan <- function(z) { z <- z[z$Marker %in% ms, , drop = FALSE]
-                         z$Panel <- factor(strip[z$Marker], levels = strip[ms]); z }
-    pd <- pan(d); pl <- pan(d[both, , drop = FALSE]); pb <- pan(box)
-    p <- ggplot(pd, aes(x, Value_pct)) +
-      geom_line(data = pl, aes(group = Patient_ID), colour = "grey75", linewidth = 0.3, alpha = 0.5) +
-      geom_boxplot(data = pb, aes(x = x, ymin = ymin, lower = lower, middle = middle, upper = upper,
-                                  ymax = ymax, colour = Group), stat = "identity", inherit.aes = FALSE,
-                   fill = NA, width = 0.55, linewidth = 0.5) +
-      geom_point(aes(colour = Group), size = 0.8, alpha = 0.5) +
-      # T0 / T1 labels under every panel, not only the bottom row: each panel has four boxes.
-      facet_wrap(~ Panel, ncol = ncol, scales = "free_y", axes = "all_x") +
-      # Plain numbers on every panel (the default switches to 1e+01 on some of them).
-      scale_y_log10(labels = function(x) format(x, scientific = FALSE, drop0trailing = TRUE, trim = TRUE)) +
-      scale_x_discrete(labels = function(x) sub("^.*\n", "", x), drop = FALSE) +
-      scale_colour_manual(values = gs$colours) +
-      labs(x = NULL, y = "Frequency (% of parent population)", tag = LETTERS[i]) +
-      theme_publication(base = 10) +
-      theme(panel.grid = element_blank(), plot.tag = element_text(size = 11, face = "bold"))
-    # Same panel height on every page: a short page keeps its rows at the top, the unused
-    # rows left as blank space (patchwork heights apply to the panel areas).
-    used <- ceiling(length(ms) / ncol)
-    if (used >= nrow) p else p / patchwork::plot_spacer() + patchwork::plot_layout(heights = c(used, nrow - used))
-  })
-  attr(pages, "hidden") <- hidden
-  pages
-}
-
 # ── MAIN Fig 2 — Added value (LRT-led): ROC + decision curve ──────────────────
-pub_fig_added_value <- function(av, curves = c("loo", "cv")) {
+#' @param panels TRUE: return list(roc = panel A, decision = panel B) untagged, for a larger
+#'   composition (Figure 2c); FALSE (default): the tagged A | B figure.
+pub_fig_added_value <- function(av, curves = c("loo", "cv"), panels = FALSE) {
   curves <- match.arg(curves)
   if (is.null(av) || is.null(av$per_patient)) return(NULL)
   pp  <- av$per_patient; pos <- av$positive_label
@@ -340,9 +238,7 @@ pub_fig_added_value <- function(av, curves = c("loo", "cv")) {
   # comes from the same CV. Labels: the var's display name; PD-L1 (TPS) keeps its red.
   single_v <- if (cv_curves) sub("^single_", "", grep("^single_", names(av$roc_cv), value = TRUE)) else character(0)
   single_lab <- setNames(pub_relabel_var(single_v), single_v)
-  single_col <- setNames(rep(PDL1_RED, length(single_v)), single_v)
-  other_v    <- setdiff(single_v, "PD_L1")         # sky blue, vermillion, grey: Okabe-Ito, unused here
-  single_col[other_v] <- rep_len(c("#56B4E9", "#D55E00", "#999999"), length(other_v))
+  single_col <- pub_single_colours(single_v)        # TPS dark red; sky blue, vermillion, grey
   if (length(single_v)) pdl1_ok <- FALSE
   # NB every Prob_* column here is a LEAVE-ONE-OUT prediction (pl_* upstream), so every
   # curve is LOO. LOO is NOT the reportable discrimination: for tied/discrete clinical vars
@@ -480,7 +376,79 @@ pub_fig_added_value <- function(av, curves = c("loo", "cv")) {
                               colour = "grey30", label = "Net benefit from LOO probabilities")) +
     labs(x = "Threshold probability", y = "Net benefit") +
     theme_publication() + theme(legend.direction = "vertical")
+  if (isTRUE(panels)) return(list(roc = pA, decision = pB))
   pub_tag(pA | pB)
+}
+
+# ── MAIN Fig 2 (paper) — CV curves + nomogram of the combined model ────────────
+#' Panel A ROC and panel B decision curve of the CV figure (pub_fig_added_value(curves =
+#' "cv"), unchanged), panel C the full-range-axes nomogram of the combined model
+#' (pub_fig_nomogram_hybrid(), unchanged). NULL unless the run carries both the CV curves
+#' and the full-range nomogram.
+pub_fig_added_value_nomogram <- function(av) {
+  if (is.null(av) || is.null(av$roc_cv)) return(NULL)
+  ab <- pub_fig_added_value(av, curves = "cv", panels = TRUE)
+  nomo <- pub_fig_nomogram_hybrid(av$nomogram)
+  if (is.null(ab) || is.null(nomo)) return(NULL)
+  pub_tag((ab$roc | ab$decision) / nomo + patchwork::plot_layout(heights = c(1.25, 1)))
+}
+
+# ── SUPP — each clinical variable alone vs + immune score (ROC, CV curves) ─────
+#' One ROC panel per clinical variable of the formal model: the variable alone vs the variable
+#' + the immune score, both from the repeated stratified k-fold CV of Figure 2 (same folds;
+#' vertical average of the per-repetition curves, so each curve's area is its CV AUC). Colour of
+#' the variable alone as in Figure 2 (TPS dark red, the others Okabe-Ito); "+ immune score" in
+#' the blue of the combined model. Reads av$roc_cv columns single_<var> and pair_<var>
+#' (av_attach_pair_curves()); NULL when they are absent. AUCs and CIs belong in the legend.
+pub_fig_pair_roc <- function(av) {
+  rc <- av$roc_cv
+  if (is.null(rc)) return(NULL)
+  v <- sub("^pair_", "", grep("^pair_", names(rc), value = TRUE))
+  v <- v[paste0("single_", v) %in% names(rc)]
+  if (!length(v)) return(NULL)
+  col1 <- pub_single_colours(v)
+  panels <- lapply(v, function(x) {
+    lab  <- pub_relabel_var(x)
+    labs2 <- c(lab, sprintf("%s + immune score", lab))
+    d <- rbind(data.frame(FPR = rc$fpr, TPR = rc[[paste0("single_", x)]], M = labs2[1]),
+               data.frame(FPR = rc$fpr, TPR = rc[[paste0("pair_", x)]],   M = labs2[2]))
+    d$M <- factor(d$M, levels = labs2)
+    ggplot(d, aes(FPR, TPR, colour = M, linetype = M)) +
+      geom_abline(slope = 1, intercept = 0, linetype = "dotted", colour = pub_palette[["ref"]]) +
+      geom_path(linewidth = 0.8) +
+      scale_colour_manual(values = setNames(c(col1[[x]], pub_palette[["combined"]]), labs2)) +
+      scale_linetype_manual(values = setNames(c(4, 1), labs2)) +
+      coord_equal(xlim = c(0, 1), ylim = c(0, 1), expand = FALSE) +
+      labs(x = "1 - Specificity", y = "Sensitivity") +
+      theme_publication() + theme(legend.direction = "vertical")
+  })
+  pub_tag(patchwork::wrap_plots(panels, nrow = 1))
+}
+
+#' Colours of the clinical variables drawn alone (Figure 2 and the pair ROC figure): PD-L1
+#' (TPS) dark red, the others sky blue, vermillion, grey (Okabe-Ito, unused elsewhere here).
+pub_single_colours <- function(vars) {
+  col <- setNames(rep("#B2182B", length(vars)), vars)
+  other <- setdiff(vars, "PD_L1")
+  col[other] <- rep_len(c("#56B4E9", "#D55E00", "#999999"), length(other))
+  col
+}
+
+# ── SUPP table — LMM Time×Group of every panel marker ─────────────────────────
+#' One row per Step-04 marker: display name, β (logit scale, 2 decimals), P and FDR (2
+#' significant digits), sorted by FDR then P. Nothing else (no CI, no n).
+#' @param all_df data.frame from pub_read_lmm_report()$all
+pub_table_lmm_all <- function(all_df) {
+  if (is.null(all_df) || !nrow(all_df)) return(NULL)
+  if (anyNA(all_df$FDR_Interaction)) stop("[pub_table_lmm_all] FDR_Interaction is missing for a marker")
+  d <- all_df[order(all_df$FDR_Interaction, all_df$P_Value_Interaction), , drop = FALSE]
+  out <- data.frame(Marker = pub_relabel_marker(d$Marker),
+                    Beta   = round(d$Estimate_Interaction, 2),
+                    P      = signif(d$P_Value_Interaction, 2),
+                    FDR    = signif(d$FDR_Interaction, 2))
+  if (anyDuplicated(out$Marker)) stop("[pub_table_lmm_all] two markers share a display name")
+  rownames(out) <- NULL
+  out
 }
 
 # ── SUPP S7 — Calibration (unpenalized vs ridge) + IDI fragility ──────────────
@@ -1378,13 +1346,13 @@ pub_render_all <- function(objs, out_dir, project_name, fig_cfg = NULL) {
     log[[length(log) + 1]] <<- data.frame(figure = name,
                                           saved = !is.null(save_pub_figure(plot, pf(name), w, h, config = fig_cfg)))
   av <- objs$clin_addval
-  # MAIN (3) — Fig1 biology (cells + forest) / Fig2 added-value / Fig3 PD-L1 context.
-  # SUPP (S1–S13, contiguous) — S1 CONSORT, S2 baseline-inv, S3 specificity, S4 standalone,
-  #        S5 coupling, S6 robustness, S7 calibration, S8 gate-signal decomposition,
-  #        S9 nomogram, S10 classification, S11 fold-change, S12 dissociation,
-  #        S13 whole-panel LMM forest, S14 whole-panel cell frequencies.
-  #        S9b = S9 with full-range axes (display-only companion; not a new number, so
-  #        S10–S12 keep theirs; skipped for runs whose rds predates it).
+  # Stems (which ones enter the paper, and with which label, is set by the config's
+  # `publication` block): Fig1 biology (cells + forest) / Fig2 added-value (LOO; Fig2b CV
+  # curves; Fig2c = Fig2b + S9b nomogram) / Fig3 PD-L1 context / S1 CONSORT, S2 baseline-inv,
+  # S3 specificity, S4 standalone, S5 coupling, S6 robustness, S7 calibration, S8 gate-signal
+  # decomposition, S9 nomogram (S9b full-range axes), S10 classification, S11 fold-change,
+  # S12 dissociation, S13 whole-panel LMM forest / PairROC each clinical var alone vs + immune
+  # score / Table_LMM_AllMarkers (xlsx).
   if (!is.null(objs$lmm_boot$boot) || !is.null(objs$gate_decomp))
     sv(pub_fig_biology(objs$gate_decomp, objs$lmm_boot$boot, objs$lmm_boot$obs,
                        resp_label = objs$positive_label),      "Figure1_Biology",             PUB_W2, 120)
@@ -1394,15 +1362,24 @@ pub_render_all <- function(objs, out_dir, project_name, fig_cfg = NULL) {
                               gate = unique(objs$gate_decomp$per_patient_values$Marker),
                               ref_label = if (!is.null(av)) pub_relabel_group(av$negative_label)),
        "FigureS13_LMMForest_AllMarkers", PUB_W1, 34 + 4.2 * nrow(objs$lmm_boot$all))
-  # S14 Figure 1B for every panel marker (same patients): one page per marker family, a 3 × 3
-  # grid of ~55 mm panels on every page (pages with fewer markers leave the last cells empty).
-  if (!is.null(objs$panel_values))
-    sv(pub_fig_panel_frequencies(objs$panel_values, objs$lmm_boot$all, resp_label = objs$positive_label),
-       "FigureS14_PanelFrequencies", PUB_W2, 190)
+  # Whole-panel LMM table (Marker, Beta, P, FDR), written as xlsx next to the figures.
+  if (!is.null(objs$lmm_boot$all)) {
+    tab <- pub_table_lmm_all(objs$lmm_boot$all)
+    f_tab <- paste0(pf("Table_LMM_AllMarkers"), ".xlsx")
+    ok <- !is.null(tab) && isTRUE(tryCatch({
+      openxlsx::write.xlsx(tab, f_tab, overwrite = TRUE, colWidths = "auto"); TRUE },
+      error = function(e) { message("   [PubTab] ", conditionMessage(e)); FALSE }))
+    if (ok) message(sprintf("   [PubTab] %s  (%d markers)", basename(f_tab), nrow(tab)))
+    log[[length(log) + 1]] <- data.frame(figure = "Table_LMM_AllMarkers", saved = ok)
+  }
   if (!is.null(av)) {
     sv(pub_fig_added_value(av),                                "Figure2_AddedValue",          PUB_W2, 120)
     if (!is.null(av$roc_cv))                                  # same panel, CV-averaged curves
       sv(pub_fig_added_value(av, curves = "cv"),               "Figure2b_AddedValue_CVcurves", PUB_W2, 120)
+    if (!is.null(av$roc_cv) && !is.null(av$nomogram$clinical_immune_hybrid))   # + nomogram (C)
+      sv(pub_fig_added_value_nomogram(av),                     "Figure2c_AddedValue_Nomogram", PUB_W2, 215)
+    if (any(startsWith(names(av$roc_cv), "pair_")))           # each clinical var alone vs + immune
+      sv(pub_fig_pair_roc(av),                                 "FigurePairROC_ClinicalPlusImmune", PUB_W2, 110)
     if (!is.null(objs$consort))
       sv(pub_fig_consort(objs$consort, terminal = objs$consort_terminal,
                          inflow = pub_consort_inflow(objs$consort, av),
@@ -1504,33 +1481,6 @@ pub_read_lmm_report <- function(f) {
          all  = keep(c("Marker", "Estimate_Interaction", "Std_Error", "T_Value_Interaction",
                        "P_Value_Interaction", "FDR_Interaction", "N_Observations")))
   }, error = function(e) NULL)
-}
-
-# ── helper: same-run Step-01 panel frequencies (S14) ──────────────────────────
-#' Every panel marker at T0/T1 for the given patients, as Figure 1B shows the gate markers:
-#' the Step-01 longitudinal hybrid_data_raw (logit of the clamped proportion, the LMM input)
-#' back to % with plogis() × 100, the transform of run_gate_signal_decomposition()'s Value_pct.
-#' @param ids Patient IDs (Figure 1B's paired patients: gate_decomp$per_patient_values).
-pub_read_panel_values <- function(config, ids) {
-  f <- tryCatch(step_output_path(config, 1, sprintf("data_processed_%s_longitudinal", config$project_name), "rds"),
-                error = function(e) NULL)
-  if (is.null(f) || !file.exists(f) || !length(ids)) return(NULL)
-  pub_panel_values(readRDS(f), ids)
-}
-#' @param DATA_LONG A Step-01 longitudinal processed object (metadata, hybrid_markers, hybrid_data_raw).
-pub_panel_values <- function(DATA_LONG, ids) {
-  raw  <- as.data.frame(DATA_LONG$hybrid_data_raw)
-  meta <- DATA_LONG$metadata
-  ms   <- intersect(DATA_LONG$hybrid_markers, colnames(raw))
-  keep <- meta$Patient_ID %in% ids
-  if (!any(keep) || !length(ms)) return(NULL)
-  out <- do.call(rbind, lapply(ms, function(m) data.frame(
-    Patient_ID = meta$Patient_ID[keep], Marker = m, Timepoint = meta$Timepoint[keep],
-    Group = meta$Group[keep], Value_pct = stats::plogis(raw[[m]][keep]) * 100,
-    stringsAsFactors = FALSE)))
-  out$Timepoint <- factor(out$Timepoint, levels = c("T0", "T1"))
-  rownames(out) <- NULL
-  out
 }
 
 # ── helper: same-run Step-04 LMM frame (CONSORT's marker-selection box) ───────

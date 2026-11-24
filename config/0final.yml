@@ -325,10 +325,10 @@ publication:
     - {stem: Figure1_Biology, from: 06_machine_learning/publication, label: "Figure 1",
        producer: "pub_fig_biology + pub_fig_lmm_forest",
        frame: "A: LMM frame, {lmm_patients} patients / {lmm_obs} obs; B: Δ frame, n = {delta}"}
-    - {stem: Figure2b_AddedValue_CVcurves, from: 06_machine_learning/publication, label: "Figure 2",
-       producer: "pub_fig_added_value(curves = \"cv\")", frame: "Δ frame, n = {delta} ({delta_pos} PR)"}
-    - {stem: FigureS9b_Nomogram_FullRangeAxes, from: 06_machine_learning/publication, label: "Figure 3",
-       producer: "pub_fig_nomogram_hybrid", frame: "Δ frame, n = {delta} (apparent fit, not validated)"}
+    # Figure 2: A ROC, B decision curve (CV curves), C nomogram of the combined model.
+    - {stem: Figure2c_AddedValue_Nomogram, name: AddedValue_Nomogram, from: 06_machine_learning/publication, label: "Figure 2",
+       producer: "pub_fig_added_value_nomogram = pub_fig_added_value(curves = \"cv\") + pub_fig_nomogram_hybrid",
+       frame: "Δ frame, n = {delta} ({delta_pos} PR); C: apparent fit, not validated"}
   supplementary:
     # Figure S1: the LMM forest of the nlr_v2_cc50 sensitivity run (gate on its own 50 / 100), drawn by step 07
     # from the frozen snapshot of post_hoc.sensitivity_lmm; the frame text is that run's, not this one's.
@@ -338,19 +338,27 @@ publication:
     - {stem: FigureT_TherapyChange, from: 07_post_hoc/therapy, label: "Figure S2",
        producer: "pub_fig_therapy_change(adjusted = TRUE) (src/07_post_hoc.R)",
        frame: "paired LMM patients with a known regimen (of {lmm_paired} paired); n per group in therapy/console.txt"}
-    # S3: all survival KM in one figure: A-B by BOR, C-D score split at 0.
-    - {stem: FigureKM_BOR_Score_OS_PFS, name: KM_BOR_Score_OS_PFS, from: 07_post_hoc/bor_survival, label: "Figure S3",
+    # S3: ROC of TPS and NLR, each alone vs + immune score (same CV as Figure 2).
+    - {stem: FigurePairROC_ClinicalPlusImmune, name: ROC_TPS_NLR_plus_immune, from: 06_machine_learning/publication, label: "Figure S3",
+       producer: "pub_fig_pair_roc (arms: av_attach_pair_curves)",
+       frame: "Δ frame, n = {delta} ({delta_pos} PR); same repeated CV as Figure 2; AUC CIs in PatientBootstrap_AUC.csv"}
+    # S4: all survival KM in one figure: A-B by BOR, C-D score split at 0.
+    - {stem: FigureKM_BOR_Score_OS_PFS, name: KM_BOR_Score_OS_PFS, from: 07_post_hoc/bor_survival, label: "Figure S4",
        producer: "pub_fig_survival_4 = pub_fig_bor_km + pub_fig_km_panels (bor_survival_run, R/modules_survival_bor.R)",
        frame: "Δ frame, n = {delta}; A-B by best response from the start of therapy, C-D Δ composite <= 0 vs > 0 from the T1 landmark; post hoc, descriptive"}
   tables:
-    - {stem: Longitudinal_LMM_Report, from: 04_longitudinal_analysis, type: xlsx, label: "Table S1",
+    - {stem: Table_LMM_AllMarkers, name: LMM_AllMarkers, from: 06_machine_learning/publication, type: xlsx, label: "Table S1",
+       producer: "pub_table_lmm_all (Marker, Beta, P, FDR)", frame: "LMM frame, {lmm_patients} patients / {lmm_obs} obs; every panel marker"}
+    - {stem: Longitudinal_LMM_Report, from: 04_longitudinal_analysis, type: xlsx, label: "Table S2",
        producer: "src/04_longitudinal_lmm.R", frame: "LMM frame, {lmm_patients} patients / {lmm_obs} obs"}
-    - {stem: ML_Classification_Report, from: 06_machine_learning, type: xlsx, label: "Table S2",
+    - {stem: ML_Classification_Report, from: 06_machine_learning, type: xlsx, label: "Table S3",
        producer: "src/06_machine_learning.R", frame: "T0 n = {t0_standard}; Δ n = {delta}"}
   additional:
     # Produced and collected for reference; not part of the paper set.
     - {stem: FigureS1_CONSORT, name: CONSORT, from: 06_machine_learning/publication, producer: "pub_fig_consort", frame: "T0 n = {t0_standard}; LMM {lmm_patients} patients / {lmm_obs} obs; Δ n = {delta}"}
     - {stem: FigureS7_Calibration_IDI, name: Calibration_IDI, from: 06_machine_learning/publication, producer: "pub_fig_calibration_idi", frame: "Δ frame, n = {delta}"}
+    - {stem: Figure2b_AddedValue_CVcurves, name: AddedValue_CVcurves, from: 06_machine_learning/publication, producer: "pub_fig_added_value(curves = \"cv\")", frame: "Δ frame, n = {delta}; = Figure 2 A-B"}
+    - {stem: FigureS9b_Nomogram_FullRangeAxes, from: 06_machine_learning/publication, producer: "pub_fig_nomogram_hybrid", frame: "Δ frame, n = {delta}; = Figure 2C (apparent fit, not validated)"}
     - {stem: Figure2_AddedValue, name: AddedValue_LOOcurves, from: 06_machine_learning/publication, producer: "pub_fig_added_value(curves = \"loo\")", frame: "Δ frame, n = {delta}"}
     - {stem: Figure3_PDL1_context, from: 06_machine_learning/publication, producer: "pub_fig_pdl1_context", frame: "T0 frame, n = {t0_standard} ({t0_pdl1_valid} with PD-L1)"}
     - {stem: FigureS2_BaselineInvariance, from: 06_machine_learning/publication, producer: "pub_fig_baseline_invariance", frame: "Δ frame, n = {delta}"}
@@ -364,10 +372,9 @@ publication:
     - {stem: FigureS11_FoldChange, from: 06_machine_learning/publication, producer: "pub_fig_foldchange", frame: "paired patients, n = {delta}"}
     - {stem: FigureS12_Dissociation, from: 06_machine_learning/publication, producer: "pub_fig_dissociation", frame: "Δ frame, n = {delta}; descriptive"}
     - {stem: FigureS13_LMMForest_AllMarkers, name: LMMForest_AllMarkers, from: 06_machine_learning/publication, producer: "pub_fig_lmm_forest_all", frame: "LMM frame, {lmm_patients} patients / {lmm_obs} obs; every panel marker, model-based 95% CI"}
-    - {stem: FigureS14_PanelFrequencies, name: PanelFrequencies_AllMarkers, from: 06_machine_learning/publication, producer: "pub_fig_panel_frequencies", frame: "Δ frame, n = {delta}; every panel marker, as Figure 1B; one page per marker family; values beyond 3 × IQR (log) not drawn"}
     - {stem: FigureT_TherapyChange_unadjusted, from: 07_post_hoc/therapy, producer: "pub_fig_therapy_change(adjusted = FALSE)", frame: "paired LMM patients with a known regimen; raw means (not a valid ranking)"}
-    - {stem: FigureBOR_KM_OS_PFS, name: BOR_KM_OS_PFS, from: 07_post_hoc/bor_survival, producer: "pub_fig_bor_km", frame: "Δ frame, n = {delta}; = Figure S3 A-B"}
-    - {stem: FigureKM_ScoreDecreased_OS_PFS, name: KM_ScoreDecreased_OS_PFS, from: 07_post_hoc/bor_survival, producer: "pub_fig_km_panels, split at 0", frame: "Δ frame, n = {delta}; = Figure S3 C-D"}
+    - {stem: FigureBOR_KM_OS_PFS, name: BOR_KM_OS_PFS, from: 07_post_hoc/bor_survival, producer: "pub_fig_bor_km", frame: "Δ frame, n = {delta}; = Figure S4 A-B"}
+    - {stem: FigureKM_ScoreDecreased_OS_PFS, name: KM_ScoreDecreased_OS_PFS, from: 07_post_hoc/bor_survival, producer: "pub_fig_km_panels, split at 0", frame: "Δ frame, n = {delta}; = Figure S4 C-D"}
     - {stem: FigureKM_DeltaComposite_OS_PFS, name: KM_MedianSplit_OS_PFS, from: 07_post_hoc/km, producer: "pub_fig_km_panels (src/07_post_hoc.R)", frame: "Δ frame, n = {delta}; median split (former Figure 4)"}
     - {stem: SelectionAware_LRT, from: 06_machine_learning, type: csv, producer: "run_selection_aware_lrt", frame: "LMM {lmm_patients} patients (selection); Δ n = {delta} (LRT)"}
     - {stem: PatientBootstrap_AUC, from: 06_machine_learning, type: csv, producer: "run_patient_bootstrap_auc", frame: "Δ frame, n = {delta}"}
