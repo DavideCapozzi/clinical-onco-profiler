@@ -77,8 +77,8 @@ b <- ggplot2::ggplot_build(p)
 lev <- levels(p$data$Marker)
 check(identical(lev, pub_relabel_marker(d$Marker[order(d$Estimate_Interaction)])), "rows sorted by beta, display names")
 pts <- b$data[[3]]                                               # geom_point layer
-sel <- pts$colour[match(c("Ki67⁺NAÏVE", "CD28⁺Ki67⁺"), lev[pts$y])]
-check(all(sel == pub_palette[["combined"]]) && all(pts$colour[!lev[pts$y] %in% c("Ki67⁺NAÏVE", "CD28⁺Ki67⁺")] == "grey55"),
+sel <- pts$colour[match(c("Ki67⁺ naïve", "CD28⁺Ki67⁺"), lev[pts$y])]
+check(all(sel == pub_palette[["combined"]]) && all(pts$colour[!lev[pts$y] %in% c("Ki67⁺ naïve", "CD28⁺Ki67⁺")] == "grey55"),
       "gate markers blue, others grey")
 check(identical(p$labels$x, "Time×Group β\n(logit scale; ref. SD/PD)"), "x title as Figure 1A")
 check(is.null(pub_fig_lmm_forest_all(NULL)), "NULL input -> NULL")

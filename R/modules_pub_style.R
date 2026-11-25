@@ -102,21 +102,22 @@ pub_relabel_group <- function(x) {
 # Same named-lookup-with-passthrough contract as pub_relabel_group(): unmapped markers
 # keep their code. Clinical variables only need the underscore code artefact removed.
 # The whole FACS panel is mapped (full-panel forest): each antigen of the code gets ⁺, the
-# memory-subset codes (NAÏVE, CM, EFF, EM, EMRA) stay as written, "tot" = the whole
+# memory-subset codes (CM, EFF, EM, EMRA) stay as written, naïve is lowercase as in the text
+# (antigen⁺ naïve, with a space), "tot" = the whole
 # population. KI657EMRA is the database's spelling of the Ki67⁺EMRA column.
 PUB_MARKER_LABELS <- c(
-  "KI67NAIVE" = "Ki67⁺NAÏVE", "CD28KI67" = "CD28⁺Ki67⁺",
+  "KI67NAIVE" = "Ki67⁺ naïve", "CD28KI67" = "CD28⁺Ki67⁺",
   "CD3tot" = "CD3⁺", "CD4tot" = "CD4⁺", "CD8tot" = "CD8⁺",
-  "NAIVE" = "NAÏVE", "CM" = "CM", "EFF" = "EFF", "EM" = "EM", "EMRA" = "EMRA",
-  "CD28" = "CD28⁺", "CD28CD4" = "CD28⁺CD4⁺", "CD28CD8" = "CD28⁺CD8⁺", "CD28NAIVE" = "CD28⁺NAÏVE",
+  "NAIVE" = "naïve", "CM" = "CM", "EFF" = "EFF", "EM" = "EM", "EMRA" = "EMRA",
+  "CD28" = "CD28⁺", "CD28CD4" = "CD28⁺CD4⁺", "CD28CD8" = "CD28⁺CD8⁺", "CD28NAIVE" = "CD28⁺ naïve",
   "CD28CM" = "CD28⁺CM", "CD28EFF" = "CD28⁺EFF", "CD28EMRA" = "CD28⁺EMRA",
   "CD137tot" = "CD137⁺", "CD137CD4" = "CD137⁺CD4⁺", "CD137CD8" = "CD137⁺CD8⁺",
-  "CD137KI67" = "CD137⁺Ki67⁺", "CD137PD1" = "CD137⁺PD1⁺", "CD137NAIVE" = "CD137⁺NAÏVE",
+  "CD137KI67" = "CD137⁺Ki67⁺", "CD137PD1" = "CD137⁺PD1⁺", "CD137NAIVE" = "CD137⁺ naïve",
   "CD137CM" = "CD137⁺CM", "CD137EFF" = "CD137⁺EFF", "CD137EMRA" = "CD137⁺EMRA",
   "KI67" = "Ki67⁺", "KI67CD4" = "Ki67⁺CD4⁺", "KI67CD8" = "Ki67⁺CD8⁺",
   "KI67CM" = "Ki67⁺CM", "KI67EFF" = "Ki67⁺EFF", "KI657EMRA" = "Ki67⁺EMRA",
   "PD1" = "PD1⁺", "PD1CD4" = "PD1⁺CD4⁺", "PD1CD8" = "PD1⁺CD8⁺", "PD1KI67" = "PD1⁺Ki67⁺",
-  "PD1NAIVE" = "PD1⁺NAÏVE", "PD1CM" = "PD1⁺CM", "PD1EFF" = "PD1⁺EFF", "PD1EMRA" = "PD1⁺EMRA")
+  "PD1NAIVE" = "PD1⁺ naïve", "PD1CM" = "PD1⁺CM", "PD1EFF" = "PD1⁺EFF", "PD1EMRA" = "PD1⁺EMRA")
 pub_relabel_marker <- function(x) {
   x  <- as.character(x)
   hit <- x %in% names(PUB_MARKER_LABELS)
